@@ -99,6 +99,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private TileStore activeOfflineTileStore;
     private Cancelable activeStylePackDownload;
     private Cancelable activeTileRegionDownload;
+    private boolean isOfflineDownloading = false;
     private boolean waypointSelectionEnabled = false;
     private boolean autoAddWaypointMarker = false;
     private OnMapClickListener mapClickListener;
@@ -817,6 +818,12 @@ public class MapboxPluginEntry extends CordovaPlugin {
         Polygon geometry,
         CallbackContext callback
     ) {
+        if (isOfflineDownloading) {
+            callback.error("An offline region download is already in progress.");
+            return;
+        }
+        isOfflineDownloading = true;
+        cancelCurrentDownload();
         activeOfflineManager = new OfflineManager();
         sendOfflineProgress("style-start", 0, 100);
 
@@ -832,6 +839,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             progress -> sendOfflineProgress("style", progress.getCompletedResourceCount(), progress.getRequiredResourceCount()),
             expectedStylePack -> expectedStylePack.fold(
                 error -> {
+                    isOfflineDownloading = false;
                     callback.error("Style pack download failed: " + error.toString());
                     return null;
                 },
@@ -892,10 +900,12 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     progress -> sendOfflineProgress("tiles", progress.getCompletedResourceCount(), progress.getRequiredResourceCount()),
                     expectedTileRegion -> expectedTileRegion.fold(
                         error -> {
+                            isOfflineDownloading = false;
                             callback.error("Tile region download failed: " + error.toString());
                             return null;
                         },
                         tileRegion -> {
+                            isOfflineDownloading = false;
                             try {
                                 JSONObject result = new JSONObject();
                                 result.put("regionId", regionId);
@@ -911,6 +921,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     )
                 );
             } catch (Throwable e) {
+                isOfflineDownloading = false;
                 callback.error(e.getMessage() == null ? "Offline tile download failed." : e.getMessage());
             }
         });
@@ -1605,6 +1616,19 @@ public class MapboxPluginEntry extends CordovaPlugin {
         });
     }
 
+    private void cancelCurrentDownload() {
+        if (activeStylePackDownload != null) {
+            activeStylePackDownload.cancel();
+            activeStylePackDownload = null;
+        }
+        if (activeTileRegionDownload != null) {
+            activeTileRegionDownload.cancel();
+            activeTileRegionDownload = null;
+        }
+        activeOfflineManager = null;
+        activeOfflineTileStore = null;
+    }
+
     private void closeInternal() {
         stopHeadingFollowMode();
         stopUserTracking();
@@ -1635,16 +1659,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
         waypointSelectedCallback = null;
         markerClickCallback = null;
         offlineDownloadProgressCallback = null;
-        if (activeStylePackDownload != null) {
-            activeStylePackDownload.cancel();
-        }
-        if (activeTileRegionDownload != null) {
-            activeTileRegionDownload.cancel();
-        }
-        activeStylePackDownload = null;
-        activeTileRegionDownload = null;
-        activeOfflineManager = null;
-        activeOfflineTileStore = null;
+        cancelCurrentDownload();
+        isOfflineDownloading = false;
         waypointSelectionEnabled = false;
         autoAddWaypointMarker = false;
         mapClickListener = null;

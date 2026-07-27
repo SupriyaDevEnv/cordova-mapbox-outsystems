@@ -17,6 +17,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var offlineDownloadProgressCallbackId: String?
     private var activeStylePackDownload: Cancelable?
     private var activeTileRegionDownload: Cancelable?
+    private var isOfflineDownloading = false
     private var waypointSelectionEnabled = false
     private var autoAddWaypointMarker = false
     private var cancelables = Set<AnyCancelable>()
@@ -689,6 +690,12 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         geometry: Geometry?,
         command: CDVInvokedUrlCommand
     ) {
+        guard !isOfflineDownloading else {
+            sendError("An offline region download is already in progress.", command)
+            return
+        }
+        isOfflineDownloading = true
+        cancelCurrentDownload()
         let offlineManager = OfflineManager()
         sendOfflineProgress(phase: "style-start", completed: 0, required: 100)
 
@@ -727,6 +734,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                     command: command
                 )
             case .failure(let error):
+                self.isOfflineDownloading = false
                 self.sendError("Style pack download failed: \(error.localizedDescription)", command)
             }
         }
@@ -759,6 +767,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             metadata: ["regionId": regionId],
             acceptExpired: false
         ) else {
+            isOfflineDownloading = false
             sendError("Failed to create tile region options.", command)
             return
         }
@@ -773,6 +782,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 required: UInt64(progress.requiredResourceCount)
             )
         } completion: { result in
+            self.isOfflineDownloading = false
             switch result {
             case .success:
                 self.sendSuccess([
@@ -1104,6 +1114,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
+    private func cancelCurrentDownload() {
+        activeStylePackDownload?.cancel()
+        activeTileRegionDownload?.cancel()
+        activeStylePackDownload = nil
+        activeTileRegionDownload = nil
+    }
+
     private func closeInternal() {
         stopHeadingFollowMode()
         stopUserTracking()
@@ -1116,10 +1133,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         offlineDownloadProgressCallbackId = nil
         moveToCurrentLocationCallbackId = nil
         moveToCurrentLocationZoom = nil
-        activeStylePackDownload?.cancel()
-        activeTileRegionDownload?.cancel()
-        activeStylePackDownload = nil
-        activeTileRegionDownload = nil
+        cancelCurrentDownload()
+        isOfflineDownloading = false
         waypointSelectionEnabled = false
         autoAddWaypointMarker = false
         cancelables.removeAll()
