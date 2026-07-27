@@ -107,6 +107,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private float rawTapDownY = 0.0f;
     private long rawTapDownMs = 0L;
     private long lastMapSelectionCallbackMs = 0L;
+    private long lastSendKeepCallbackMs = 0L;
+    private static final long CALLBACK_RATE_LIMIT_MS = 100L;
     private boolean boundaryVisible = true;
 
     @Override
@@ -1583,6 +1585,12 @@ public class MapboxPluginEntry extends CordovaPlugin {
             return;
         }
 
+        long now = System.currentTimeMillis();
+        if (now - lastSendKeepCallbackMs < CALLBACK_RATE_LIMIT_MS) {
+            return;
+        }
+        lastSendKeepCallbackMs = now;
+
         PluginResult result = new PluginResult(PluginResult.Status.OK, payload);
         result.setKeepCallback(true);
         callback.sendPluginResult(result);
@@ -1776,5 +1784,13 @@ public class MapboxPluginEntry extends CordovaPlugin {
     public void onDestroy() {
         closeInternal();
         super.onDestroy();
+    }
+
+    @Override
+    public void onReset() {
+        waypointSelectedCallback = null;
+        markerClickCallback = null;
+        offlineDownloadProgressCallback = null;
+        lastSendKeepCallbackMs = 0L;
     }
 }

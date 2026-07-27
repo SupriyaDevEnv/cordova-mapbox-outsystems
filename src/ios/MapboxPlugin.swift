@@ -28,6 +28,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var lastHeadingUpdate: TimeInterval = 0
     private var isUserTrackingEnabled = false
     private var lastUserTrackingUpdate: TimeInterval = 0
+    private var lastSendKeepCallbackTimestamp: TimeInterval = 0
+    private let callbackRateLimit: TimeInterval = 0.1
     private var boundaryVisible = true
 
     @objc(ping:)
@@ -1137,6 +1139,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         isOfflineDownloading = false
         waypointSelectionEnabled = false
         autoAddWaypointMarker = false
+        lastSendKeepCallbackTimestamp = 0
         cancelables.removeAll()
         mapTouchOverlay?.removeFromSuperview()
         mapTouchOverlay = nil
@@ -1474,6 +1477,12 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         guard let callbackId = callbackId else {
             return
         }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastSendKeepCallbackTimestamp < callbackRateLimit {
+            return
+        }
+        lastSendKeepCallbackTimestamp = now
 
         let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
         result?.setKeepCallbackAs(true)
