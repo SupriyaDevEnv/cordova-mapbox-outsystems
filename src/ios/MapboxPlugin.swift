@@ -454,7 +454,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             manager.stopUpdatingLocation()
         }
 
-        sendError("Failed to get current location: \(error.localizedDescription)", callbackId: callbackId)
+        sendError(sanitizeError(contextMessage: "Failed to get current location.", error: error), callbackId: callbackId)
     }
 
     private func shortestBearingDelta(from: CLLocationDirection, to: CLLocationDirection) -> CLLocationDirection {
@@ -737,7 +737,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 )
             case .failure(let error):
                 self.isOfflineDownloading = false
-                self.sendError("Style pack download failed: \(error.localizedDescription)", command)
+                self.sendError(self.sanitizeError(contextMessage: "Failed to download style pack.", error: error), command)
             }
         }
     }
@@ -794,7 +794,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                     "radiusKm": radiusKm
                 ], command)
             case .failure(let error):
-                self.sendError("Tile region download failed: \(error.localizedDescription)", command)
+                self.sendError(self.sanitizeError(contextMessage: "Failed to download tile region.", error: error), command)
             }
         }
     }
@@ -1410,6 +1410,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     private func isValidLongitude(_ lon: Double) -> Bool {
         lon.isFinite && lon >= -180 && lon <= 180
+    }
+
+    private func sanitizeError(contextMessage: String, error: Error) -> String {
+        NSLog("MapboxPlugin: %@ - %@", contextMessage, error.localizedDescription)
+        return contextMessage
     }
 
     private func colorOption(_ value: Any?, defaultColor: UIColor) -> UIColor {

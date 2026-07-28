@@ -16,6 +16,7 @@ import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Build;
+import android.util.Log;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -284,7 +285,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 result.put("status", "initialized");
                 callback.success(result);
             } catch (Throwable e) {
-                callback.error(e.getMessage() == null ? "Failed to initialize Mapbox map." : e.getMessage());
+                callback.error(sanitizeError("Failed to initialize Mapbox map.", e));
             }
         });
     }
@@ -762,7 +763,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     callback
                 );
             } catch (Throwable e) {
-                callback.error(e.getMessage() == null ? "Offline download failed." : e.getMessage());
+                callback.error(sanitizeError("Failed to start offline download.", e));
             }
         });
     }
@@ -804,7 +805,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     callback
                 );
             } catch (Throwable e) {
-                callback.error(e.getMessage() == null ? "Offline rect download failed." : e.getMessage());
+                callback.error(sanitizeError("Failed to start offline region download.", e));
             }
         });
     }
@@ -842,7 +843,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             expectedStylePack -> expectedStylePack.fold(
                 error -> {
                     isOfflineDownloading = false;
-                    callback.error("Style pack download failed: " + error.toString());
+                    callback.error(sanitizeError("Failed to download style pack.", error));
                     return null;
                 },
                 stylePack -> {
@@ -903,7 +904,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     expectedTileRegion -> expectedTileRegion.fold(
                         error -> {
                             isOfflineDownloading = false;
-                            callback.error("Tile region download failed: " + error.toString());
+                            callback.error(sanitizeError("Failed to download tile region.", error));
                             return null;
                         },
                         tileRegion -> {
@@ -916,7 +917,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                                 result.put("radiusKm", radiusKm);
                                 callback.success(result);
                             } catch (Exception e) {
-                                callback.error(e.getMessage());
+                                callback.error(sanitizeError("An internal error occurred.", e));
                             }
                             return null;
                         }
@@ -924,7 +925,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 );
             } catch (Throwable e) {
                 isOfflineDownloading = false;
-                callback.error(e.getMessage() == null ? "Offline tile download failed." : e.getMessage());
+                callback.error(sanitizeError("Failed to download offline tiles.", e));
             }
         });
     }
@@ -1025,7 +1026,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
                 callback.success();
             } catch (Throwable e) {
-                callback.error(e.getMessage() == null ? "Offline region delete failed." : e.getMessage());
+                callback.error(sanitizeError("Failed to delete offline region.", e));
             }
         });
     }
@@ -1278,7 +1279,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 result.put("id", id);
                 callback.success(result);
             } catch (Exception e) {
-                callback.error(e.getMessage());
+                callback.error(sanitizeError("An internal error occurred.", e));
             }
         });
     }
@@ -1421,7 +1422,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 result.put("count", boundaryAnnotationOptions.size());
                 callback.success(result);
             } catch (Exception e) {
-                callback.error(e.getMessage());
+                callback.error(sanitizeError("An internal error occurred.", e));
             }
         });
     }
@@ -1612,7 +1613,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 result.put("pitch", mapView.getMapboxMap().getCameraState().getPitch());
                 callback.success(result);
             } catch (Exception e) {
-                callback.error(e.getMessage());
+                callback.error(sanitizeError("An internal error occurred.", e));
             }
         });
     }
@@ -1740,6 +1741,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(value, Math.max(min, max)));
+    }
+
+    private String sanitizeError(String contextMessage, Throwable t) {
+        Log.e("MapboxPlugin", contextMessage, t);
+        return contextMessage;
     }
 
     private static double clamp(double value, double min, double max) {

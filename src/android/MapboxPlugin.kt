@@ -3,6 +3,7 @@ package com.outsystems.mapbox
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.util.Log
 import android.graphics.Paint
 import android.graphics.Path
 import android.view.Gravity
@@ -124,9 +125,14 @@ open class MapboxPlugin : CordovaPlugin() {
                     callback.success(JSONObject().put("status", "initialized"))
                 }
             } catch (e: Exception) {
-                callback.error(e.message ?: "Failed to initialize Mapbox map.")
+                callback.error(sanitizeError("Failed to initialize Mapbox map.", e))
             }
         }
+    }
+
+    private fun sanitizeError(contextMessage: String, t: Throwable): String {
+        Log.e("MapboxPlugin", contextMessage, t)
+        return contextMessage
     }
 
     private fun setViewport(options: JSONObject, callback: CallbackContext) {
