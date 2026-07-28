@@ -1151,6 +1151,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         closeInternal()
     }
 
+    override func onReset() {
+        waypointSelectedCallbackId = nil
+        markerClickCallbackId = nil
+        offlineDownloadProgressCallbackId = nil
+        moveToCurrentLocationCallbackId = nil
+    }
+
     private func getAccessToken() -> String {
         if let token = getTokenFromKeychain(), !token.isEmpty {
             return token
