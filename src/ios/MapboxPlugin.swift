@@ -30,6 +30,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var lastUserTrackingUpdate: TimeInterval = 0
     private var lastSendKeepCallbackTimestamp: TimeInterval = 0
     private let callbackRateLimit: TimeInterval = 0.1
+    private let maxMarkers = 10000
+    private let maxBoundaries = 1000
     private var boundaryVisible = true
 
     @objc(ping:)
@@ -513,6 +515,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             let markers = options["markers"] as? [[String: Any]] ?? []
+            guard markers.count <= self.maxMarkers else {
+                self.sendError("Too many markers: maximum allowed is \(self.maxMarkers).", command)
+                return
+            }
             for (index, marker) in markers.enumerated() {
                 let id = marker["id"] as? String ?? String(index)
                 let latitude = self.doubleOption(marker["latitude"], defaultValue: 0)
@@ -556,6 +562,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             let boundaries = options["boundaries"] as? [[String: Any]] ?? []
+            guard boundaries.count <= self.maxBoundaries else {
+                self.sendError("Too many boundaries: maximum allowed is \(self.maxBoundaries).", command)
+                return
+            }
             self.boundaryVisible = options["visible"] as? Bool ?? true
             self.boundaryAnnotations = self.boundaryAnnotationsFromOptions(options, boundaries: boundaries)
             self.applyBoundaryVisibility()

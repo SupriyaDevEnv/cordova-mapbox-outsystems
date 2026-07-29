@@ -74,6 +74,9 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class MapboxPluginEntry extends CordovaPlugin {
+    private static final int MAX_MARKERS = 10000;
+    private static final int MAX_BOUNDARIES = 1000;
+
     private MapView mapView;
     private FrameLayout rootView;
     private final List<TouchRect> touchableRects = new ArrayList<>();
@@ -1306,6 +1309,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 return;
             }
 
+            if (markers.length() > MAX_MARKERS) {
+                callback.error("Too many markers: maximum allowed is " + MAX_MARKERS + ".");
+                return;
+            }
+
             for (int i = 0; i < markers.length(); i++) {
                 JSONObject marker = markers.optJSONObject(i);
                 if (marker == null) {
@@ -1402,6 +1410,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
             JSONArray boundaries = options.optJSONArray("boundaries");
             if (boundaries != null) {
+                if (boundaries.length() > MAX_BOUNDARIES) {
+                    callback.error("Too many boundaries: maximum allowed is " + MAX_BOUNDARIES + ".");
+                    return;
+                }
+
                 String fillColor = options.optString("fillColor", "#2E7D32");
                 double fillOpacity = options.optDouble("fillOpacity", 0.18);
                 String lineColor = options.optString("lineColor", "#1B5E20");
