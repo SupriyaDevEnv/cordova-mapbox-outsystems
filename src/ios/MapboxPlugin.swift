@@ -898,6 +898,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func installMapTapHandler(on mapView: MapView) {
+        cancelables.removeAll()
         mapView.gestures.onMapTap.observe { [weak self] context in
             guard let self = self else {
                 return

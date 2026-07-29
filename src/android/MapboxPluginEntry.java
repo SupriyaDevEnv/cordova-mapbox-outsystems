@@ -1076,8 +1076,15 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void installMapClickListener() {
-        if (mapView == null || mapClickListener != null) {
+        if (mapView == null) {
             return;
+        }
+
+        if (mapClickListener != null) {
+            GesturesPlugin oldGestures = mapView.getPlugin(Plugin.MAPBOX_GESTURES_PLUGIN_ID);
+            if (oldGestures != null) {
+                oldGestures.removeOnMapClickListener(mapClickListener);
+            }
         }
 
         GesturesPlugin gestures = mapView.getPlugin(Plugin.MAPBOX_GESTURES_PLUGIN_ID);
