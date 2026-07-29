@@ -111,7 +111,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private float rawTapDownY = 0.0f;
     private long rawTapDownMs = 0L;
     private long lastMapSelectionCallbackMs = 0L;
-    private long lastSendKeepCallbackMs = 0L;
+    private long lastKeepCallbackOfflineMs = 0L;
+    private long lastKeepCallbackWaypointMs = 0L;
+    private long lastKeepCallbackMarkerMs = 0L;
     private static final long CALLBACK_RATE_LIMIT_MS = 100L;
     private boolean boundaryVisible = true;
 
@@ -1049,7 +1051,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
             payload.put("completed", completed);
             payload.put("required", required);
             payload.put("percent", required > 0 ? Math.round((completed * 100.0) / required) : 0);
-            sendKeepCallback(offlineDownloadProgressCallback, payload);
+            long now = System.currentTimeMillis();
+            if (now - lastKeepCallbackOfflineMs >= CALLBACK_RATE_LIMIT_MS) {
+                lastKeepCallbackOfflineMs = now;
+                sendKeepCallback(offlineDownloadProgressCallback, payload);
+            }
         } catch (Exception ignored) {
         }
     }
@@ -1126,7 +1132,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
             payload.put("id", id);
             payload.put("latitude", point.latitude());
             payload.put("longitude", point.longitude());
-            sendKeepCallback(waypointSelectedCallback, payload);
+            if (now - lastKeepCallbackWaypointMs >= CALLBACK_RATE_LIMIT_MS) {
+                lastKeepCallbackWaypointMs = now;
+                sendKeepCallback(waypointSelectedCallback, payload);
+            }
             lastMapSelectionCallbackMs = now;
         } catch (Exception ignored) {
         }
@@ -1191,7 +1200,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 payload.put("id", recordId);
                 payload.put("latitude", annotation.getPoint().latitude());
                 payload.put("longitude", annotation.getPoint().longitude());
-                sendKeepCallback(markerClickCallback, payload);
+                long now = System.currentTimeMillis();
+                if (now - lastKeepCallbackMarkerMs >= CALLBACK_RATE_LIMIT_MS) {
+                    lastKeepCallbackMarkerMs = now;
+                    sendKeepCallback(markerClickCallback, payload);
+                }
             } catch (Exception ignored) {
             }
 
@@ -1256,7 +1269,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
             payload.put("id", nearestId);
             payload.put("latitude", nearestPoint.latitude());
             payload.put("longitude", nearestPoint.longitude());
-            sendKeepCallback(markerClickCallback, payload);
+            long now = System.currentTimeMillis();
+            if (now - lastKeepCallbackMarkerMs >= CALLBACK_RATE_LIMIT_MS) {
+                lastKeepCallbackMarkerMs = now;
+                sendKeepCallback(markerClickCallback, payload);
+            }
         } catch (Exception ignored) {
         }
 
@@ -1606,12 +1623,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
             return;
         }
 
-        long now = System.currentTimeMillis();
-        if (now - lastSendKeepCallbackMs < CALLBACK_RATE_LIMIT_MS) {
-            return;
-        }
-        lastSendKeepCallbackMs = now;
-
         PluginResult result = new PluginResult(PluginResult.Status.OK, payload);
         result.setKeepCallback(true);
         callback.sendPluginResult(result);
@@ -1817,6 +1828,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
         waypointSelectedCallback = null;
         markerClickCallback = null;
         offlineDownloadProgressCallback = null;
-        lastSendKeepCallbackMs = 0L;
+        lastKeepCallbackOfflineMs = 0L;
+        lastKeepCallbackWaypointMs = 0L;
+        lastKeepCallbackMarkerMs = 0L;
     }
 }

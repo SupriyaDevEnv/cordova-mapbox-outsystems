@@ -28,7 +28,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var lastHeadingUpdate: TimeInterval = 0
     private var isUserTrackingEnabled = false
     private var lastUserTrackingUpdate: TimeInterval = 0
-    private var lastSendKeepCallbackTimestamp: TimeInterval = 0
+    private var lastKeepCallbackOfflineTs: TimeInterval = 0
+    private var lastKeepCallbackWaypointTs: TimeInterval = 0
+    private var lastKeepCallbackMarkerTs: TimeInterval = 0
     private let callbackRateLimit: TimeInterval = 0.1
     private let maxMarkers = 10000
     private let maxBoundaries = 1000
@@ -888,6 +890,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     private func sendOfflineProgress(phase: String, completed: UInt64, required: UInt64) {
         let percent = required > 0 ? Int(round((Double(completed) * 100.0) / Double(required))) : 0
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastKeepCallbackOfflineTs >= callbackRateLimit else { return }
+        lastKeepCallbackOfflineTs = now
         sendKeepCallback(offlineDownloadProgressCallbackId, payload: [
             "type": "offlineDownloadProgress",
             "phase": phase,
@@ -922,6 +927,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 )
             }
 
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now - self.lastKeepCallbackWaypointTs >= self.callbackRateLimit else { return }
+            self.lastKeepCallbackWaypointTs = now
             self.sendKeepCallback(self.waypointSelectedCallbackId, payload: [
                 "type": "waypointSelected",
                 "id": id,
@@ -942,7 +950,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         marker.image = .init(image: createWaypointMarkerImage(), name: "waypoint-marker")
         marker.iconAnchor = .bottom
         marker.tapHandler = { [weak self, id] context in
-            self?.sendKeepCallback(self?.markerClickCallbackId, payload: [
+            guard let self = self else { return true }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now - self.lastKeepCallbackMarkerTs >= self.callbackRateLimit else { return true }
+            self.lastKeepCallbackMarkerTs = now
+            self.sendKeepCallback(self.markerClickCallbackId, payload: [
                 "type": "markerClicked",
                 "id": id,
                 "latitude": context.coordinate.latitude,
@@ -1039,6 +1051,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             return false
         }
 
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastKeepCallbackMarkerTs >= callbackRateLimit else { return true }
+        lastKeepCallbackMarkerTs = now
         sendKeepCallback(markerClickCallbackId, payload: [
             "type": "markerClicked",
             "id": nearestId,
@@ -1150,7 +1165,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         isOfflineDownloading = false
         waypointSelectionEnabled = false
         autoAddWaypointMarker = false
-        lastSendKeepCallbackTimestamp = 0
+        lastKeepCallbackOfflineTs = 0
+        lastKeepCallbackWaypointTs = 0
+        lastKeepCallbackMarkerTs = 0
         cancelables.removeAll()
         mapTouchOverlay?.removeFromSuperview()
         mapTouchOverlay = nil
@@ -1167,6 +1184,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         markerClickCallbackId = nil
         offlineDownloadProgressCallbackId = nil
         moveToCurrentLocationCallbackId = nil
+        lastKeepCallbackOfflineTs = 0
+        lastKeepCallbackWaypointTs = 0
+        lastKeepCallbackMarkerTs = 0
     }
 
     private func getAccessToken() -> String {
@@ -1370,6 +1390,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             addMarkerInternal(id: id, latitude: coordinate.latitude, longitude: coordinate.longitude)
         }
 
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastKeepCallbackWaypointTs >= callbackRateLimit else { return }
+        lastKeepCallbackWaypointTs = now
         sendKeepCallback(waypointSelectedCallbackId, payload: [
             "type": "waypointSelected",
             "id": id,
@@ -1500,12 +1523,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         guard let callbackId = callbackId else {
             return
         }
-
-        let now = ProcessInfo.processInfo.systemUptime
-        if now - lastSendKeepCallbackTimestamp < callbackRateLimit {
-            return
-        }
-        lastSendKeepCallbackTimestamp = now
 
         let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
         result?.setKeepCallbackAs(true)
