@@ -1700,8 +1700,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
             handleRawTouchForTap(event);
 
             MotionEvent mapEvent = MotionEvent.obtain(event);
-            mapView.dispatchTouchEvent(mapEvent);
-            mapEvent.recycle();
+            try {
+                mapView.dispatchTouchEvent(mapEvent);
+            } finally {
+                mapEvent.recycle();
+            }
             return true;
         });
     }
