@@ -114,6 +114,10 @@ var api = {
   loadMarkers: function (markers, options) {
     options = options || {};
     options.markers = markers || [];
+    var MAX_MARKERS = 10000;
+    if (options.markers.length > MAX_MARKERS) {
+      return Promise.reject(new Error('Too many markers: maximum allowed is ' + MAX_MARKERS + '.'));
+    }
     return call('loadMarkers', [options]);
   },
 
@@ -138,6 +142,10 @@ var api = {
     }
     if (!Array.isArray(boundaries)) {
       return Promise.reject(new Error('Boundaries must be a JSON string or an array.'));
+    }
+    var MAX_BOUNDARIES = 1000;
+    if (boundaries.length > MAX_BOUNDARIES) {
+      return Promise.reject(new Error('Too many boundaries: maximum allowed is ' + MAX_BOUNDARIES + '.'));
     }
     options.boundaries = boundaries;
     return call('loadBoundaries', [options]);
