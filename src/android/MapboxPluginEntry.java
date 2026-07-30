@@ -116,6 +116,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private long lastKeepCallbackMarkerMs = 0L;
     private static final long CALLBACK_RATE_LIMIT_MS = 100L;
     private boolean boundaryVisible = true;
+    private boolean isUserLocationEnabled = false;
+    private boolean isUserTrackingEnabled = false;
+    private boolean isDeviceHeadingEnabled = false;
+    private boolean isHeadingFollowModeEnabled = false;
+    private CallbackContext trackingStatusCallback;
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) {
@@ -183,6 +188,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 return true;
             case "registerMarkerClickCallback":
                 registerMarkerClickCallback(callbackContext);
+                return true;
+            case "registerTrackingStatusCallback":
+                registerTrackingStatusCallback(callbackContext);
                 return true;
             case "getCamera":
                 getCamera(callbackContext);
@@ -452,6 +460,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
             location.setEnabled(true);
             location.setPuckBearingEnabled(true);
 
+            isUserLocationEnabled = true;
+            fireTrackingStatusChanged();
+
             callback.success();
         });
     }
@@ -496,6 +507,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
             location.setEnabled(true);
             location.setPuckBearing(PuckBearing.HEADING);
             location.setPuckBearingEnabled(enabled);
+
+            isDeviceHeadingEnabled = enabled;
+            fireTrackingStatusChanged();
 
             callback.success();
         });
@@ -595,6 +609,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
             SensorManager.SENSOR_DELAY_UI
         );
 
+        isHeadingFollowModeEnabled = true;
+        fireTrackingStatusChanged();
+
         callback.success();
     }
 
@@ -606,6 +623,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
         headingSensorListener = null;
         lastHeadingBearing = -1.0;
         lastHeadingUpdateMs = 0L;
+        isHeadingFollowModeEnabled = false;
+        fireTrackingStatusChanged();
     }
 
     private double shortestBearingDelta(double from, double to) {
@@ -709,6 +728,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 return;
             }
 
+            isUserTrackingEnabled = true;
+            fireTrackingStatusChanged();
+
             callback.success();
         } catch (SecurityException e) {
             stopUserTracking();
@@ -726,6 +748,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
         userTrackingListener = null;
         lastUserTrackingUpdateMs = 0L;
+        isUserTrackingEnabled = false;
+        fireTrackingStatusChanged();
     }
 
     private void downloadOfflineRegion(JSONObject options, CallbackContext callback) {
@@ -1079,6 +1103,30 @@ public class MapboxPluginEntry extends CordovaPlugin {
         PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
         result.setKeepCallback(true);
         callback.sendPluginResult(result);
+    }
+
+    private void registerTrackingStatusCallback(CallbackContext callback) {
+        trackingStatusCallback = callback;
+        PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
+        result.setKeepCallback(true);
+        callback.sendPluginResult(result);
+        fireTrackingStatusChanged();
+    }
+
+    private void fireTrackingStatusChanged() {
+        if (trackingStatusCallback == null) {
+            return;
+        }
+
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("userLocation", isUserLocationEnabled);
+            payload.put("userTracking", isUserTrackingEnabled);
+            payload.put("deviceHeading", isDeviceHeadingEnabled);
+            payload.put("headingFollowMode", isHeadingFollowModeEnabled);
+            sendKeepCallback(trackingStatusCallback, payload);
+        } catch (Exception ignored) {
+        }
     }
 
     private void installMapClickListener() {
@@ -1699,10 +1747,15 @@ public class MapboxPluginEntry extends CordovaPlugin {
         waypointSelectedCallback = null;
         markerClickCallback = null;
         offlineDownloadProgressCallback = null;
+        trackingStatusCallback = null;
         cancelCurrentDownload();
         isOfflineDownloading = false;
         waypointSelectionEnabled = false;
         autoAddWaypointMarker = false;
+        isUserLocationEnabled = false;
+        isUserTrackingEnabled = false;
+        isDeviceHeadingEnabled = false;
+        isHeadingFollowModeEnabled = false;
         mapClickListener = null;
         touchableRects.clear();
     }

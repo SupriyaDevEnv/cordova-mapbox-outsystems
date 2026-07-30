@@ -27,6 +27,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var lastHeadingBearing: CLLocationDirection = -1
     private var lastHeadingUpdate: TimeInterval = 0
     private var isUserTrackingEnabled = false
+    private var isUserLocationEnabled = false
+    private var isDeviceHeadingEnabled = false
+    private var isHeadingFollowModeEnabled = false
+    private var trackingStatusCallbackId: String?
     private var lastUserTrackingUpdate: TimeInterval = 0
     private var lastKeepCallbackOfflineTs: TimeInterval = 0
     private var lastKeepCallbackWaypointTs: TimeInterval = 0
@@ -204,6 +208,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.requestLocationAuthorizationIfNeeded()
             mapView.location.options.puckType = .puck2D()
             mapView.location.options.puckBearingEnabled = true
+            self.isUserLocationEnabled = true
+            self.fireTrackingStatusChanged()
             self.sendSuccess(command)
         }
     }
@@ -225,6 +231,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             mapView.location.options.puckBearingEnabled = enabled
+            self.isDeviceHeadingEnabled = enabled
+            self.fireTrackingStatusChanged()
             self.sendSuccess(command)
         }
     }
@@ -312,6 +320,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
 
         headingLocationManager?.startUpdatingHeading()
+        isHeadingFollowModeEnabled = true
+        fireTrackingStatusChanged()
         sendSuccess(command)
     }
 
@@ -329,12 +339,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
 
         isUserTrackingEnabled = true
+        fireTrackingStatusChanged()
         headingLocationManager?.startUpdatingLocation()
         sendSuccess(command)
     }
 
     private func stopUserTracking() {
         isUserTrackingEnabled = false
+        fireTrackingStatusChanged()
         if moveToCurrentLocationCallbackId == nil {
             headingLocationManager?.stopUpdatingLocation()
         }
@@ -345,6 +357,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         headingLocationManager?.stopUpdatingHeading()
         lastHeadingBearing = -1
         lastHeadingUpdate = 0
+        isHeadingFollowModeEnabled = false
+        fireTrackingStatusChanged()
     }
 
     private func requestLocationAuthorizationIfNeeded() {
@@ -888,6 +902,22 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         sendNoResultKeepCallback(command)
     }
 
+    @objc(registerTrackingStatusCallback:)
+    func registerTrackingStatusCallback(command: CDVInvokedUrlCommand) {
+        trackingStatusCallbackId = command.callbackId
+        sendNoResultKeepCallback(command)
+        fireTrackingStatusChanged()
+    }
+
+    private func fireTrackingStatusChanged() {
+        sendKeepCallback(trackingStatusCallbackId, payload: [
+            "userLocation": isUserLocationEnabled,
+            "userTracking": isUserTrackingEnabled,
+            "deviceHeading": isDeviceHeadingEnabled,
+            "headingFollowMode": isHeadingFollowModeEnabled
+        ])
+    }
+
     private func sendOfflineProgress(phase: String, completed: UInt64, required: UInt64) {
         let percent = required > 0 ? Int(round((Double(completed) * 100.0) / Double(required))) : 0
         let now = ProcessInfo.processInfo.systemUptime
@@ -1159,10 +1189,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         waypointSelectedCallbackId = nil
         markerClickCallbackId = nil
         offlineDownloadProgressCallbackId = nil
+        trackingStatusCallbackId = nil
         moveToCurrentLocationCallbackId = nil
         moveToCurrentLocationZoom = nil
         cancelCurrentDownload()
         isOfflineDownloading = false
+        isUserLocationEnabled = false
+        isUserTrackingEnabled = false
+        isDeviceHeadingEnabled = false
+        isHeadingFollowModeEnabled = false
         waypointSelectionEnabled = false
         autoAddWaypointMarker = false
         lastKeepCallbackOfflineTs = 0
@@ -1183,10 +1218,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         waypointSelectedCallbackId = nil
         markerClickCallbackId = nil
         offlineDownloadProgressCallbackId = nil
+        trackingStatusCallbackId = nil
         moveToCurrentLocationCallbackId = nil
         lastKeepCallbackOfflineTs = 0
         lastKeepCallbackWaypointTs = 0
         lastKeepCallbackMarkerTs = 0
+        isUserLocationEnabled = false
+        isUserTrackingEnabled = false
+        isDeviceHeadingEnabled = false
+        isHeadingFollowModeEnabled = false
     }
 
     private func getAccessToken() -> String {

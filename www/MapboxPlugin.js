@@ -107,6 +107,10 @@ var api = {
     exec(callback, errorCallback || function () {}, SERVICE, 'registerMarkerClickCallback', []);
   },
 
+  onTrackingStatusChanged: function (callback, errorCallback) {
+    exec(callback, errorCallback || function () {}, SERVICE, 'registerTrackingStatusCallback', []);
+  },
+
   addMarker: function (options) {
     return call('addMarker', [options || {}]);
   },
