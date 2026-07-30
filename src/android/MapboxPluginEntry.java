@@ -1835,6 +1835,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
         return contextMessage;
     }
 
+    private String sanitizeError(String contextMessage, Object t) {
+        Log.e("MapboxPlugin", contextMessage + ": " + t);
+        return contextMessage;
+    }
+
     private static double clamp(double value, double min, double max) {
         return Math.max(min, Math.min(max, value));
     }
