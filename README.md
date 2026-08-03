@@ -62,7 +62,6 @@ window.MapboxPlugin.close()
       width: Math.round(window.innerWidth * dpr),
       height: Math.round(mapHeight * dpr),
 
-      token: $parameters.Token,
       styleUrl: $parameters.Style,
 
       latitude: $parameters.Latitude,
@@ -232,19 +231,7 @@ window.MapboxPlugin.setTouchableRects([
 
 ## Token Handling
 
-Pass the public runtime token from the OutSystems client:
-
-```javascript
-window.MapboxPlugin.initialize({
-  token: "pk.your_public_token",
-  styleUrl: "mapbox://styles/mapbox/streets-v12",
-  latitude: 12.9716,
-  longitude: 77.5946,
-  zoom: 12
-});
-```
-
-Or inject a fallback token through OutSystems extensibility configuration:
+The Mapbox access token is configured once through OutSystems extensibility configuration. It never crosses the JavaScript bridge: passing `token` in `initialize()` is ignored for security and never reaches native.
 
 ```json
 {
@@ -272,7 +259,7 @@ Or inject a fallback token through OutSystems extensibility configuration:
 
 - Android uses Mapbox Maps `11.20.2` by default.
 - iOS uses Mapbox Maps `~> 11.0`.
-- iOS runtime token assignment uses `MapboxOptions.accessToken`.
+- iOS reads the token natively and assigns it via `MapboxOptions.accessToken`.
 
 ## Android Size Reduction
 
