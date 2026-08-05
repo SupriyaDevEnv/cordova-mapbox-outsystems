@@ -76,6 +76,9 @@ import org.json.JSONObject;
 public class MapboxPluginEntry extends CordovaPlugin {
     private static final int MAX_MARKERS = 10000;
     private static final int MAX_BOUNDARIES = 1000;
+    private static final double MAX_OFFLINE_RADIUS_KM = 50.0;
+    private static final double MIN_OFFLINE_ZOOM = 2.0;
+    private static final double MAX_OFFLINE_ZOOM = 18.0;
 
     private MapView mapView;
     private FrameLayout rootView;
@@ -854,6 +857,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
             callback.error("An offline region download is already in progress.");
             return;
         }
+        radiusKm = clamp(radiusKm, 0.0, MAX_OFFLINE_RADIUS_KM);
+        minZoom = clamp(minZoom, MIN_OFFLINE_ZOOM, MAX_OFFLINE_ZOOM);
+        maxZoom = clamp(maxZoom, minZoom, MAX_OFFLINE_ZOOM);
         isOfflineDownloading = true;
         cancelCurrentDownload();
         activeOfflineManager = new OfflineManager();
@@ -912,8 +918,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 TilesetDescriptorOptions descriptorOptions = new TilesetDescriptorOptions.Builder()
                     .styleURI(styleUrl)
                     .pixelRatio(cordova.getActivity().getResources().getDisplayMetrics().density)
-                    .minZoom((byte) Math.round(minZoom))
-                    .maxZoom((byte) Math.round(maxZoom))
+                    .minZoom(toZoomByte(minZoom))
+                    .maxZoom(toZoomByte(maxZoom))
                     .build();
 
                 TilesetDescriptor descriptor = offlineManager.createTilesetDescriptor(descriptorOptions);
@@ -1842,6 +1848,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private static double clamp(double value, double min, double max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private static byte toZoomByte(double value) {
+        return (byte) Math.max(0, Math.min(Math.round(value), 127));
     }
 
     private static class TouchRect {

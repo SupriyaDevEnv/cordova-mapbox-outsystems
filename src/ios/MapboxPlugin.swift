@@ -38,6 +38,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private let callbackRateLimit: TimeInterval = 0.1
     private let maxMarkers = 10000
     private let maxBoundaries = 1000
+    private let maxOfflineRadiusKm: Double = 50.0
+    private let minOfflineZoom: UInt8 = 2
+    private let maxOfflineZoom: UInt8 = 18
     private var boundaryVisible = true
 
     @objc(ping:)
@@ -722,6 +725,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             sendError("An offline region download is already in progress.", command)
             return
         }
+        let boundedRadiusKm = max(0, min(radiusKm, maxOfflineRadiusKm))
+        let boundedMinZoom = max(minOfflineZoom, min(minZoom, maxOfflineZoom))
+        let boundedMaxZoom = max(boundedMinZoom, min(maxZoom, maxOfflineZoom))
         isOfflineDownloading = true
         cancelCurrentDownload()
         let offlineManager = OfflineManager()
@@ -754,9 +760,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                     regionId: regionId,
                     latitude: latitude,
                     longitude: longitude,
-                    radiusKm: radiusKm,
-                    minZoom: minZoom,
-                    maxZoom: maxZoom,
+                    radiusKm: boundedRadiusKm,
+                    minZoom: boundedMinZoom,
+                    maxZoom: boundedMaxZoom,
                     styleURI: styleURI,
                     geometry: geometry,
                     command: command
