@@ -16,6 +16,7 @@ It supports inline maps, behind-WebView maps, markers, current-location movement
 - `setViewport(options)`
 - `setTouchableRects(rects)`
 - `setCamera(options)`
+- `flyTo(options)`
 - `getCamera()`
 - `enableUserLocation()`
 - `moveToCurrentLocation(options)`
@@ -76,6 +77,25 @@ window.MapboxPlugin.close()
 ```
 
 For iOS and Android behind-WebView maps, keep the WebView/page background transparent and call `setTouchableRects` for OutSystems controls that must remain clickable.
+
+## Fly To
+
+Use this when you want an animated camera transition that evokes flight, instead of the instant jump of `setCamera`. For long distances Mapbox builds the curved globe-style flight path automatically.
+
+```javascript
+window.MapboxPlugin.flyTo({
+  latitude: $parameters.Latitude,
+  longitude: $parameters.Longitude,
+  zoom: 15,
+  bearing: 0,
+  pitch: 0,
+  duration: 2000
+})
+  .then($resolve)
+  .catch($reject);
+```
+
+`duration` is in milliseconds. When omitted, the SDK computes a suitable flight duration from the distance. The promise resolves when the animation starts, matching `setCamera`.
 
 ## Move To Current Location Once
 

@@ -47,6 +47,10 @@ var api = {
     return call('setCamera', [options || {}]);
   },
 
+  flyTo: function (options) {
+    return call('flyTo', [options || {}]);
+  },
+
   setViewport: function (options) {
     return call('setViewport', [options || {}]);
   },

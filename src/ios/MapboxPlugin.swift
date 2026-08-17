@@ -166,6 +166,41 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
+    @objc(flyTo:)
+    func flyTo(command: CDVInvokedUrlCommand) {
+        DispatchQueue.main.async {
+            guard let mapView = self.mapView else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            let latitude = self.doubleOption(options["latitude"], defaultValue: mapView.cameraState.center.latitude)
+            let longitude = self.doubleOption(options["longitude"], defaultValue: mapView.cameraState.center.longitude)
+
+            guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
+                self.sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
+                return
+            }
+
+            let zoom = self.doubleOption(options["zoom"], defaultValue: mapView.cameraState.zoom)
+            let bearing = self.doubleOption(options["bearing"], defaultValue: mapView.cameraState.bearing)
+            let pitch = self.doubleOption(options["pitch"], defaultValue: mapView.cameraState.pitch)
+
+            let camera = CameraOptions(
+                center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+                zoom: zoom,
+                bearing: bearing,
+                pitch: pitch
+            )
+
+            let duration = (options["duration"] as? Double).map { $0 / 1000.0 }
+            mapView.camera.fly(to: camera, duration: duration)
+
+            self.sendSuccess(command)
+        }
+    }
+
     @objc(setViewport:)
     func setViewport(command: CDVInvokedUrlCommand) {
         DispatchQueue.main.async {

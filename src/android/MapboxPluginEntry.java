@@ -63,6 +63,8 @@ import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotation;
 import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotationManager;
 import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotationManagerKt;
 import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotationOptions;
+import com.mapbox.maps.plugin.animation.CameraAnimationsPlugin;
+import com.mapbox.maps.plugin.animation.MapAnimationOptions;
 import com.mapbox.maps.plugin.gestures.GesturesPlugin;
 import com.mapbox.maps.plugin.gestures.OnMapClickListener;
 import com.mapbox.maps.plugin.locationcomponent.LocationComponentPlugin;
@@ -155,6 +157,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 return true;
             case "setCamera":
                 setCamera(options, callbackContext);
+                return true;
+            case "flyTo":
+                flyTo(options, callbackContext);
                 return true;
             case "enableUserLocation":
                 enableUserLocation(callbackContext);
@@ -433,6 +438,43 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 .pitch(options.optDouble("pitch", mapView.getMapboxMap().getCameraState().getPitch()))
                 .build());
 
+            callback.success();
+        });
+    }
+
+    private void flyTo(JSONObject options, CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
+
+            double flyLat = options.optDouble("latitude", 0.0);
+            double flyLng = options.optDouble("longitude", 0.0);
+            if (!isValidLatitude(flyLat) || !isValidLongitude(flyLng)) {
+                callback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
+                return;
+            }
+
+            CameraAnimationsPlugin cameraAnimations = mapView.getPlugin(Plugin.MAPBOX_CAMERA_PLUGIN_ID);
+            if (cameraAnimations == null) {
+                callback.error("Camera animations plugin is not available.");
+                return;
+            }
+
+            CameraOptions cameraOptions = new CameraOptions.Builder()
+                .center(Point.fromLngLat(flyLng, flyLat))
+                .zoom(options.optDouble("zoom", mapView.getMapboxMap().getCameraState().getZoom()))
+                .bearing(options.optDouble("bearing", mapView.getMapboxMap().getCameraState().getBearing()))
+                .pitch(options.optDouble("pitch", mapView.getMapboxMap().getCameraState().getPitch()))
+                .build();
+
+            MapAnimationOptions.Builder animationOptions = new MapAnimationOptions.Builder();
+            if (options.has("duration")) {
+                animationOptions.duration(options.optLong("duration", 2000L));
+            }
+
+            cameraAnimations.flyTo(cameraOptions, animationOptions.build());
             callback.success();
         });
     }
