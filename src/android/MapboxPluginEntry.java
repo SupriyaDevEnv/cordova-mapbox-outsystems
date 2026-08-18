@@ -73,6 +73,7 @@ import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
 import org.apache.cordova.PluginResult;
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 public class MapboxPluginEntry extends CordovaPlugin {
@@ -94,6 +95,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private LocationManager locationManager;
     private LocationListener userTrackingListener;
     private long lastUserTrackingUpdateMs = 0L;
+    private CallbackContext moveToCurrentLocationCallback = null;
+    private LocationListener moveToCurrentLocationListener = null;
+    private LocationManager moveToCurrentLocationManager = null;
+    private double moveToCurrentLocationZoom = 0.0;
+    private boolean moveToCurrentLocationZoomSet = false;
     private PointAnnotationManager pointAnnotationManager;
     private PolygonAnnotationManager boundaryAnnotationManager;
     private final List<PolygonAnnotationOptions> boundaryAnnotationOptions = new ArrayList<>();
@@ -172,6 +178,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 return true;
             case "setUserTrackingEnabled":
                 setUserTrackingEnabled(options, callbackContext);
+                return true;
+            case "moveToCurrentLocation":
+                moveToCurrentLocation(options, callbackContext);
                 return true;
             case "downloadOfflineRegion":
                 downloadOfflineRegion(options, callbackContext);
@@ -795,6 +804,142 @@ public class MapboxPluginEntry extends CordovaPlugin {
         lastUserTrackingUpdateMs = 0L;
         isUserTrackingEnabled = false;
         fireTrackingStatusChanged();
+    }
+
+    private void moveToCurrentLocation(JSONObject options, CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
+
+            moveToCurrentLocationZoomSet = options.has("zoom");
+            moveToCurrentLocationZoom = options.optDouble("zoom", 0.0);
+
+            if (!hasLocationPermission()) {
+                callback.error("Location permission is not granted.");
+                return;
+            }
+
+            startMoveToCurrentLocation(callback);
+        });
+    }
+
+    private void startMoveToCurrentLocation(CallbackContext callback) {
+        unregisterMoveToCurrentLocation();
+
+        LocationManager manager = (LocationManager) cordova.getActivity().getSystemService(Context.LOCATION_SERVICE);
+        if (manager == null) {
+            callback.error("Device location manager is not available.");
+            return;
+        }
+
+        moveToCurrentLocationManager = manager;
+        moveToCurrentLocationCallback = callback;
+
+        moveToCurrentLocationListener = new LocationListener() {
+            @Override
+            public void onLocationChanged(Location location) {
+                if (location == null || moveToCurrentLocationCallback == null) {
+                    return;
+                }
+
+                final CallbackContext pendingCallback = moveToCurrentLocationCallback;
+                final double latitude = location.getLatitude();
+                final double longitude = location.getLongitude();
+                final boolean applyZoom = moveToCurrentLocationZoomSet;
+                final double zoom = moveToCurrentLocationZoom;
+
+                cancelMoveToCurrentLocation();
+
+                if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
+                    pendingCallback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
+                    return;
+                }
+
+                cordova.getActivity().runOnUiThread(() -> {
+                    if (mapView != null) {
+                        CameraOptions.Builder cameraBuilder = new CameraOptions.Builder()
+                            .center(Point.fromLngLat(longitude, latitude));
+                        if (applyZoom) {
+                            cameraBuilder.zoom(zoom);
+                        }
+                        mapView.getMapboxMap().setCamera(cameraBuilder.build());
+                    }
+
+                    JSONObject result = new JSONObject();
+                    try {
+                        result.put("latitude", latitude);
+                        result.put("longitude", longitude);
+                        pendingCallback.success(result);
+                    } catch (JSONException e) {
+                        pendingCallback.error(e.getMessage());
+                    }
+                });
+            }
+
+            @Override
+            public void onStatusChanged(String provider, int status, Bundle extras) {
+            }
+
+            @Override
+            public void onProviderEnabled(String provider) {
+            }
+
+            @Override
+            public void onProviderDisabled(String provider) {
+            }
+        };
+
+        try {
+            boolean gpsEnabled = manager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+            boolean networkEnabled = manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+
+            if (gpsEnabled) {
+                manager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    0L,
+                    0.0f,
+                    moveToCurrentLocationListener
+                );
+            }
+
+            if (networkEnabled) {
+                manager.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    0L,
+                    0.0f,
+                    moveToCurrentLocationListener
+                );
+            }
+
+            if (!gpsEnabled && !networkEnabled) {
+                cancelMoveToCurrentLocation();
+                callback.error("Location provider is not enabled.");
+            }
+        } catch (SecurityException e) {
+            cancelMoveToCurrentLocation();
+            callback.error("Location permission is not granted.");
+        }
+    }
+
+    private void unregisterMoveToCurrentLocation() {
+        if (moveToCurrentLocationManager != null && moveToCurrentLocationListener != null) {
+            try {
+                moveToCurrentLocationManager.removeUpdates(moveToCurrentLocationListener);
+            } catch (SecurityException ignored) {
+            }
+        }
+
+        moveToCurrentLocationManager = null;
+        moveToCurrentLocationListener = null;
+        moveToCurrentLocationCallback = null;
+    }
+
+    private void cancelMoveToCurrentLocation() {
+        unregisterMoveToCurrentLocation();
+        moveToCurrentLocationZoom = 0.0;
+        moveToCurrentLocationZoomSet = false;
     }
 
     private void downloadOfflineRegion(JSONObject options, CallbackContext callback) {
@@ -1768,6 +1913,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private void closeInternal() {
         stopHeadingFollowMode();
         stopUserTracking();
+        cancelMoveToCurrentLocation();
 
         if (mapView != null) {
             try {
@@ -1938,6 +2084,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     @Override
     public void onReset() {
+        cancelMoveToCurrentLocation();
         waypointSelectedCallback = null;
         markerClickCallback = null;
         offlineDownloadProgressCallback = null;
