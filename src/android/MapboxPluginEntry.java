@@ -1044,9 +1044,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
             callback.error("An offline region download is already in progress.");
             return;
         }
-        radiusKm = clamp(radiusKm, 0.0, MAX_OFFLINE_RADIUS_KM);
-        minZoom = clamp(minZoom, MIN_OFFLINE_ZOOM, MAX_OFFLINE_ZOOM);
-        maxZoom = clamp(maxZoom, minZoom, MAX_OFFLINE_ZOOM);
+        final double clampedRadiusKm = clamp(radiusKm, 0.0, MAX_OFFLINE_RADIUS_KM);
+        final double clampedMinZoom = clamp(minZoom, MIN_OFFLINE_ZOOM, MAX_OFFLINE_ZOOM);
+        final double clampedMaxZoom = clamp(maxZoom, clampedMinZoom, MAX_OFFLINE_ZOOM);
         isOfflineDownloading = true;
         cancelCurrentDownload();
         activeOfflineManager = new OfflineManager();
@@ -1075,9 +1075,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         regionId,
                         latitude,
                         longitude,
-                        radiusKm,
-                        minZoom,
-                        maxZoom,
+                        clampedRadiusKm,
+                        clampedMinZoom,
+                        clampedMaxZoom,
                         styleUrl,
                         geometry,
                         callback
