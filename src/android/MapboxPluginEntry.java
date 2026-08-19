@@ -483,7 +483,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 animationOptions.duration(options.optLong("duration", 2000L));
             }
 
-            cameraAnimations.flyTo(cameraOptions, animationOptions.build());
+            cameraAnimations.flyTo(cameraOptions, animationOptions.build(), null);
             callback.success();
         });
     }
