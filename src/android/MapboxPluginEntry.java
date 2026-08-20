@@ -1972,11 +1972,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private void installTouchRouter(View webViewView) {
         webViewView.setOnTouchListener((view, event) -> {
-                    Log.d("MAPBOX_TOUCH",
-            "Touch X=" + event.getX() +
-            " Y=" + event.getY() +
-            " inside=" +
-            isInsideTouchableRect(event.getX(), event.getY()));
             if (mapView == null || isInsideTouchableRect(event.getX(), event.getY())) {
                 return false;
             }
