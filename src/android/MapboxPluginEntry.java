@@ -512,6 +512,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             }
 
             location.setEnabled(true);
+            location.setPuckBearing(PuckBearing.HEADING);
             location.setPuckBearingEnabled(true);
 
             isUserLocationEnabled = true;
