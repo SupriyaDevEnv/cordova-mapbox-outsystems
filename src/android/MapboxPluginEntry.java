@@ -390,7 +390,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private void resizeMap(JSONObject options, CallbackContext callback) {
         cordova.getActivity().runOnUiThread(() -> {
-
             if (rootView == null || mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -401,26 +400,22 @@ public class MapboxPluginEntry extends CordovaPlugin {
             int width = options.optInt("width", 1);
             int height = options.optInt("height", 1);
 
-            View webView = cordova.getWebView().getView();
-            int[] webViewLocation = new int[2];
-            webView.getLocationOnScreen(webViewLocation);
+            int statusBarHeight = 0;
+            int resourceId = cordova.getActivity()
+                .getResources()
+                .getIdentifier("status_bar_height", "dimen", "android");
 
-            int nativeX = webViewLocation[0] + x;
-            int nativeY = webViewLocation[1] + y;
-
-            ViewGroup.LayoutParams currentParams = rootView.getLayoutParams();
-            FrameLayout.LayoutParams params;
-
-            if (currentParams instanceof FrameLayout.LayoutParams) {
-                params = (FrameLayout.LayoutParams) currentParams;
-            } else {
-                params = new FrameLayout.LayoutParams(width, height);
+            if (resourceId > 0) {
+                statusBarHeight = cordova.getActivity()
+                    .getResources()
+                    .getDimensionPixelSize(resourceId);
             }
 
-            params.width = width;
-            params.height = height;
-            params.leftMargin = nativeX;
-            params.topMargin = nativeY;
+            int finalY = y + statusBarHeight;
+
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height);
+            params.leftMargin = x;
+            params.topMargin = finalY;
             rootView.setLayoutParams(params);
 
             FrameLayout.LayoutParams mapParams =
