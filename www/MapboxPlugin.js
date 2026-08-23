@@ -55,6 +55,10 @@ var api = {
     return call('setViewport', [options || {}]);
   },
 
+  resizeMap: function (options) {
+    return call('resizeMap', [options || {}]);
+  },
+
   setTouchableRects: function (rects) {
     return call('setTouchableRects', [rects || []]);
   },

@@ -158,6 +158,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
             case "setViewport":
                 setViewport(options, callbackContext);
                 return true;
+            case "resizeMap":
+                resizeMap(options, callbackContext);
+                return true;
             case "setTouchableRects":
                 setTouchableRects(args, callbackContext);
                 return true;
@@ -381,6 +384,45 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
             rootView.setLayoutParams(layoutParamsFromOptions(options));
             rootView.requestLayout();
+            callback.success();
+        });
+    }
+
+    private void resizeMap(JSONObject options, CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (rootView == null || mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
+
+            int x = options.optInt("x", 0);
+            int y = options.optInt("y", 0);
+            int width = options.optInt("width", 1);
+            int height = options.optInt("height", 1);
+
+            ViewGroup.LayoutParams currentParams = rootView.getLayoutParams();
+            FrameLayout.LayoutParams params;
+
+            if (currentParams instanceof FrameLayout.LayoutParams) {
+                params = (FrameLayout.LayoutParams) currentParams;
+            } else {
+                params = new FrameLayout.LayoutParams(width, height);
+            }
+
+            params.width = width;
+            params.height = height;
+            params.leftMargin = x;
+            params.topMargin = y;
+            rootView.setLayoutParams(params);
+
+            FrameLayout.LayoutParams mapParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            );
+            mapView.setLayoutParams(mapParams);
+
+            rootView.requestLayout();
+            mapView.requestLayout();
             callback.success();
         });
     }
