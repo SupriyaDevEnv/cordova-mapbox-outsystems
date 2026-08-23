@@ -400,22 +400,28 @@ public class MapboxPluginEntry extends CordovaPlugin {
             int width = options.optInt("width", 1);
             int height = options.optInt("height", 1);
 
-            int statusBarHeight = 0;
-            int resourceId = cordova.getActivity()
-                .getResources()
-                .getIdentifier("status_bar_height", "dimen", "android");
+            int[] webViewLocation = new int[2];
+            webView.getView().getLocationInWindow(webViewLocation);
 
-            if (resourceId > 0) {
-                statusBarHeight = cordova.getActivity()
-                    .getResources()
-                    .getDimensionPixelSize(resourceId);
+            int webViewTop = webViewLocation[1];
+            int webViewLeft = webViewLocation[0];
+
+            int nativeX = x + webViewLeft;
+            int nativeY = y + webViewTop;
+
+            FrameLayout.LayoutParams params;
+            ViewGroup.LayoutParams currentParams = rootView.getLayoutParams();
+
+            if (currentParams instanceof FrameLayout.LayoutParams) {
+                params = (FrameLayout.LayoutParams) currentParams;
+            } else {
+                params = new FrameLayout.LayoutParams(width, height);
             }
 
-            int finalY = y + statusBarHeight;
-
-            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height);
-            params.leftMargin = x;
-            params.topMargin = finalY;
+            params.width = width;
+            params.height = height;
+            params.leftMargin = nativeX;
+            params.topMargin = nativeY;
             rootView.setLayoutParams(params);
 
             FrameLayout.LayoutParams mapParams =
