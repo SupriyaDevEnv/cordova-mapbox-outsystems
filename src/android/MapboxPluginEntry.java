@@ -390,6 +390,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private void resizeMap(JSONObject options, CallbackContext callback) {
         cordova.getActivity().runOnUiThread(() -> {
+
             if (rootView == null || mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -399,6 +400,13 @@ public class MapboxPluginEntry extends CordovaPlugin {
             int y = options.optInt("y", 0);
             int width = options.optInt("width", 1);
             int height = options.optInt("height", 1);
+
+            View webView = cordova.getWebView().getView();
+            int[] webViewLocation = new int[2];
+            webView.getLocationOnScreen(webViewLocation);
+
+            int nativeX = webViewLocation[0] + x;
+            int nativeY = webViewLocation[1] + y;
 
             ViewGroup.LayoutParams currentParams = rootView.getLayoutParams();
             FrameLayout.LayoutParams params;
@@ -411,14 +419,15 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
             params.width = width;
             params.height = height;
-            params.leftMargin = x;
-            params.topMargin = y;
+            params.leftMargin = nativeX;
+            params.topMargin = nativeY;
             rootView.setLayoutParams(params);
 
-            FrameLayout.LayoutParams mapParams = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            );
+            FrameLayout.LayoutParams mapParams =
+                new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                );
             mapView.setLayoutParams(mapParams);
 
             rootView.requestLayout();
