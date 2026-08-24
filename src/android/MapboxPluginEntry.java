@@ -100,6 +100,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private LocationManager moveToCurrentLocationManager = null;
     private double moveToCurrentLocationZoom = 0.0;
     private boolean moveToCurrentLocationZoomSet = false;
+    private float currentLocationAccuracy = -1f;
+    private String currentLocationAccuracyLabel = "Unknown";
     private PointAnnotationManager pointAnnotationManager;
     private PolygonAnnotationManager boundaryAnnotationManager;
     private final List<PolygonAnnotationOptions> boundaryAnnotationOptions = new ArrayList<>();
@@ -892,22 +894,34 @@ public class MapboxPluginEntry extends CordovaPlugin {
         moveToCurrentLocationListener = new LocationListener() {
             @Override
             public void onLocationChanged(Location location) {
-                if (location == null || moveToCurrentLocationCallback == null) {
+                if (location == null) {
+                    return;
+                }
+
+                currentLocationAccuracy = location.hasAccuracy() ? location.getAccuracy() : -1f;
+                currentLocationAccuracyLabel = getAccuracyLabel(currentLocationAccuracy);
+
+                final double latitude = location.getLatitude();
+                final double longitude = location.getLongitude();
+
+                if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
+                    if (moveToCurrentLocationCallback != null) {
+                        moveToCurrentLocationCallback.error(
+                            "Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180]."
+                        );
+                    }
+                    return;
+                }
+
+                if (moveToCurrentLocationCallback == null) {
                     return;
                 }
 
                 final CallbackContext pendingCallback = moveToCurrentLocationCallback;
-                final double latitude = location.getLatitude();
-                final double longitude = location.getLongitude();
                 final boolean applyZoom = moveToCurrentLocationZoomSet;
                 final double zoom = moveToCurrentLocationZoom;
 
-                cancelMoveToCurrentLocation();
-
-                if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
-                    pendingCallback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
-                    return;
-                }
+                moveToCurrentLocationCallback = null;
 
                 cordova.getActivity().runOnUiThread(() -> {
                     if (mapView != null) {
@@ -923,6 +937,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     try {
                         result.put("latitude", latitude);
                         result.put("longitude", longitude);
+                        result.put("accuracy", currentLocationAccuracy);
+                        result.put("accuracyLabel", currentLocationAccuracyLabel);
                         pendingCallback.success(result);
                     } catch (JSONException e) {
                         pendingCallback.error(e.getMessage());
@@ -972,6 +988,22 @@ public class MapboxPluginEntry extends CordovaPlugin {
         } catch (SecurityException e) {
             cancelMoveToCurrentLocation();
             callback.error("Location permission is not granted.");
+        }
+    }
+
+    private String getAccuracyLabel(float accuracy) {
+        if (accuracy < 0) {
+            return "Unknown";
+        } else if (accuracy <= 5) {
+            return "Very accurate";
+        } else if (accuracy <= 15) {
+            return "Accurate";
+        } else if (accuracy <= 30) {
+            return "Moderately accurate";
+        } else if (accuracy <= 100) {
+            return "Low accuracy";
+        } else {
+            return "Poor accuracy";
         }
     }
 
