@@ -217,6 +217,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
             case "getCamera":
                 getCamera(callbackContext);
                 return true;
+            case "getCurrentLocationAccuracy":
+                getCurrentLocationAccuracy(callbackContext);
+                return true;
             case "addMarker":
                 addMarker(options, callbackContext);
                 return true;
@@ -1972,6 +1975,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 callback.error(sanitizeError("An internal error occurred.", e));
             }
         });
+    }
+
+    private void getCurrentLocationAccuracy(CallbackContext callback) {
+        callback.success(currentLocationAccuracyLabel);
     }
 
     private void close(CallbackContext callback) {

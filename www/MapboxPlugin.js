@@ -175,6 +175,18 @@ var api = {
     return call('getCamera', []);
   },
 
+  getCurrentLocationAccuracy: function () {
+    return new Promise(function (resolve, reject) {
+      cordova.exec(
+        resolve,
+        reject,
+        'MapboxPlugin',
+        'getCurrentLocationAccuracy',
+        []
+      );
+    });
+  },
+
   close: function () {
     return call('close', []);
   }
