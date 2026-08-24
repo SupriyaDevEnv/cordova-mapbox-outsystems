@@ -82,6 +82,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final double MAX_OFFLINE_RADIUS_KM = 50.0;
     private static final double MIN_OFFLINE_ZOOM = 2.0;
     private static final double MAX_OFFLINE_ZOOM = 18.0;
+    private static final long MAX_LOCATION_AGE_MS = 30_000L;
+    private static final float VERY_ACCURATE_METERS = 5f;
+    private static final float ACCURATE_METERS = 15f;
+    private static final float MODERATE_METERS = 30f;
+    private static final float LOW_METERS = 100f;
 
     private MapView mapView;
     private FrameLayout rootView;
@@ -997,16 +1002,16 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private String getAccuracyLabel(float accuracy) {
         if (accuracy < 0) {
             return "Unknown";
-        } else if (accuracy <= 5) {
+        } else if (accuracy <= VERY_ACCURATE_METERS) {
             return "Very accurate";
-        } else if (accuracy <= 15) {
+        } else if (accuracy <= ACCURATE_METERS) {
             return "Accurate";
-        } else if (accuracy <= 30) {
-            return "Moderately accurate";
-        } else if (accuracy <= 100) {
-            return "Low accuracy";
+        } else if (accuracy <= MODERATE_METERS) {
+            return "Moderately";
+        } else if (accuracy <= LOW_METERS) {
+            return "Low";
         } else {
-            return "Poor accuracy";
+            return "Poor";
         }
     }
 
@@ -1977,8 +1982,72 @@ public class MapboxPluginEntry extends CordovaPlugin {
         });
     }
 
-    private void getCurrentLocationAccuracy(CallbackContext callback) {
-        callback.success(currentLocationAccuracyLabel);
+    private void getCurrentLocationAccuracy(final CallbackContext callbackContext) {
+        if (!hasLocationPermission()) {
+            callbackContext.success("Unknown");
+            return;
+        }
+
+        LocationManager locationManager =
+            (LocationManager) cordova.getActivity()
+                .getSystemService(Context.LOCATION_SERVICE);
+
+        if (locationManager == null) {
+            callbackContext.success("Unknown");
+            return;
+        }
+
+        Location bestLocation = getBestAvailableLocation(locationManager);
+
+        if (bestLocation == null || !bestLocation.hasAccuracy()) {
+            callbackContext.success("Unknown");
+            return;
+        }
+
+        callbackContext.success(getAccuracyLabel(bestLocation.getAccuracy()));
+    }
+
+    private Location getBestAvailableLocation(LocationManager locationManager) {
+        Location gpsLocation = null;
+        Location networkLocation = null;
+
+        try {
+            gpsLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+        } catch (SecurityException ignored) {
+        }
+
+        try {
+            networkLocation = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+        } catch (SecurityException ignored) {
+        }
+
+        long now = System.currentTimeMillis();
+
+        boolean gpsValid =
+            gpsLocation != null &&
+            gpsLocation.hasAccuracy() &&
+            now - gpsLocation.getTime() <= MAX_LOCATION_AGE_MS;
+
+        boolean networkValid =
+            networkLocation != null &&
+            networkLocation.hasAccuracy() &&
+            now - networkLocation.getTime() <= MAX_LOCATION_AGE_MS;
+
+        if (gpsValid && networkValid) {
+            return gpsLocation.getAccuracy() <= networkLocation.getAccuracy()
+                ? gpsLocation
+                : networkLocation;
+        }
+
+        if (gpsValid) {
+            return gpsLocation;
+        }
+
+        if (networkValid) {
+            return networkLocation;
+        }
+
+        return null;
     }
 
     private void close(CallbackContext callback) {

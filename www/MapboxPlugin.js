@@ -176,15 +176,7 @@ var api = {
   },
 
   getCurrentLocationAccuracy: function () {
-    return new Promise(function (resolve, reject) {
-      cordova.exec(
-        resolve,
-        reject,
-        'MapboxPlugin',
-        'getCurrentLocationAccuracy',
-        []
-      );
-    });
+    return call('getCurrentLocationAccuracy', []);
   },
 
   close: function () {
