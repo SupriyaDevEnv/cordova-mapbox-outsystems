@@ -456,47 +456,50 @@ public class MapboxPluginEntry extends CordovaPlugin {
         });
     }
 
-    private void setTouchableRects(JSONArray args, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
-            touchableRects.clear();
+   private void setTouchableRects(JSONArray args, CallbackContext callback) {
+    cordova.getActivity().runOnUiThread(() -> {
+        touchableRects.clear();
 
-            JSONArray rects = args.optJSONArray(0);
-            if (rects == null) {
-                callback.success();
-                return;
-            }
+        JSONArray rects = args.optJSONArray(0);
 
-            int maxRects = 20;
-            if (rects.length() > maxRects) {
-                callback.error("Too many touchable rects. Maximum is " + maxRects + ".");
-                return;
-            }
-
-            int mapWidth = mapView != null ? mapView.getWidth() : 0;
-            int mapHeight = mapView != null ? mapView.getHeight() : 0;
-
-            for (int i = 0; i < rects.length(); i++) {
-                JSONObject rect = rects.optJSONObject(i);
-                if (rect == null) {
-                    continue;
-                }
-
-                double x = clamp(rect.optDouble("x", 0.0), 0, mapWidth);
-                double y = clamp(rect.optDouble("y", 0.0), 0, mapHeight);
-                double width = clamp(rect.optDouble("width", 0.0), 0, mapWidth - x);
-                double height = clamp(rect.optDouble("height", 0.0), 0, mapHeight - y);
-
-                if (width <= 0 || height <= 0) {
-                    continue;
-                }
-
-                touchableRects.add(new TouchRect(x, y, width, height));
-            }
-
+        if (rects == null || rects.length() == 0) {
             callback.success();
-        });
-    }
+            return;
+        }
 
+        int maxRects = 50;
+
+        if (rects.length() > maxRects) {
+            callback.error(
+                "Too many touchable rects. Maximum is " + maxRects + "."
+            );
+            return;
+        }
+
+        for (int i = 0; i < rects.length(); i++) {
+            JSONObject rect = rects.optJSONObject(i);
+
+            if (rect == null) {
+                continue;
+            }
+
+            double x = rect.optDouble("x", 0.0);
+            double y = rect.optDouble("y", 0.0);
+            double width = rect.optDouble("width", 0.0);
+            double height = rect.optDouble("height", 0.0);
+
+            if (width <= 0 || height <= 0) {
+                continue;
+            }
+
+            touchableRects.add(
+                new TouchRect(x, y, width, height)
+            );
+        }
+
+        callback.success();
+    });
+}
     private void setCamera(JSONObject options, CallbackContext callback) {
         cordova.getActivity().runOnUiThread(() -> {
             if (mapView == null) {
