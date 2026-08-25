@@ -37,6 +37,8 @@ import androidx.security.crypto.MasterKey;
 
 import com.mapbox.bindgen.Value;
 import com.mapbox.common.Cancelable;
+import com.mapbox.common.location.BaseLocationProvider;
+import com.mapbox.common.location.LocationObserver;
 import com.mapbox.common.MapboxOptions;
 import com.mapbox.common.TileRegionLoadOptions;
 import com.mapbox.common.TileStore;
@@ -102,6 +104,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
     private Point smoothedTrackingPoint = null;
+    private SmoothedLocationProvider smoothedLocationProvider;
 
     private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private static final float MAX_STATIONARY_JITTER_METERS = 3.0f;
@@ -563,35 +566,47 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void enableUserLocation(CallbackContext callback) {
+        if (mapView == null) {
+            callback.error("Map is not initialized.");
+            return;
+        }
+
         cordova.getActivity().runOnUiThread(() -> {
-            if (mapView == null) {
-                callback.error("Map is not initialized.");
-                return;
+            try {
+                LocationComponentPlugin locationPlugin =
+                    mapView.getPlugin(
+                        Plugin.MAPBOX_LOCATION_COMPONENT_PLUGIN_ID
+                    );
+
+                if (locationPlugin == null) {
+                    callback.error(
+                        "Mapbox location component is not available."
+                    );
+                    return;
+                }
+
+                if (smoothedLocationProvider == null) {
+                    smoothedLocationProvider =
+                        new SmoothedLocationProvider();
+                }
+
+                locationPlugin.setLocationProvider(
+                    smoothedLocationProvider
+                );
+
+                locationPlugin.setPuckBearing(
+                    PuckBearing.HEADING
+                );
+
+                locationPlugin.setEnabled(true);
+
+                callback.success();
+            } catch (Exception e) {
+                callback.error(
+                    "Unable to enable user location: "
+                        + e.getMessage()
+                );
             }
-
-            boolean hasFineLocation = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION);
-            boolean hasCoarseLocation = hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
-
-            if (!hasFineLocation && !hasCoarseLocation) {
-                callback.error("Location permission is not granted.");
-                return;
-            }
-
-            LocationComponentPlugin location =
-                mapView.getPlugin(Plugin.MAPBOX_LOCATION_COMPONENT_PLUGIN_ID);
-
-            if (location == null) {
-                callback.error("Location component is not available.");
-                return;
-            }
-
-            location.setEnabled(true);
-            location.setPuckBearing(PuckBearing.HEADING);
-
-            isUserLocationEnabled = true;
-            fireTrackingStatusChanged();
-
-            callback.success();
         });
     }
 
@@ -884,10 +899,57 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 final Point cameraPoint =
                     smoothedTrackingPoint;
 
-                // 6. Move camera smoothly
+                // 6. Create a new Android Location using the smoothed coordinates
+                final android.location.Location filteredLocation =
+                    new android.location.Location(location);
+
+                filteredLocation.setLatitude(
+                    cameraPoint.latitude()
+                );
+
+                filteredLocation.setLongitude(
+                    cameraPoint.longitude()
+                );
+
+                // Keep the original location metadata
+                filteredLocation.setTime(
+                    location.getTime()
+                );
+
+                if (location.hasAccuracy()) {
+                    filteredLocation.setAccuracy(
+                        location.getAccuracy()
+                    );
+                }
+
+                if (location.hasAltitude()) {
+                    filteredLocation.setAltitude(
+                        location.getAltitude()
+                    );
+                }
+
+                if (location.hasBearing()) {
+                    filteredLocation.setBearing(
+                        location.getBearing()
+                    );
+                }
+
+                if (location.hasSpeed()) {
+                    filteredLocation.setSpeed(
+                        location.getSpeed()
+                    );
+                }
+
+                // 7. Update Mapbox puck and camera
                 cordova.getActivity().runOnUiThread(() -> {
                     if (mapView == null) {
                         return;
+                    }
+
+                    if (smoothedLocationProvider != null) {
+                        smoothedLocationProvider.updateLocation(
+                            filteredLocation
+                        );
                     }
 
                     CameraAnimationsPlugin cameraAnimations =
@@ -2325,6 +2387,18 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private static byte toZoomByte(double value) {
         return (byte) Math.max(0, Math.min(Math.round(value), 127));
+    }
+
+    private static class SmoothedLocationProvider
+        extends BaseLocationProvider {
+
+        public void updateLocation(
+                android.location.Location androidLocation
+        ) {
+            notifyLocationUpdate(
+                androidLocation
+            );
+        }
     }
 
     private static class TouchRect {
