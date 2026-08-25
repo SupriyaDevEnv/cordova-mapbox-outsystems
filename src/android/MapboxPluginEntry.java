@@ -100,6 +100,15 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private LocationManager locationManager;
     private LocationListener userTrackingListener;
     private long lastUserTrackingUpdateMs = 0L;
+    private Location lastAcceptedTrackingLocation = null;
+    private Point smoothedTrackingPoint = null;
+
+    private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
+    private static final float MAX_STATIONARY_JITTER_METERS = 3.0f;
+    private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
+    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
+    private static final double LOCATION_SMOOTHING_FACTOR = 0.25;
+
     private CallbackContext moveToCurrentLocationCallback = null;
     private LocationListener moveToCurrentLocationListener = null;
     private LocationManager moveToCurrentLocationManager = null;
@@ -787,18 +796,80 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 }
 
                 long now = System.currentTimeMillis();
-                if (now - lastUserTrackingUpdateMs < 500L) {
+                if (location.hasAccuracy()
+                        && location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) {
                     return;
                 }
+
+                if (now - lastUserTrackingUpdateMs < MIN_TRACKING_CAMERA_INTERVAL_MS) {
+                    return;
+                }
+
+                double latitude = location.getLatitude();
+                double longitude = location.getLongitude();
+
+                if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
+                    return;
+                }
+
+                if (lastAcceptedTrackingLocation != null) {
+                    float distance = lastAcceptedTrackingLocation.distanceTo(location);
+                    long timeDifference = location.getTime()
+                        - lastAcceptedTrackingLocation.getTime();
+
+                    if (distance < MAX_STATIONARY_JITTER_METERS) {
+                        return;
+                    }
+
+                    if (timeDifference > 0) {
+                        float speed = distance / (timeDifference / 1000.0f);
+                        if (speed > MAX_REASONABLE_SPEED_MPS) {
+                            return;
+                        }
+                    }
+                }
+
+                lastAcceptedTrackingLocation = new Location(location);
                 lastUserTrackingUpdateMs = now;
 
-                final double latitude = location.getLatitude();
-                final double longitude = location.getLongitude();
+                Point rawPoint = Point.fromLngLat(longitude, latitude);
+                if (smoothedTrackingPoint == null) {
+                    smoothedTrackingPoint = rawPoint;
+                } else {
+                    double smoothedLongitude = smoothedTrackingPoint.longitude()
+                        + (rawPoint.longitude() - smoothedTrackingPoint.longitude())
+                        * LOCATION_SMOOTHING_FACTOR;
+                    double smoothedLatitude = smoothedTrackingPoint.latitude()
+                        + (rawPoint.latitude() - smoothedTrackingPoint.latitude())
+                        * LOCATION_SMOOTHING_FACTOR;
+                    smoothedTrackingPoint = Point.fromLngLat(
+                        smoothedLongitude,
+                        smoothedLatitude
+                    );
+                }
+
+                final Point cameraPoint = smoothedTrackingPoint;
                 cordova.getActivity().runOnUiThread(() -> {
-                    if (mapView != null) {
-                        mapView.getMapboxMap().setCamera(new CameraOptions.Builder()
-                            .center(Point.fromLngLat(longitude, latitude))
-                            .build());
+                    if (mapView == null) {
+                        return;
+                    }
+
+                    CameraAnimationsPlugin cameraAnimations = mapView.getPlugin(
+                        Plugin.MAPBOX_CAMERA_PLUGIN_ID
+                    );
+                    CameraOptions cameraOptions = new CameraOptions.Builder()
+                        .center(cameraPoint)
+                        .build();
+
+                    if (cameraAnimations != null) {
+                        cameraAnimations.easeTo(
+                            cameraOptions,
+                            new MapAnimationOptions.Builder()
+                                .duration(500L)
+                                .build()
+                        );
+                    } else {
+                        mapView.getMapboxMap().setCamera(cameraOptions);
                     }
                 });
             }
@@ -823,17 +894,15 @@ public class MapboxPluginEntry extends CordovaPlugin {
             if (gpsEnabled) {
                 locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
-                    500L,
-                    1.0f,
+                    1000L,
+                    2.0f,
                     userTrackingListener
                 );
-            }
-
-            if (networkEnabled) {
+            } else if (networkEnabled) {
                 locationManager.requestLocationUpdates(
                     LocationManager.NETWORK_PROVIDER,
-                    500L,
-                    1.0f,
+                    1000L,
+                    3.0f,
                     userTrackingListener
                 );
             }
@@ -864,6 +933,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
         userTrackingListener = null;
         lastUserTrackingUpdateMs = 0L;
+
+        lastAcceptedTrackingLocation = null;
+        smoothedTrackingPoint = null;
+
         isUserTrackingEnabled = false;
         fireTrackingStatusChanged();
     }
