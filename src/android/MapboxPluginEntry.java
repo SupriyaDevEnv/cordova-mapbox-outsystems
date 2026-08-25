@@ -780,9 +780,13 @@ public class MapboxPluginEntry extends CordovaPlugin {
             return;
         }
 
+        // Stop previous tracking and reset filter state
         stopUserTracking();
 
-        locationManager = (LocationManager) cordova.getActivity().getSystemService(Context.LOCATION_SERVICE);
+        locationManager = (LocationManager) cordova
+            .getActivity()
+            .getSystemService(Context.LOCATION_SERVICE);
+
         if (locationManager == null) {
             callback.error("Device location manager is not available.");
             return;
@@ -796,86 +800,123 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 }
 
                 long now = System.currentTimeMillis();
+
+                // 1. Reject poor accuracy locations
                 if (location.hasAccuracy()
-                        && location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) {
+                        && location.getAccuracy()
+                        > MAX_ACCEPTABLE_ACCURACY_METERS) {
                     return;
                 }
 
-                if (now - lastUserTrackingUpdateMs < MIN_TRACKING_CAMERA_INTERVAL_MS) {
+                // 2. Prevent excessive camera updates
+                if (now - lastUserTrackingUpdateMs
+                        < MIN_TRACKING_CAMERA_INTERVAL_MS) {
                     return;
                 }
 
                 double latitude = location.getLatitude();
                 double longitude = location.getLongitude();
 
-                if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
+                // 3. Validate coordinates
+                if (!isValidLatitude(latitude)
+                        || !isValidLongitude(longitude)) {
                     return;
                 }
 
+                // 4. Reject GPS drift and unrealistic jumps
                 if (lastAcceptedTrackingLocation != null) {
-                    float distance = lastAcceptedTrackingLocation.distanceTo(location);
-                    long timeDifference = location.getTime()
+                    float distance =
+                        lastAcceptedTrackingLocation.distanceTo(location);
+                    long timeDifference =
+                        location.getTime()
                         - lastAcceptedTrackingLocation.getTime();
 
+                    // Ignore tiny movements while stationary
                     if (distance < MAX_STATIONARY_JITTER_METERS) {
                         return;
                     }
 
+                    // Reject unrealistic jumps
                     if (timeDifference > 0) {
-                        float speed = distance / (timeDifference / 1000.0f);
+                        float speed =
+                            distance / (timeDifference / 1000.0f);
                         if (speed > MAX_REASONABLE_SPEED_MPS) {
                             return;
                         }
                     }
                 }
 
-                lastAcceptedTrackingLocation = new Location(location);
+                // Accept this location
+                lastAcceptedTrackingLocation =
+                    new Location(location);
                 lastUserTrackingUpdateMs = now;
 
-                Point rawPoint = Point.fromLngLat(longitude, latitude);
+                // 5. Apply weighted location smoothing
+                Point rawPoint =
+                    Point.fromLngLat(longitude, latitude);
+
                 if (smoothedTrackingPoint == null) {
+                    // First location is used directly
                     smoothedTrackingPoint = rawPoint;
                 } else {
-                    double smoothedLongitude = smoothedTrackingPoint.longitude()
-                        + (rawPoint.longitude() - smoothedTrackingPoint.longitude())
-                        * LOCATION_SMOOTHING_FACTOR;
-                    double smoothedLatitude = smoothedTrackingPoint.latitude()
-                        + (rawPoint.latitude() - smoothedTrackingPoint.latitude())
-                        * LOCATION_SMOOTHING_FACTOR;
-                    smoothedTrackingPoint = Point.fromLngLat(
-                        smoothedLongitude,
-                        smoothedLatitude
-                    );
+                    double smoothedLongitude =
+                        smoothedTrackingPoint.longitude()
+                        + (
+                            rawPoint.longitude()
+                            - smoothedTrackingPoint.longitude()
+                        ) * LOCATION_SMOOTHING_FACTOR;
+                    double smoothedLatitude =
+                        smoothedTrackingPoint.latitude()
+                        + (
+                            rawPoint.latitude()
+                            - smoothedTrackingPoint.latitude()
+                        ) * LOCATION_SMOOTHING_FACTOR;
+                    smoothedTrackingPoint =
+                        Point.fromLngLat(
+                            smoothedLongitude,
+                            smoothedLatitude
+                        );
                 }
 
-                final Point cameraPoint = smoothedTrackingPoint;
+                final Point cameraPoint =
+                    smoothedTrackingPoint;
+
+                // 6. Move camera smoothly
                 cordova.getActivity().runOnUiThread(() -> {
                     if (mapView == null) {
                         return;
                     }
 
-                    CameraAnimationsPlugin cameraAnimations = mapView.getPlugin(
-                        Plugin.MAPBOX_CAMERA_PLUGIN_ID
-                    );
-                    CameraOptions cameraOptions = new CameraOptions.Builder()
-                        .center(cameraPoint)
-                        .build();
+                    CameraAnimationsPlugin cameraAnimations =
+                        mapView.getPlugin(
+                            Plugin.MAPBOX_CAMERA_PLUGIN_ID
+                        );
+                    CameraOptions cameraOptions =
+                        new CameraOptions.Builder()
+                            .center(cameraPoint)
+                            .build();
 
                     if (cameraAnimations != null) {
                         cameraAnimations.easeTo(
                             cameraOptions,
                             new MapAnimationOptions.Builder()
                                 .duration(500L)
-                                .build()
+                                .build(),
+                            null
                         );
                     } else {
-                        mapView.getMapboxMap().setCamera(cameraOptions);
+                        // Fallback if animation plugin is unavailable
+                        mapView.getMapboxMap()
+                            .setCamera(cameraOptions);
                     }
                 });
             }
 
             @Override
-            public void onStatusChanged(String provider, int status, Bundle extras) {
+            public void onStatusChanged(
+                    String provider,
+                    int status,
+                    Bundle extras) {
             }
 
             @Override
@@ -888,9 +929,16 @@ public class MapboxPluginEntry extends CordovaPlugin {
         };
 
         try {
-            boolean gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-            boolean networkEnabled = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+            boolean gpsEnabled =
+                locationManager.isProviderEnabled(
+                    LocationManager.GPS_PROVIDER
+                );
+            boolean networkEnabled =
+                locationManager.isProviderEnabled(
+                    LocationManager.NETWORK_PROVIDER
+                );
 
+            // Prefer GPS for better tracking accuracy
             if (gpsEnabled) {
                 locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
@@ -898,6 +946,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     2.0f,
                     userTrackingListener
                 );
+            // Use Network only when GPS is unavailable
             } else if (networkEnabled) {
                 locationManager.requestLocationUpdates(
                     LocationManager.NETWORK_PROVIDER,
@@ -907,6 +956,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 );
             }
 
+            // No location provider is available
             if (!gpsEnabled && !networkEnabled) {
                 stopUserTracking();
                 callback.error("Location provider is not enabled.");
@@ -915,7 +965,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
             isUserTrackingEnabled = true;
             fireTrackingStatusChanged();
-
             callback.success();
         } catch (SecurityException e) {
             stopUserTracking();
