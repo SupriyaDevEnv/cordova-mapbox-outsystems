@@ -2408,11 +2408,21 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 new com.mapbox.common.location.Location(
                         androidLocation.getLatitude(),
                         androidLocation.getLongitude(),
-                        androidLocation.getAltitude(),
-                        (double) androidLocation.getAccuracy(),
-                        (double) androidLocation.getBearing(),
-                        (double) androidLocation.getSpeed(),
                         androidLocation.getTime(),
+                        null,
+                        androidLocation.hasAltitude() ? androidLocation.getAltitude() : 0.0,
+                        (double) androidLocation.getAccuracy(),
+                        androidLocation.hasBearing()
+                                ? (double) androidLocation.getBearing()
+                                : 0.0,
+                        androidLocation.hasSpeed()
+                                ? (double) androidLocation.getSpeed()
+                                : 0.0,
+                        null,
+                        null,
+                        null,
+                        null,
+                        androidLocation.getProvider(),
                         null
                 );
 
