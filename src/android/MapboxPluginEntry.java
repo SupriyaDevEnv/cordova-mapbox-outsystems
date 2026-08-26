@@ -36,8 +36,11 @@ import androidx.security.crypto.EncryptedSharedPreferences;
 import androidx.security.crypto.MasterKey;
 
 import com.mapbox.bindgen.Value;
+import static com.mapbox.common.location.LocationKt.toCommonLocation;
+
 import com.mapbox.common.Cancelable;
 import com.mapbox.common.location.BaseLocationProvider;
+import com.mapbox.common.location.GetLocationCallback;
 import com.mapbox.common.location.LocationObserver;
 import com.mapbox.common.MapboxOptions;
 import com.mapbox.common.TileRegionLoadOptions;
@@ -2392,46 +2395,51 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static class SmoothedLocationProvider
         extends BaseLocationProvider {
 
-        private android.location.Location lastLocation;
+    private com.mapbox.common.location.Location lastLocation;
 
-        public void updateLocation(
-                android.location.Location androidLocation
-        ) {
-            if (androidLocation == null) {
-                return;
-            }
+    public void updateLocation(android.location.Location androidLocation) {
 
-            lastLocation = androidLocation;
-
-            com.mapbox.common.location.Location mapboxLocation =
-                com.mapbox.common.location.LocationKt
-                    .toCommonLocation(androidLocation);
-
-            notifyLocationUpdate(
-                java.util.Collections.singletonList(mapboxLocation)
-            );
+        if (androidLocation == null) {
+            return;
         }
 
-        @Override
-        public com.mapbox.common.Cancelable getLastLocation(
-                com.mapbox.common.location.GetLocationCallback callback
-        ) {
-            if (lastLocation != null) {
-                callback.run(
-                    com.mapbox.common.location.LocationKt
-                        .toCommonLocation(lastLocation)
+        // Convert Android Location to Mapbox Location
+        com.mapbox.common.location.Location mapboxLocation =
+                new com.mapbox.common.location.Location(
+                        androidLocation.getLatitude(),
+                        androidLocation.getLongitude(),
+                        androidLocation.getAltitude(),
+                        (double) androidLocation.getAccuracy(),
+                        (double) androidLocation.getBearing(),
+                        (double) androidLocation.getSpeed(),
+                        androidLocation.getTime(),
+                        null
                 );
-            }
 
-            return new com.mapbox.common.Cancelable() {
-                @Override
-                public void cancel() {
-                    // No asynchronous request to cancel.
-                }
-            };
-        }
+        // Save latest location
+        lastLocation = mapboxLocation;
+
+        // Send location update to Mapbox
+        notifyLocationUpdate(
+                Collections.singletonList(mapboxLocation)
+        );
     }
 
+    @Override
+    public Cancelable getLastLocation(
+            GetLocationCallback callback
+    ) {
+
+        callback.run(lastLocation);
+
+        return new Cancelable() {
+            @Override
+            public void cancel() {
+                // Nothing to cancel
+            }
+        };
+    }
+}
     private static class TouchRect {
         private final double x;
         private final double y;
