@@ -965,7 +965,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         cameraAnimations.easeTo(
                             cameraOptions,
                             new MapAnimationOptions.Builder()
-                                .duration(500L)
+                                .duration(800L)
                                 .build(),
                             null
                         );
