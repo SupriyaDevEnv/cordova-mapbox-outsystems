@@ -2395,61 +2395,36 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static class SmoothedLocationProvider
         extends BaseLocationProvider {
 
-    private com.mapbox.common.location.Location lastLocation;
+        private com.mapbox.common.location.Location lastLocation;
 
-    public void updateLocation(android.location.Location androidLocation) {
+        public void updateLocation(android.location.Location androidLocation) {
+            if (androidLocation == null) {
+                return;
+            }
 
-        if (androidLocation == null) {
-            return;
+            lastLocation = toCommonLocation(androidLocation);
+
+            notifyLocationUpdate(
+                    Collections.singletonList(lastLocation)
+            );
         }
 
-        // Convert Android Location to Mapbox Location
-        com.mapbox.common.location.Location mapboxLocation =
-                new com.mapbox.common.location.Location(
-                        androidLocation.getLatitude(),
-                        androidLocation.getLongitude(),
-                        androidLocation.getTime(),
-                        null,
-                        androidLocation.hasAltitude() ? androidLocation.getAltitude() : 0.0,
-                        (double) androidLocation.getAccuracy(),
-                        androidLocation.hasBearing()
-                                ? (double) androidLocation.getBearing()
-                                : 0.0,
-                        androidLocation.hasSpeed()
-                                ? (double) androidLocation.getSpeed()
-                                : 0.0,
-                        null,
-                        null,
-                        null,
-                        null,
-                        androidLocation.getProvider(),
-                        null
-                );
-
-        // Save latest location
-        lastLocation = mapboxLocation;
-
-        // Send location update to Mapbox
-        notifyLocationUpdate(
-                Collections.singletonList(mapboxLocation)
-        );
-    }
-
-    @Override
-    public Cancelable getLastLocation(
-            GetLocationCallback callback
-    ) {
-
-        callback.run(lastLocation);
-
-        return new Cancelable() {
-            @Override
-            public void cancel() {
-                // Nothing to cancel
+        @Override
+        public Cancelable getLastLocation(
+                GetLocationCallback callback
+        ) {
+            if (callback != null && lastLocation != null) {
+                callback.run(lastLocation);
             }
-        };
+
+            return new Cancelable() {
+                @Override
+                public void cancel() {
+                    // Nothing to cancel
+                }
+            };
+        }
     }
-}
     private static class TouchRect {
         private final double x;
         private final double y;
