@@ -1213,6 +1213,26 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
+    @objc(setMapStyle:)
+    func setMapStyle(command: CDVInvokedUrlCommand) {
+        DispatchQueue.main.async {
+            guard let mapView = self.mapView else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard let styleUrl = options["styleUrl"] as? String, !styleUrl.isEmpty else {
+                self.sendError("styleUrl is required", command)
+                return
+            }
+
+            let styleURI = StyleURI(rawValue: styleUrl) ?? StyleURI.streets
+            mapView.mapboxMap.loadStyle(styleURI)
+            self.sendSuccess(["status": "styleChanged"], command)
+        }
+    }
+
     private func cancelCurrentDownload() {
         activeStylePackDownload?.cancel()
         activeTileRegionDownload?.cancel()

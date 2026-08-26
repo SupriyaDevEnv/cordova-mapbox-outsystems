@@ -258,6 +258,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
             case "close":
                 close(callbackContext);
                 return true;
+            case "setMapStyle":
+                setMapStyle(options, callbackContext);
+                return true;
             default:
                 return false;
         }
@@ -2179,6 +2182,30 @@ public class MapboxPluginEntry extends CordovaPlugin {
         cordova.getActivity().runOnUiThread(() -> {
             closeInternal();
             callback.success();
+        });
+    }
+
+    private void setMapStyle(JSONObject options, CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
+
+            String styleUrl = options.optString("styleUrl", "");
+            if (styleUrl.isEmpty()) {
+                callback.error("styleUrl is required");
+                return;
+            }
+
+            mapView.getMapboxMap().loadStyle(styleUrl);
+
+            JSONObject result = new JSONObject();
+            try {
+                result.put("status", "styleChanged");
+            } catch (JSONException ignored) {
+            }
+            callback.success(result);
         });
     }
 
