@@ -14,11 +14,6 @@ buildscript {
 
 android {
 
-    // Ensure BuildConfig is generated
-    buildFeatures {
-        buildConfig true
-    }
-
     def configuredAbis = (project.findProperty("MAPBOX_ANDROID_ABIS")
             ?: System.getenv("MAPBOX_ANDROID_ABIS")
             ?: "arm64-v8a,armeabi-v7a")
@@ -28,8 +23,8 @@ android {
 
     defaultConfig {
 
-        // Expose the same version to Java
-        buildConfigField "String", "MAPBOX_VERSION", "\"${mapboxAndroidVersion}\""
+        // Expose the same Mapbox version as an Android string resource
+        resValue "string", "mapbox_version", mapboxAndroidVersion
 
         ndk {
             abiFilters(*configuredAbis)

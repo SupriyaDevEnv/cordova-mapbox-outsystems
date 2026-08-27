@@ -168,8 +168,22 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 }
                 return true;
             case "getMapboxVersion":
-                callbackContext.success(BuildConfig.MAPBOX_VERSION);
+            {
+                int versionResId = cordova.getActivity()
+                    .getResources()
+                    .getIdentifier(
+                        "mapbox_version",
+                        "string",
+                        cordova.getActivity().getPackageName()
+                    );
+
+                String mapboxVersion = versionResId != 0
+                    ? cordova.getActivity().getString(versionResId)
+                    : "unknown";
+
+                callbackContext.success(mapboxVersion);
                 return true;
+            }
             case "initialize":
                 initialize(options, callbackContext);
                 return true;
