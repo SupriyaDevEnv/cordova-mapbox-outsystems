@@ -41,7 +41,7 @@ repositories {
 dependencies {
     def mapboxAndroidVersion = project.findProperty("MAPBOX_ANDROID_VERSION")
             ?: System.getenv("MAPBOX_ANDROID_VERSION")
-            ?: "11.20.2"
+            ?: "11.27.0"
     implementation("com.mapbox.maps:android:${mapboxAndroidVersion}") {
         exclude group: "com.google.android.gms", module: "play-services-cronet"
     }

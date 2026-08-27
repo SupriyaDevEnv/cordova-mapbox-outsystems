@@ -17,7 +17,7 @@
     <preference name="MAPBOX_ACCESS_TOKEN" default="__MAPBOX_ACCESS_TOKEN_NOT_SET__" />
 
     <!-- Mapbox Android SDK artifact. Use 11.x unless your project needs another pinned version. -->
-    <preference name="MAPBOX_ANDROID_VERSION" default="11.20.2" />
+    <preference name="MAPBOX_ANDROID_VERSION" default="11.27.0" />
 
     <!-- Comma-separated Android CPU architectures to package. Add x86_64 only for emulator builds. -->
     <preference name="MAPBOX_ANDROID_ABIS" default="arm64-v8a,armeabi-v7a" />
