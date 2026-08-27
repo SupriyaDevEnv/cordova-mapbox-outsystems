@@ -2401,27 +2401,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 return;
             }
 
-            com.mapbox.common.location.Location.Builder builder =
-        new com.mapbox.common.location.Location.Builder()
-                .source("outsystems-smoothed")
-                .latitude(androidLocation.getLatitude())
-                .longitude(androidLocation.getLongitude())
-                .timestamp(androidLocation.getTime());
-
-if (androidLocation.hasAccuracy()) {
-    builder.horizontalAccuracy((double) androidLocation.getAccuracy());
-}
-if (androidLocation.hasBearing()) {
-    builder.bearing((double) androidLocation.getBearing());
-}
-if (androidLocation.hasSpeed()) {
-    builder.speed((double) androidLocation.getSpeed());
-}
-if (androidLocation.hasAltitude()) {
-    builder.altitude(androidLocation.getAltitude());
-}
-
-lastLocation = builder.build();
 
             notifyLocationUpdate(
                     Collections.singletonList(lastLocation)
