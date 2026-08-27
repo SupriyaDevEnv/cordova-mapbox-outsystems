@@ -43,6 +43,10 @@ var api = {
     return call('ping', []);
   },
 
+  getMapboxVersion: function (success, error) {
+    exec(success, error, SERVICE, 'getMapboxVersion', []);
+  },
+
   setCamera: function (options) {
     return call('setCamera', [options || {}]);
   },

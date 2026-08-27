@@ -167,6 +167,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     callbackContext.error(e.getMessage());
                 }
                 return true;
+            case "getMapboxVersion":
+                callbackContext.success(BuildConfig.MAPBOX_VERSION);
+                return true;
             case "initialize":
                 initialize(options, callbackContext);
                 return true;
