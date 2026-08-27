@@ -2121,28 +2121,52 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void getCurrentLocationAccuracy(final CallbackContext callbackContext) {
-        if (!hasLocationPermission()) {
-            callbackContext.success("Unknown");
-            return;
+        // Run on the UI thread for consistency with every other plugin action in this
+        // class, even though LocationManager access here doesn't strictly require it.
+        cordova.getActivity().runOnUiThread(() -> {
+            if (!hasLocationPermission()) {
+                Log.d("MapboxPlugin", "getCurrentLocationAccuracy: location permission not granted");
+                callbackContext.success(buildAccuracyResult(-1f, "Unknown"));
+                return;
+            }
+
+            LocationManager locationManager =
+                (LocationManager) cordova.getActivity()
+                    .getSystemService(Context.LOCATION_SERVICE);
+
+            if (locationManager == null) {
+                Log.d("MapboxPlugin", "getCurrentLocationAccuracy: LocationManager unavailable");
+                callbackContext.success(buildAccuracyResult(-1f, "Unknown"));
+                return;
+            }
+
+            Location bestLocation = getBestAvailableLocation(locationManager);
+
+            if (bestLocation == null || !bestLocation.hasAccuracy()) {
+                Log.d("MapboxPlugin", "getCurrentLocationAccuracy: no recent location with accuracy available");
+                callbackContext.success(buildAccuracyResult(-1f, "Unknown"));
+                return;
+            }
+
+            float accuracy = bestLocation.getAccuracy();
+            callbackContext.success(buildAccuracyResult(accuracy, getAccuracyLabel(accuracy)));
+        });
+    }
+
+    /**
+     * Builds the result payload for getCurrentLocationAccuracy, mirroring the
+     * {accuracy, accuracyLabel} shape already returned by moveToCurrentLocation
+     * so callers get the raw value in addition to the bucketed label.
+     */
+    private JSONObject buildAccuracyResult(float accuracy, String label) {
+        JSONObject result = new JSONObject();
+        try {
+            result.put("accuracy", accuracy);
+            result.put("accuracyLabel", label);
+        } catch (JSONException e) {
+            // Unreachable: keys/values above are simple literals that cannot fail to serialize.
         }
-
-        LocationManager locationManager =
-            (LocationManager) cordova.getActivity()
-                .getSystemService(Context.LOCATION_SERVICE);
-
-        if (locationManager == null) {
-            callbackContext.success("Unknown");
-            return;
-        }
-
-        Location bestLocation = getBestAvailableLocation(locationManager);
-
-        if (bestLocation == null || !bestLocation.hasAccuracy()) {
-            callbackContext.success("Unknown");
-            return;
-        }
-
-        callbackContext.success(getAccuracyLabel(bestLocation.getAccuracy()));
+        return result;
     }
 
     private Location getBestAvailableLocation(LocationManager locationManager) {
@@ -2151,12 +2175,16 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
         try {
             gpsLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-        } catch (SecurityException ignored) {
+        } catch (SecurityException e) {
+            // Permission checked by the caller, but it can be revoked between the check
+            // and this call. Log it rather than swallowing silently, to aid diagnosis.
+            Log.w("MapboxPlugin", "getBestAvailableLocation: lost permission reading GPS provider", e);
         }
 
         try {
             networkLocation = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-        } catch (SecurityException ignored) {
+        } catch (SecurityException e) {
+            Log.w("MapboxPlugin", "getBestAvailableLocation: lost permission reading network provider", e);
         }
 
         long now = System.currentTimeMillis();
