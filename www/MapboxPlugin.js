@@ -181,6 +181,10 @@ var api = {
 
   close: function () {
     return call('close', []);
+  },
+
+  setMapStyle: function (options) {
+    return call('setMapStyle', [options || {}]);
   }
 };
 
