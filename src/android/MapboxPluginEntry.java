@@ -68,7 +68,9 @@ import com.mapbox.maps.plugin.animation.CameraAnimationsPlugin;
 import com.mapbox.maps.plugin.animation.MapAnimationOptions;
 import com.mapbox.maps.plugin.gestures.GesturesPlugin;
 import com.mapbox.maps.plugin.gestures.OnMapClickListener;
+import com.mapbox.maps.plugin.locationcomponent.LocationConsumer;
 import com.mapbox.maps.plugin.locationcomponent.LocationComponentPlugin;
+import com.mapbox.maps.plugin.locationcomponent.LocationProvider;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
@@ -102,11 +104,14 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private LocationListener userTrackingListener;
     private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
+    private FilteredLocationProvider filteredLocationProvider;
 
     private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private static final float MAX_STATIONARY_JITTER_METERS = 3.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
     private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
+    private static final float PUCK_MAX_ACCURACY_METERS = 20.0f;
+    private static final float PUCK_JITTER_THRESHOLD_METERS = 4.0f;
 
     private CallbackContext moveToCurrentLocationCallback = null;
     private LocationListener moveToCurrentLocationListener = null;
@@ -595,23 +600,33 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     );
 
                 if (locationPlugin == null) {
-                    callback.error(
-                        "Mapbox location component is not available."
-                    );
+                    callback.error("Location plugin is not available");
                     return;
                 }
 
-                locationPlugin.setPuckBearing(
-                    PuckBearing.HEADING
-                );
+                LocationProvider defaultLocationProvider =
+                    locationPlugin.getLocationProvider();
 
+                if (defaultLocationProvider == null) {
+                    callback.error("Default location provider is not available");
+                    return;
+                }
+
+                if (filteredLocationProvider == null) {
+                    filteredLocationProvider =
+                        new FilteredLocationProvider(defaultLocationProvider);
+                    locationPlugin.setLocationProvider(filteredLocationProvider);
+                }
+
+                locationPlugin.setPuckBearing(PuckBearing.HEADING);
                 locationPlugin.setEnabled(true);
 
-                callback.success();
+                callback.success("User location enabled");
             } catch (Exception e) {
                 callback.error(
-                    "Unable to enable user location: "
-                        + e.getMessage()
+                    e.getMessage() != null
+                        ? e.getMessage()
+                        : "Failed to enable user location"
                 );
             }
         });
@@ -2252,6 +2267,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
         isUserTrackingEnabled = false;
         isDeviceHeadingEnabled = false;
         isHeadingFollowModeEnabled = false;
+        filteredLocationProvider = null;
         mapClickListener = null;
         touchableRects.clear();
     }
@@ -2342,6 +2358,103 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private static byte toZoomByte(double value) {
         return (byte) Math.max(0, Math.min(Math.round(value), 127));
+    }
+
+    private static class FilteredLocationProvider implements LocationProvider {
+        private final LocationProvider sourceProvider;
+        private final List<LocationConsumer> consumers = new ArrayList<>();
+        private Location lastAcceptedLocation;
+
+        private final LocationConsumer sourceConsumer = new LocationConsumer() {
+            @Override
+            public void onLocationUpdated(Location location) {
+                if (location == null) {
+                    return;
+                }
+
+                if (location.hasAccuracy()
+                        && location.getAccuracy() > PUCK_MAX_ACCURACY_METERS) {
+                    return;
+                }
+
+                if (lastAcceptedLocation == null) {
+                    acceptLocation(location);
+                    return;
+                }
+
+                float distance = lastAcceptedLocation.distanceTo(location);
+                if (distance < PUCK_JITTER_THRESHOLD_METERS) {
+                    return;
+                }
+
+                acceptLocation(location);
+            }
+
+            @Override
+            public void onBearingUpdated(double bearing) {
+                List<LocationConsumer> copy;
+                synchronized (consumers) {
+                    copy = new ArrayList<>(consumers);
+                }
+
+                for (LocationConsumer consumer : copy) {
+                    consumer.onBearingUpdated(bearing);
+                }
+            }
+        };
+
+        private FilteredLocationProvider(LocationProvider sourceProvider) {
+            this.sourceProvider = sourceProvider;
+        }
+
+        @Override
+        public void registerLocationConsumer(LocationConsumer locationConsumer) {
+            boolean shouldRegisterSource = false;
+
+            synchronized (consumers) {
+                if (consumers.isEmpty()) {
+                    shouldRegisterSource = true;
+                }
+
+                if (!consumers.contains(locationConsumer)) {
+                    consumers.add(locationConsumer);
+                }
+            }
+
+            if (shouldRegisterSource) {
+                sourceProvider.registerLocationConsumer(sourceConsumer);
+            }
+        }
+
+        @Override
+        public void unRegisterLocationConsumer(LocationConsumer locationConsumer) {
+            boolean shouldUnregisterSource = false;
+
+            synchronized (consumers) {
+                boolean removed = consumers.remove(locationConsumer);
+
+                if (removed && consumers.isEmpty()) {
+                    shouldUnregisterSource = true;
+                }
+            }
+
+            if (shouldUnregisterSource) {
+                sourceProvider.unRegisterLocationConsumer(sourceConsumer);
+            }
+        }
+
+        private void acceptLocation(Location location) {
+            lastAcceptedLocation = new Location(location);
+
+            List<LocationConsumer> copy;
+            synchronized (consumers) {
+                copy = new ArrayList<>(consumers);
+            }
+
+            for (LocationConsumer consumer : copy) {
+                consumer.onLocationUpdated(location);
+            }
+        }
     }
 
     private static class TouchRect {
