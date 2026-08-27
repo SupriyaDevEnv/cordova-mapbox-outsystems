@@ -37,11 +37,8 @@ import androidx.security.crypto.MasterKey;
 
 import com.mapbox.bindgen.Value;
 
-import com.mapbox.common.Cancelable;
-import com.mapbox.common.location.BaseLocationProvider;
-import com.mapbox.common.location.GetLocationCallback;
-import com.mapbox.common.location.LocationObserver;
 import com.mapbox.common.MapboxOptions;
+import com.mapbox.common.Cancelable;
 import com.mapbox.common.TileRegionLoadOptions;
 import com.mapbox.common.TileStore;
 import com.mapbox.common.TilesetDescriptor;
@@ -105,14 +102,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private LocationListener userTrackingListener;
     private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
-    private Point smoothedTrackingPoint = null;
-    private SmoothedLocationProvider smoothedLocationProvider;
 
     private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private static final float MAX_STATIONARY_JITTER_METERS = 3.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
     private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
-    private static final double LOCATION_SMOOTHING_FACTOR = 0.25;
 
     private CallbackContext moveToCurrentLocationCallback = null;
     private LocationListener moveToCurrentLocationListener = null;
@@ -587,15 +581,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     return;
                 }
 
-                if (smoothedLocationProvider == null) {
-                    smoothedLocationProvider =
-                        new SmoothedLocationProvider();
-                }
-
-                locationPlugin.setLocationProvider(
-                    smoothedLocationProvider
-                );
-
                 locationPlugin.setPuckBearing(
                     PuckBearing.HEADING
                 );
@@ -871,87 +856,13 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     new Location(location);
                 lastUserTrackingUpdateMs = now;
 
-                // 5. Apply weighted location smoothing
-                Point rawPoint =
+                final Point cameraPoint =
                     Point.fromLngLat(longitude, latitude);
 
-                if (smoothedTrackingPoint == null) {
-                    // First location is used directly
-                    smoothedTrackingPoint = rawPoint;
-                } else {
-                    double smoothedLongitude =
-                        smoothedTrackingPoint.longitude()
-                        + (
-                            rawPoint.longitude()
-                            - smoothedTrackingPoint.longitude()
-                        ) * LOCATION_SMOOTHING_FACTOR;
-                    double smoothedLatitude =
-                        smoothedTrackingPoint.latitude()
-                        + (
-                            rawPoint.latitude()
-                            - smoothedTrackingPoint.latitude()
-                        ) * LOCATION_SMOOTHING_FACTOR;
-                    smoothedTrackingPoint =
-                        Point.fromLngLat(
-                            smoothedLongitude,
-                            smoothedLatitude
-                        );
-                }
-
-                final Point cameraPoint =
-                    smoothedTrackingPoint;
-
-                // 6. Create a new Android Location using the smoothed coordinates
-                final android.location.Location filteredLocation =
-                    new android.location.Location(location);
-
-                filteredLocation.setLatitude(
-                    cameraPoint.latitude()
-                );
-
-                filteredLocation.setLongitude(
-                    cameraPoint.longitude()
-                );
-
-                // Keep the original location metadata
-                filteredLocation.setTime(
-                    location.getTime()
-                );
-
-                if (location.hasAccuracy()) {
-                    filteredLocation.setAccuracy(
-                        location.getAccuracy()
-                    );
-                }
-
-                if (location.hasAltitude()) {
-                    filteredLocation.setAltitude(
-                        location.getAltitude()
-                    );
-                }
-
-                if (location.hasBearing()) {
-                    filteredLocation.setBearing(
-                        location.getBearing()
-                    );
-                }
-
-                if (location.hasSpeed()) {
-                    filteredLocation.setSpeed(
-                        location.getSpeed()
-                    );
-                }
-
-                // 7. Update Mapbox puck and camera
+                // Update the camera for the accepted location.
                 cordova.getActivity().runOnUiThread(() -> {
                     if (mapView == null) {
                         return;
-                    }
-
-                    if (smoothedLocationProvider != null) {
-                        smoothedLocationProvider.updateLocation(
-                            filteredLocation
-                        );
                     }
 
                     CameraAnimationsPlugin cameraAnimations =
@@ -1051,8 +962,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
         lastUserTrackingUpdateMs = 0L;
 
         lastAcceptedTrackingLocation = null;
-        smoothedTrackingPoint = null;
-
         isUserTrackingEnabled = false;
         fireTrackingStatusChanged();
     }
@@ -2391,38 +2300,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
         return (byte) Math.max(0, Math.min(Math.round(value), 127));
     }
 
-    private static class SmoothedLocationProvider
-        extends BaseLocationProvider {
-
-        private com.mapbox.common.location.Location lastLocation;
-
-        public void updateLocation(android.location.Location androidLocation) {
-            if (androidLocation == null) {
-                return;
-            }
-
-
-            notifyLocationUpdate(
-                    Collections.singletonList(lastLocation)
-            );
-        }
-
-        @Override
-        public Cancelable getLastLocation(
-                GetLocationCallback callback
-        ) {
-            if (callback != null && lastLocation != null) {
-                callback.run(lastLocation);
-            }
-
-            return new Cancelable() {
-                @Override
-                public void cancel() {
-                    // Nothing to cancel
-                }
-            };
-        }
-    }
     private static class TouchRect {
         private final double x;
         private final double y;
