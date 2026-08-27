@@ -1,6 +1,7 @@
 package com.outsystems.mapbox;
 
 import android.Manifest;
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
@@ -70,7 +71,11 @@ import com.mapbox.maps.plugin.gestures.GesturesPlugin;
 import com.mapbox.maps.plugin.gestures.OnMapClickListener;
 import com.mapbox.maps.plugin.locationcomponent.LocationConsumer;
 import com.mapbox.maps.plugin.locationcomponent.LocationComponentPlugin;
+import com.mapbox.maps.plugin.locationcomponent.LocationError;
 import com.mapbox.maps.plugin.locationcomponent.LocationProvider;
+
+import kotlin.Unit;
+import kotlin.jvm.functions.Function1;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
@@ -2363,42 +2368,69 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static class FilteredLocationProvider implements LocationProvider {
         private final LocationProvider sourceProvider;
         private final List<LocationConsumer> consumers = new ArrayList<>();
-        private Location lastAcceptedLocation;
+        private Point lastAcceptedPoint;
 
         private final LocationConsumer sourceConsumer = new LocationConsumer() {
             @Override
-            public void onLocationUpdated(Location location) {
-                if (location == null) {
+            public void onLocationUpdated(
+                Point[] points,
+                Function1<? super ValueAnimator, Unit> callback
+            ) {
+                if (points == null || points.length == 0) {
                     return;
                 }
 
-                if (location.hasAccuracy()
-                        && location.getAccuracy() > PUCK_MAX_ACCURACY_METERS) {
+                Point currentPoint = points[points.length - 1];
+                if (currentPoint == null) {
                     return;
                 }
 
-                if (lastAcceptedLocation == null) {
-                    acceptLocation(location);
+                if (lastAcceptedPoint == null) {
+                    acceptLocation(points, callback);
                     return;
                 }
 
-                float distance = lastAcceptedLocation.distanceTo(location);
+                float[] results = new float[1];
+                Location.distanceBetween(
+                    lastAcceptedPoint.latitude(),
+                    lastAcceptedPoint.longitude(),
+                    currentPoint.latitude(),
+                    currentPoint.longitude(),
+                    results
+                );
+
+                float distance = results[0];
                 if (distance < PUCK_JITTER_THRESHOLD_METERS) {
                     return;
                 }
 
-                acceptLocation(location);
+                acceptLocation(points, callback);
             }
 
             @Override
-            public void onBearingUpdated(double bearing) {
+            public void onBearingUpdated(
+                double[] bearing,
+                Function1<? super ValueAnimator, Unit> callback
+            ) {
                 List<LocationConsumer> copy;
                 synchronized (consumers) {
                     copy = new ArrayList<>(consumers);
                 }
 
                 for (LocationConsumer consumer : copy) {
-                    consumer.onBearingUpdated(bearing);
+                    consumer.onBearingUpdated(bearing, callback);
+                }
+            }
+
+            @Override
+            public void onError(LocationError error) {
+                List<LocationConsumer> copy;
+                synchronized (consumers) {
+                    copy = new ArrayList<>(consumers);
+                }
+
+                for (LocationConsumer consumer : copy) {
+                    consumer.onError(error);
                 }
             }
         };
@@ -2443,8 +2475,20 @@ public class MapboxPluginEntry extends CordovaPlugin {
             }
         }
 
-        private void acceptLocation(Location location) {
-            lastAcceptedLocation = new Location(location);
+        private void acceptLocation(
+            Point[] points,
+            Function1<? super ValueAnimator, Unit> callback
+        ) {
+            if (points == null || points.length == 0) {
+                return;
+            }
+
+            Point currentPoint = points[points.length - 1];
+            if (currentPoint == null) {
+                return;
+            }
+
+            lastAcceptedPoint = currentPoint;
 
             List<LocationConsumer> copy;
             synchronized (consumers) {
@@ -2452,7 +2496,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             }
 
             for (LocationConsumer consumer : copy) {
-                consumer.onLocationUpdated(location);
+                consumer.onLocationUpdated(points, callback);
             }
         }
     }
