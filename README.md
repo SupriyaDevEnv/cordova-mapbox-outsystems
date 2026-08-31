@@ -30,6 +30,11 @@ It supports inline maps, behind-WebView maps, markers, current-location movement
 - `loadBoundaries(boundaries, options)`
 - `setBoundaryVisibility(options)`
 - `clearBoundaries()`
+- `startPathTracking(options)`
+- `stopPathTracking()`
+- `loadPath(pathData, options)`
+- `clearPaths()`
+- `setPathVisibility(options)`
 - `downloadOfflineRegion(options)`
 - `downloadOfflineRegionForRect(options)`
 - `showOfflineRegion(options)`
@@ -192,6 +197,107 @@ window.MapboxPlugin.setBoundaryVisibility({
 window.MapboxPlugin.clearBoundaries()
   .then($resolve)
   .catch($reject);
+```
+
+## Path Tracking
+
+Path tracking lets you record the user's GPS movement as a visible polyline on the map. This is useful for hunt tracking, running routes, or any scenario where you need a trail of where the user has been.
+
+### Start Path Tracking
+
+Begins recording GPS points and drawing a live trail on the map. Optionally enables camera tracking at the same time.
+
+```javascript
+window.MapboxPlugin.startPathTracking({
+  lineColor: "#FF0000",    // optional, default "#FF0000"
+  lineWidth: 3.0,          // optional, default 3.0
+  lineOpacity: 0.8,        // optional, default 1.0
+  trackCamera: "true"      // optional, default "true" — also enable camera following
+})
+  .then($resolve)
+  .catch($reject);
+```
+
+### Stop Path Tracking
+
+Stops recording and returns all collected points so you can persist them.
+
+```javascript
+window.MapboxPlugin.stopPathTracking()
+  .then(function (result) {
+    // result.points = [{lat: 17.680, lon: 83.249}, ...]
+    // result.distance = 1234.5  (meters)
+    // result.duration = 45000   (milliseconds)
+
+    // Save to your OutSystems database here
+  })
+  .catch($reject);
+```
+
+### Load a Pre-recorded Path
+
+Draws a path from saved coordinates. Use this to display a past hunt track.
+
+```javascript
+window.MapboxPlugin.loadPath({
+  points: [
+    { lat: 17.680, lon: 83.249 },
+    { lat: 17.681, lon: 83.250 },
+    { lat: 17.682, lon: 83.251 }
+  ],
+  lineColor: "#FF0000",    // optional, default "#FF0000"
+  lineWidth: 3.0,          // optional, default 3.0
+  lineOpacity: 0.8         // optional, default 1.0
+})
+  .then($resolve)
+  .catch($reject);
+```
+
+### Clear Paths
+
+Removes all drawn paths from the map.
+
+```javascript
+window.MapboxPlugin.clearPaths()
+  .then($resolve)
+  .catch($reject);
+```
+
+### Show Or Hide Paths
+
+Toggle path visibility without removing it.
+
+```javascript
+window.MapboxPlugin.setPathVisibility({
+  visible: true
+})
+  .then($resolve)
+  .catch($reject);
+```
+
+### OutSystems Integration Example
+
+**Start hunt:**
+```javascript
+window.MapboxPlugin.startPathTracking({ lineColor: "#FF0000" })
+```
+
+**Stop hunt and save:**
+```javascript
+window.MapboxPlugin.stopPathTracking()
+  .then(function (result) {
+    // In a Client Action, call a Server Action to save:
+    //   SaveHuntTrack(result.points, result.distance, result.duration)
+    // The Server Action stores to your Entity/Database
+  })
+```
+
+**View past hunt:**
+```javascript
+// Fetch saved points from your database, then:
+window.MapboxPlugin.loadPath({
+  points: $parameters.SavedPoints
+})
 ```
 
 ## Markers

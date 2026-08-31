@@ -189,6 +189,40 @@ var api = {
 
   setMapStyle: function (options) {
     return call('setMapStyle', [options || {}]);
+  },
+
+  startPathTracking: function (options) {
+    return call('startPathTracking', [options || {}]);
+  },
+
+  stopPathTracking: function () {
+    return call('stopPathTracking', []);
+  },
+
+  loadPath: function (pathData, options) {
+    options = options || {};
+    if (typeof pathData === 'string') {
+      try {
+        pathData = JSON.parse(pathData);
+      } catch (error) {
+        return Promise.reject(new Error(
+          'Failed to parse path data: ' + (error.message || 'Invalid JSON.')
+        ));
+      }
+    }
+    if (!pathData || !Array.isArray(pathData.points)) {
+      return Promise.reject(new Error('Path data must have a "points" array.'));
+    }
+    options.points = pathData.points;
+    return call('loadPath', [options]);
+  },
+
+  clearPaths: function () {
+    return call('clearPaths', []);
+  },
+
+  setPathVisibility: function (options) {
+    return call('setPathVisibility', [options || {}]);
   }
 };
 
