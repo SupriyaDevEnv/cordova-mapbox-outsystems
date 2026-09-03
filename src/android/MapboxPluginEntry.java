@@ -1927,34 +1927,48 @@ public class MapboxPluginEntry extends CordovaPlugin {
         });
     }
 
-    private void setLayerVisibility(JSONObject options, CallbackContext callbackContext) {
-        String layerId = options.optString("layerId", null);
-        boolean visible = options.optBoolean("visible", true);
+    private void setLayerVisibility(
+        JSONObject options,
+        CallbackContext callback
+    ) {
+        final String layerId = options.optString("layerId", "").trim();
+        final boolean visible = options.optBoolean("visible", true);
 
-        if (layerId == null || layerId.isEmpty()) {
-            callbackContext.error("layerId is required");
+        if (layerId.isEmpty()) {
+            callback.error("layerId is required");
             return;
         }
 
-        if (mapView == null) {
-            callbackContext.error("Map is not initialized");
-            return;
-        }
-
-        mapView.getMapboxMap().getStyle(style -> {
-            try {
-                style.setStyleLayerProperty(
-                    layerId,
-                    "visibility",
-                    Value.valueOf(visible ? "visible" : "none")
-                );
-
-                callbackContext.success();
-            } catch (Exception e) {
-                callbackContext.error(
-                    "Failed to change layer visibility: " + e.getMessage()
-                );
+        cordova.getActivity().runOnUiThread(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
             }
+
+            mapView.getMapboxMap().getStyle(style -> {
+                cordova.getActivity().runOnUiThread(() -> {
+                    try {
+                        if (!style.styleLayerExists(layerId)) {
+                            callback.error(
+                                "Layer not found in current style: " + layerId
+                            );
+                            return;
+                        }
+
+                        style.setStyleLayerProperty(
+                            layerId,
+                            "visibility",
+                            Value.valueOf(visible ? "visible" : "none")
+                        );
+
+                        callback.success();
+                    } catch (Exception e) {
+                        callback.error(
+                            "Failed to change layer visibility: " + e.getMessage()
+                        );
+                    }
+                });
+            });
         });
     }
 
