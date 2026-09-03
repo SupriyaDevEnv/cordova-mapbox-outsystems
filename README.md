@@ -18,6 +18,7 @@ It supports inline maps, behind-WebView maps, markers, current-location movement
 - `setCamera(options)`
 - `flyTo(options)`
 - `getCamera()`
+- `getCurrentLocationAccuracy()`
 - `enableUserLocation()`
 - `moveToCurrentLocation(options)`
 - `setUserTrackingEnabled(options)`
@@ -113,6 +114,35 @@ window.MapboxPlugin.enableUserLocation()
 ```
 
 This is different from tracking. The user can still drag the map away after this call.
+
+## Current Location Accuracy
+
+`getCurrentLocationAccuracy()` returns the latest valid location accuracy:
+
+```javascript
+window.MapboxPlugin.getCurrentLocationAccuracy()
+  .then(function (result) {
+    // result.accuracy is the estimated horizontal uncertainty in meters.
+    // result.accuracyLabel is a human-readable accuracy bucket.
+    console.log(result.accuracy, result.accuracyLabel);
+  })
+  .catch($reject);
+```
+
+**Returned value:** `{ accuracy: number, accuracyLabel: string }`
+
+`accuracy` is an estimated radius of uncertainty in **meters**, not a percentage.
+The Android implementation uses the best recent GPS or network location (up to 30
+seconds old). If permission is missing, no recent location is available, or the
+location has no accuracy, it returns `{ accuracy: -1, accuracyLabel: "Unknown" }`.
+
+Labels are assigned as follows:
+
+- `Very accurate`: up to 5 m
+- `Accurate`: over 5 m and up to 15 m
+- `Moderately`: over 15 m and up to 30 m
+- `Low`: over 30 m and up to 100 m
+- `Poor`: over 100 m
 
 ## User Tracking
 

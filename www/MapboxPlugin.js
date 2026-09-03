@@ -171,6 +171,10 @@ var api = {
     return call('setBoundaryVisibility', [options || {}]);
   },
 
+  setLayerVisibility: function (options) {
+    return call('setLayerVisibility', [options || {}]);
+  },
+
   clearBoundaries: function () {
     return call('clearBoundaries', []);
   },

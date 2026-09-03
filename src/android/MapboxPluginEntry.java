@@ -268,6 +268,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
             case "setBoundaryVisibility":
                 setBoundaryVisibility(options, callbackContext);
                 return true;
+            case "setLayerVisibility":
+                setLayerVisibility(options, callbackContext);
+                return true;
             case "clearBoundaries":
                 clearBoundaries(callbackContext);
                 return true;
@@ -1921,6 +1924,53 @@ public class MapboxPluginEntry extends CordovaPlugin {
             boundaryVisible = options.optBoolean("visible", true);
             applyBoundaryVisibility();
             callback.success();
+        });
+    }
+
+    private void setLayerVisibility(JSONObject options, CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
+
+            String layerId = options.optString("layerId", "");
+            boolean visible = options.optBoolean("visible", true);
+
+            if (layerId.isEmpty()) {
+                callback.error("layerId is required.");
+                return;
+            }
+
+            mapView.getMapboxMap().getStyle(style -> {
+                String visibility = visible ? "visible" : "none";
+
+                try {
+                    com.mapbox.common.Expected<String, ?> result =
+                        style.setStyleLayerProperty(
+                            layerId,
+                            "visibility",
+                            Value.valueOf(visibility)
+                        );
+
+                    if (result.isError()) {
+                        callback.error(
+                            "Failed to update layer '" +
+                            layerId + "': " +
+                            result.getError()
+                        );
+                        return;
+                    }
+
+                    callback.success();
+                } catch (Exception e) {
+                    callback.error(
+                        "Failed to update layer '" +
+                        layerId + "': " +
+                        e.getMessage()
+                    );
+                }
+            });
         });
     }
 
