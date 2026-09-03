@@ -1037,6 +1037,119 @@ public class MapboxPluginEntry extends CordovaPlugin {
         moveToCurrentLocationManager = manager;
         moveToCurrentLocationCallback = callback;
 
+        private void startMoveToCurrentLocation(CallbackContext callback) {
+        unregisterMoveToCurrentLocation();
+
+        LocationManager manager = (LocationManager) cordova.getActivity().getSystemService(Context.LOCATION_SERVICE);
+        if (manager == null) {
+            callback.error("Device location manager is not available.");
+            return;
+        }
+
+        moveToCurrentLocationManager = manager;
+        moveToCurrentLocationCallback = callback;
+
+        moveToCurrentLocationListener = new LocationListener() {
+            @Override
+            public void onLocationChanged(Location location) {
+                if (location == null) {
+                    return;
+                }
+
+                currentLocationAccuracy = location.hasAccuracy() ? location.getAccuracy() : -1f;
+                currentLocationAccuracyLabel = getAccuracyLabel(currentLocationAccuracy);
+
+                final double latitude = location.getLatitude();
+                final double longitude = location.getLongitude();
+
+                if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
+                    if (moveToCurrentLocationCallback != null) {
+                        moveToCurrentLocationCallback.error(
+                            "Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180]."
+                        );
+                    }
+                    return;
+                }
+
+                if (moveToCurrentLocationCallback == null) {
+                    return;
+                }
+
+                final CallbackContext pendingCallback = moveToCurrentLocationCallback;
+                final boolean applyZoom = moveToCurrentLocationZoomSet;
+                final double zoom = moveToCurrentLocationZoom;
+
+                moveToCurrentLocationCallback = null;
+
+                cordova.getActivity().runOnUiThread(() -> {
+                    if (mapView != null) {
+                        CameraOptions.Builder cameraBuilder = new CameraOptions.Builder()
+                            .center(Point.fromLngLat(longitude, latitude));
+                        if (applyZoom) {
+                            cameraBuilder.zoom(zoom);
+                        }
+                        mapView.getMapboxMap().setCamera(cameraBuilder.build());
+                    }
+
+                    JSONObject result = new JSONObject();
+                    try {
+                        result.put("latitude", latitude);
+                        result.put("longitude", longitude);
+                        result.put("accuracy", currentLocationAccuracy);
+                        result.put("accuracyLabel", currentLocationAccuracyLabel);
+                        pendingCallback.success(result);
+                    } catch (JSONException e) {
+                        pendingCallback.error(e.getMessage());
+                    }
+                });
+            }
+
+            @Override
+            public void onStatusChanged(String provider, int status, Bundle extras) {
+            }
+
+            @Override
+            public void onProviderEnabled(String provider) {
+            }
+
+            @Override
+            public void onProviderDisabled(String provider) {
+            }
+        };
+
+        try {
+            boolean gpsEnabled = manager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+            boolean networkEnabled = manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+
+            if (gpsEnabled) {
+                manager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    0L,
+                    0.0f,
+                    moveToCurrentLocationListener
+                );
+            }
+
+            if (networkEnabled) {
+                manager.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    0L,
+                    0.0f,
+                    moveToCurrentLocationListener
+                );
+            }
+
+            if (!gpsEnabled && !networkEnabled) {
+                cancelMoveToCurrentLocation();
+                callback.error("Location provider is not enabled.");
+            }
+        } catch (SecurityException e) {
+            cancelMoveToCurrentLocation();
+            callback.error("Location permission is not granted.");
+        }
+    }
+
+
         moveToCurrentLocationListener = new LocationListener() {
             @Override
             public void onLocationChanged(Location location) {
