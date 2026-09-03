@@ -353,11 +353,27 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     .zoom(zoom)
                     .build());
 
-                mapView.getMapboxMap().loadStyle(styleUrl);
+                mapView.getMapboxMap().loadStyle(
+                    styleUrl,
+                    style -> {
+                        cordova.getActivity().runOnUiThread(() -> {
+                            Log.d(
+                                "MapboxPlugin",
+                                "Map style loaded: " + styleUrl
+                            );
 
-                JSONObject result = new JSONObject();
-                result.put("status", "initialized");
-                callback.success(result);
+                            try {
+                                JSONObject result = new JSONObject();
+                                result.put("status", "initialized");
+                                callback.success(result);
+                            } catch (Exception e) {
+                                callback.error(
+                                    "Failed to create initialization result."
+                                );
+                            }
+                        });
+                    }
+                );
             } catch (Throwable e) {
                 callback.error(sanitizeError("Failed to initialize Mapbox map.", e));
             }
@@ -1940,35 +1956,47 @@ public class MapboxPluginEntry extends CordovaPlugin {
         }
 
         cordova.getActivity().runOnUiThread(() -> {
-            if (mapView == null) {
-                callback.error("Map is not initialized.");
-                return;
+            try {
+                if (mapView == null) {
+                    callback.error("Map is not initialized.");
+                    return;
+                }
+
+                if (!mapView.getMapboxMap().isStyleLoaded()) {
+                    callback.error("Map style is not loaded yet.");
+                    return;
+                }
+
+                if (!mapView.getMapboxMap().styleLayerExists(layerId)) {
+                    callback.error(
+                        "Layer not found in current style: " + layerId
+                    );
+                    return;
+                }
+
+                mapView.getMapboxMap().setStyleLayerProperty(
+                    layerId,
+                    "visibility",
+                    Value.valueOf(visible ? "visible" : "none")
+                );
+
+                Log.d(
+                    "MapboxPlugin",
+                    "Layer " + layerId + " visibility = " + visible
+                );
+
+                callback.success();
+            } catch (Throwable e) {
+                Log.e(
+                    "MapboxPlugin",
+                    "setLayerVisibility failed for " + layerId,
+                    e
+                );
+
+                callback.error(
+                    "Failed to change layer visibility: " + e.getMessage()
+                );
             }
-
-            mapView.getMapboxMap().getStyle(style -> {
-                cordova.getActivity().runOnUiThread(() -> {
-                    try {
-                        if (!style.styleLayerExists(layerId)) {
-                            callback.error(
-                                "Layer not found in current style: " + layerId
-                            );
-                            return;
-                        }
-
-                        style.setStyleLayerProperty(
-                            layerId,
-                            "visibility",
-                            Value.valueOf(visible ? "visible" : "none")
-                        );
-
-                        callback.success();
-                    } catch (Exception e) {
-                        callback.error(
-                            "Failed to change layer visibility: " + e.getMessage()
-                        );
-                    }
-                });
-            });
         });
     }
 
