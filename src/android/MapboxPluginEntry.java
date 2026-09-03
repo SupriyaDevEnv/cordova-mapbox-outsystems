@@ -1927,50 +1927,34 @@ public class MapboxPluginEntry extends CordovaPlugin {
         });
     }
 
-    private void setLayerVisibility(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
-            if (mapView == null) {
-                callback.error("Map is not initialized.");
-                return;
+    private void setLayerVisibility(JSONObject options, CallbackContext callbackContext) {
+        String layerId = options.optString("layerId", null);
+        boolean visible = options.optBoolean("visible", true);
+
+        if (layerId == null || layerId.isEmpty()) {
+            callbackContext.error("layerId is required");
+            return;
+        }
+
+        if (mapView == null) {
+            callbackContext.error("Map is not initialized");
+            return;
+        }
+
+        mapView.getMapboxMap().getStyle(style -> {
+            try {
+                style.setStyleLayerProperty(
+                    layerId,
+                    "visibility",
+                    Value.valueOf(visible ? "visible" : "none")
+                );
+
+                callbackContext.success();
+            } catch (Exception e) {
+                callbackContext.error(
+                    "Failed to change layer visibility: " + e.getMessage()
+                );
             }
-
-            String layerId = options.optString("layerId", "");
-            boolean visible = options.optBoolean("visible", true);
-
-            if (layerId.isEmpty()) {
-                callback.error("layerId is required.");
-                return;
-            }
-
-            mapView.getMapboxMap().getStyle(style -> {
-                String visibility = visible ? "visible" : "none";
-
-                try {
-                    com.mapbox.common.Expected<String, ?> result =
-                        style.setStyleLayerProperty(
-                            layerId,
-                            "visibility",
-                            Value.valueOf(visibility)
-                        );
-
-                    if (result.isError()) {
-                        callback.error(
-                            "Failed to update layer '" +
-                            layerId + "': " +
-                            result.getError()
-                        );
-                        return;
-                    }
-
-                    callback.success();
-                } catch (Exception e) {
-                    callback.error(
-                        "Failed to update layer '" +
-                        layerId + "': " +
-                        e.getMessage()
-                    );
-                }
-            });
         });
     }
 
