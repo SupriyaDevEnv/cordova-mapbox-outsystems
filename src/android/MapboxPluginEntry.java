@@ -1149,6 +1149,14 @@ public class MapboxPluginEntry extends CordovaPlugin {
         }
     }
 
+    boolean hasRecentLocation = false;
+
+if (lastKnownLocation != null) {
+    long locationAge =
+        System.currentTimeMillis() - lastKnownLocation.getTime();
+
+    hasRecentLocation = locationAge <= MAX_LOCATION_AGE_MS;
+}
 
         moveToCurrentLocationListener = new LocationListener() {
             @Override
