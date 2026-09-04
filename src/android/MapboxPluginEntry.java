@@ -51,6 +51,7 @@ import com.mapbox.maps.MapboxMap;
 import com.mapbox.maps.OfflineManager;
 import com.mapbox.maps.ScreenCoordinate;
 import com.mapbox.maps.Style;
+import com.mapbox.maps.StyleObjectInfo;
 import com.mapbox.maps.StylePackLoadOptions;
 import com.mapbox.maps.TilesetDescriptorOptions;
 import com.mapbox.maps.extension.style.layers.properties.generated.IconAnchor;
@@ -272,6 +273,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 return true;
             case "setLayerVisibility":
                 setLayerVisibility(options, callbackContext);
+                return true;
+            case "getLayerIds":
+                getLayerIds(callbackContext);
                 return true;
             case "clearBoundaries":
                 clearBoundaries(callbackContext);
@@ -2107,6 +2111,35 @@ if (lastKnownLocation != null) {
             } catch (Throwable e) {
                 callback.error(
                     "Failed to change layer visibility: " +
+                    (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())
+                );
+            }
+        });
+    }
+
+    private void getLayerIds(CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
+
+            Style style = mapView.getMapboxMap().getStyle();
+
+            if (style == null) {
+                callback.error("Style is not loaded yet.");
+                return;
+            }
+
+            try {
+                JSONArray ids = new JSONArray();
+                for (StyleObjectInfo layer : style.getStyleLayers()) {
+                    ids.put(layer.getId());
+                }
+                callback.success(ids);
+            } catch (Throwable e) {
+                callback.error(
+                    "Failed to list layers: " +
                     (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())
                 );
             }
