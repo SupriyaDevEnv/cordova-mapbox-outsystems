@@ -2083,32 +2083,52 @@ if (lastKnownLocation != null) {
             return;
         }
 
-        mapView.post(() -> {
+        final MapView currentMapView = mapView;
+
+        // IMPORTANT:
+        // Post directly to the MapView UI thread.
+        currentMapView.post(() -> {
             try {
-                MapboxMap mapboxMap = mapView.getMapboxMap();
+                MapboxMap mapboxMap = currentMapView.getMapboxMap();
 
+                // getStyle callback is used because the style may still be loading.
                 mapboxMap.getStyle(style -> {
-                    if (!style.styleLayerExists(layerId)) {
-                        callback.error(
-                            "Layer not found in current style: " + layerId
-                        );
-                        return;
-                    }
+                    // Make absolutely sure the actual style operation
+                    // happens on the MapView's UI thread.
+                    currentMapView.post(() -> {
+                        try {
+                            if (!style.styleLayerExists(layerId)) {
+                                callback.error(
+                                    "Layer not found in current style: " + layerId
+                                );
+                                return;
+                            }
 
-                    style.setStyleLayerProperty(
-                        layerId,
-                        "visibility",
-                        Value.valueOf(
-                            visible ? "visible" : "none"
-                        )
-                    );
+                            style.setStyleLayerProperty(
+                                layerId,
+                                "visibility",
+                                Value.valueOf(
+                                    visible ? "visible" : "none"
+                                )
+                            );
 
-                    callback.success();
+                            callback.success();
+                        } catch (Throwable e) {
+                            callback.error(
+                                "Layer visibility failed: " +
+                                (e.getMessage() != null
+                                    ? e.getMessage()
+                                    : e.getClass().getSimpleName())
+                            );
+                        }
+                    });
                 });
-
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 callback.error(
-                    "Failed to change layer visibility: " + e.getMessage()
+                    "Failed to access Mapbox style: " +
+                    (e.getMessage() != null
+                        ? e.getMessage()
+                        : e.getClass().getSimpleName())
                 );
             }
         });
