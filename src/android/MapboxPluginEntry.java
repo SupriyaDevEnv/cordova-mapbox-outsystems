@@ -2427,14 +2427,20 @@ if (lastKnownLocation != null) {
                 return;
             }
 
-            mapView.getMapboxMap().loadStyle(styleUrl);
-
-            JSONObject result = new JSONObject();
-            try {
-                result.put("status", "styleChanged");
-            } catch (JSONException ignored) {
-            }
-            callback.success(result);
+            mapView.getMapboxMap().loadStyle(
+                styleUrl,
+                style -> {
+                    cordova.getActivity().runOnUiThread(() -> {
+                        JSONObject result = new JSONObject();
+                        try {
+                            result.put("status", "styleChanged");
+                            callback.success(result);
+                        } catch (JSONException ignored) {
+                            callback.success();
+                        }
+                    });
+                }
+            );
         });
     }
 
