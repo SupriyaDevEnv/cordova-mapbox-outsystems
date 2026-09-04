@@ -2078,57 +2078,36 @@ if (lastKnownLocation != null) {
             return;
         }
 
-        if (mapView == null) {
-            callback.error("Map is not initialized.");
-            return;
-        }
+        cordova.getActivity().runOnUiThread(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
 
-        final MapView currentMapView = mapView;
+            Style style = mapView.getMapboxMap().getStyle();
 
-        // IMPORTANT:
-        // Post directly to the MapView UI thread.
-        currentMapView.post(() -> {
+            if (style == null) {
+                callback.error("Style is not loaded yet.");
+                return;
+            }
+
             try {
-                MapboxMap mapboxMap = currentMapView.getMapboxMap();
+                if (!style.styleLayerExists(layerId)) {
+                    callback.error("Layer not found in current style: " + layerId);
+                    return;
+                }
 
-                // getStyle callback is used because the style may still be loading.
-                mapboxMap.getStyle(style -> {
-                    // Make absolutely sure the actual style operation
-                    // happens on the MapView's UI thread.
-                    currentMapView.post(() -> {
-                        try {
-                            if (!style.styleLayerExists(layerId)) {
-                                callback.error(
-                                    "Layer not found in current style: " + layerId
-                                );
-                                return;
-                            }
+                style.setStyleLayerProperty(
+                    layerId,
+                    "visibility",
+                    Value.valueOf(visible ? "visible" : "none")
+                );
 
-                            style.setStyleLayerProperty(
-                                layerId,
-                                "visibility",
-                                Value.valueOf(
-                                    visible ? "visible" : "none"
-                                )
-                            );
-
-                            callback.success();
-                        } catch (Throwable e) {
-                            callback.error(
-                                "Layer visibility failed: " +
-                                (e.getMessage() != null
-                                    ? e.getMessage()
-                                    : e.getClass().getSimpleName())
-                            );
-                        }
-                    });
-                });
+                callback.success();
             } catch (Throwable e) {
                 callback.error(
-                    "Failed to access Mapbox style: " +
-                    (e.getMessage() != null
-                        ? e.getMessage()
-                        : e.getClass().getSimpleName())
+                    "Failed to change layer visibility: " +
+                    (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())
                 );
             }
         });
@@ -2449,6 +2428,7 @@ if (lastKnownLocation != null) {
             activeStylePackDownload.cancel();
             activeStylePackDownload = null;
         }
+
         if (activeTileRegionDownload != null) {
             activeTileRegionDownload.cancel();
             activeTileRegionDownload = null;
