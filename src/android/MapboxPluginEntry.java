@@ -47,12 +47,14 @@ import com.mapbox.geojson.Polygon;
 import com.mapbox.maps.CameraOptions;
 import com.mapbox.maps.GlyphsRasterizationMode;
 import com.mapbox.maps.MapView;
+import com.mapbox.maps.MapboxMap;
 import com.mapbox.maps.OfflineManager;
 import com.mapbox.maps.ScreenCoordinate;
 import com.mapbox.maps.Style;
 import com.mapbox.maps.StylePackLoadOptions;
 import com.mapbox.maps.TilesetDescriptorOptions;
 import com.mapbox.maps.extension.style.layers.properties.generated.IconAnchor;
+import com.mapbox.maps.extension.style.layers.properties.PropertyValue;
 import com.mapbox.maps.plugin.PuckBearing;
 import com.mapbox.maps.plugin.Plugin;
 import com.mapbox.maps.plugin.annotation.AnnotationPlugin;
@@ -1962,37 +1964,29 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     return;
                 }
 
-                if (!mapView.getMapboxMap().isStyleLoaded()) {
-                    callback.error("Map style is not loaded yet.");
+                MapboxMap mapboxMap = mapView.getMapboxMap();
+                Style style = mapboxMap.getStyle();
+
+                if (style == null) {
+                    callback.error("Map style is not loaded.");
                     return;
                 }
 
-                if (!mapView.getMapboxMap().styleLayerExists(layerId)) {
+                if (!style.styleLayerExists(layerId)) {
                     callback.error(
                         "Layer not found in current style: " + layerId
                     );
                     return;
                 }
 
-                mapView.getMapboxMap().setStyleLayerProperty(
+                style.setStyleLayerProperty(
                     layerId,
                     "visibility",
                     Value.valueOf(visible ? "visible" : "none")
                 );
 
-                Log.d(
-                    "MapboxPlugin",
-                    "Layer " + layerId + " visibility = " + visible
-                );
-
                 callback.success();
-            } catch (Throwable e) {
-                Log.e(
-                    "MapboxPlugin",
-                    "setLayerVisibility failed for " + layerId,
-                    e
-                );
-
+            } catch (Exception e) {
                 callback.error(
                     "Failed to change layer visibility: " + e.getMessage()
                 );
