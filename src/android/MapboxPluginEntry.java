@@ -2078,35 +2078,34 @@ if (lastKnownLocation != null) {
             return;
         }
 
-        cordova.getActivity().runOnUiThread(() -> {
+        if (mapView == null) {
+            callback.error("Map is not initialized.");
+            return;
+        }
+
+        mapView.post(() -> {
             try {
-                if (mapView == null) {
-                    callback.error("Map is not initialized.");
-                    return;
-                }
-
                 MapboxMap mapboxMap = mapView.getMapboxMap();
-                Style style = mapboxMap.getStyle();
 
-                if (style == null) {
-                    callback.error("Map style is not loaded.");
-                    return;
-                }
+                mapboxMap.getStyle(style -> {
+                    if (!style.styleLayerExists(layerId)) {
+                        callback.error(
+                            "Layer not found in current style: " + layerId
+                        );
+                        return;
+                    }
 
-                if (!style.styleLayerExists(layerId)) {
-                    callback.error(
-                        "Layer not found in current style: " + layerId
+                    style.setStyleLayerProperty(
+                        layerId,
+                        "visibility",
+                        Value.valueOf(
+                            visible ? "visible" : "none"
+                        )
                     );
-                    return;
-                }
 
-                style.setStyleLayerProperty(
-                    layerId,
-                    "visibility",
-                    Value.valueOf(visible ? "visible" : "none")
-                );
+                    callback.success();
+                });
 
-                callback.success();
             } catch (Exception e) {
                 callback.error(
                     "Failed to change layer visibility: " + e.getMessage()
