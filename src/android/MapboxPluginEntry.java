@@ -2214,7 +2214,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
         }
 
         @Override
-        public void unregisterLocationConsumer(
+        public void unRegisterLocationConsumer(
             com.mapbox.maps.plugin.locationcomponent.LocationConsumer consumer
         ) {
             this.locationConsumer = null;
