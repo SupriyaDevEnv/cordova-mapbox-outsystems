@@ -111,17 +111,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private LocationListener userTrackingListener;
     private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
-<<<<<<< HEAD
-
-    private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
-    private static final float MAX_STATIONARY_JITTER_METERS = 3.0f;
-    private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
-    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
-
-=======
     private Point smoothedTrackingPoint = null;
     private SmoothedLocationProvider smoothedLocationProvider;
->>>>>>> bluedotdirection
     private CallbackContext moveToCurrentLocationCallback = null;
     private LocationListener moveToCurrentLocationListener = null;
     private LocationManager moveToCurrentLocationManager = null;
