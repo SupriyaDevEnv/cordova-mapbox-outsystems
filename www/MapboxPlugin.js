@@ -123,6 +123,16 @@ var api = {
     exec(callback, errorCallback || function () {}, SERVICE, 'registerTrackingStatusCallback', []);
   },
 
+  onLocationAccuracyChanged: function (callback, errorCallback) {
+    exec(
+      callback,
+      errorCallback || function () {},
+      SERVICE,
+      'registerLocationAccuracyCallback',
+      []
+    );
+  },
+
   addMarker: function (options) {
     return call('addMarker', [options || {}]);
   },

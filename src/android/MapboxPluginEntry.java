@@ -150,6 +150,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private boolean isDeviceHeadingEnabled = false;
     private boolean isHeadingFollowModeEnabled = false;
     private CallbackContext trackingStatusCallback;
+    private CallbackContext locationAccuracyCallback;
+    private long lastLocationAccuracyUpdateMs = 0L;
+    private static final long LOCATION_ACCURACY_CALLBACK_INTERVAL_MS = 500L;
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) {
@@ -246,6 +249,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 return true;
             case "registerTrackingStatusCallback":
                 registerTrackingStatusCallback(callbackContext);
+                return true;
+            case "registerLocationAccuracyCallback":
+                registerLocationAccuracyCallback(callbackContext);
                 return true;
             case "getCamera":
                 getCamera(callbackContext);
@@ -846,7 +852,13 @@ public class MapboxPluginEntry extends CordovaPlugin {
         userTrackingListener = new LocationListener() {
             @Override
             public void onLocationChanged(Location location) {
-                if (mapView == null || location == null) {
+                if (location == null) {
+                    return;
+                }
+
+                sendLocationAccuracyUpdate(location);
+
+                if (mapView == null) {
                     return;
                 }
 
@@ -1540,6 +1552,50 @@ public class MapboxPluginEntry extends CordovaPlugin {
         result.setKeepCallback(true);
         callback.sendPluginResult(result);
         fireTrackingStatusChanged();
+    }
+
+    private void registerLocationAccuracyCallback(CallbackContext callback) {
+        locationAccuracyCallback = callback;
+        lastLocationAccuracyUpdateMs = 0L;
+
+        PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
+        result.setKeepCallback(true);
+        callback.sendPluginResult(result);
+    }
+
+    private void sendLocationAccuracyUpdate(Location location) {
+        if (locationAccuracyCallback == null || location == null) {
+            return;
+        }
+
+        if (!location.hasAccuracy()) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+
+        if (now - lastLocationAccuracyUpdateMs
+                < LOCATION_ACCURACY_CALLBACK_INTERVAL_MS) {
+            return;
+        }
+
+        lastLocationAccuracyUpdateMs = now;
+
+        int accuracy = Math.round(location.getAccuracy());
+
+        try {
+            JSONObject payload = new JSONObject();
+
+            payload.put("type", "locationAccuracy");
+            payload.put("accuracy", accuracy);
+            payload.put("latitude", location.getLatitude());
+            payload.put("longitude", location.getLongitude());
+            payload.put("timestamp", now);
+
+            sendKeepCallback(locationAccuracyCallback, payload);
+
+        } catch (Exception ignored) {
+        }
     }
 
     private void fireTrackingStatusChanged() {
@@ -2381,6 +2437,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
         markerClickCallback = null;
         offlineDownloadProgressCallback = null;
         trackingStatusCallback = null;
+        locationAccuracyCallback = null;
+        lastLocationAccuracyUpdateMs = 0L;
         cancelCurrentDownload();
         isOfflineDownloading = false;
         waypointSelectionEnabled = false;
