@@ -2202,15 +2202,33 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private static class SmoothedLocationProvider
-        extends com.mapbox.common.location.BaseLocationProvider {
+        implements com.mapbox.maps.plugin.locationcomponent.LocationProvider {
+
+        private com.mapbox.maps.plugin.locationcomponent.LocationConsumer locationConsumer;
+
+        @Override
+        public void registerLocationConsumer(
+            com.mapbox.maps.plugin.locationcomponent.LocationConsumer consumer
+        ) {
+            this.locationConsumer = consumer;
+        }
+
+        @Override
+        public void unregisterLocationConsumer(
+            com.mapbox.maps.plugin.locationcomponent.LocationConsumer consumer
+        ) {
+            this.locationConsumer = null;
+        }
 
         public void updateLocation(Location androidLocation) {
-            com.mapbox.common.location.Location mapboxLocation =
-                new com.mapbox.common.location.Location(
-                    (float) androidLocation.getLatitude(),
-                    (float) androidLocation.getLongitude()
+            if (locationConsumer != null) {
+                locationConsumer.onLocationUpdated(
+                    new com.mapbox.common.geometry.GeoPoint(
+                        androidLocation.getLatitude(),
+                        androidLocation.getLongitude()
+                    )
                 );
-            notifyLocationUpdate(mapboxLocation);
+            }
         }
     }
 
