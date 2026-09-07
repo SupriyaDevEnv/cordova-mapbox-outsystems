@@ -2223,9 +2223,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
         public void updateLocation(Location androidLocation) {
             if (locationConsumer != null) {
                 locationConsumer.onLocationUpdated(
-                    new com.mapbox.common.geometry.GeoPoint(
-                        androidLocation.getLatitude(),
-                        androidLocation.getLongitude()
+                    Point.fromLngLat(
+                        androidLocation.getLongitude(),
+                        androidLocation.getLatitude()
                     )
                 );
             }
