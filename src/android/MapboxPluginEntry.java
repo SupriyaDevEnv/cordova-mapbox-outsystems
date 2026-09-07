@@ -2223,10 +2223,13 @@ public class MapboxPluginEntry extends CordovaPlugin {
         public void updateLocation(Location androidLocation) {
             if (locationConsumer != null) {
                 locationConsumer.onLocationUpdated(
-                    Point.fromLngLat(
-                        androidLocation.getLongitude(),
-                        androidLocation.getLatitude()
-                    )
+                    new Point[]{
+                        Point.fromLngLat(
+                            androidLocation.getLongitude(),
+                            androidLocation.getLatitude()
+                        )
+                    },
+                    null
                 );
             }
         }
