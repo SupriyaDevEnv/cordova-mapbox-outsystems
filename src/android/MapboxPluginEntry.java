@@ -648,8 +648,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         : "Failed to enable user location"
                 );
             }
-<<<<<<< HEAD
-=======
 
             boolean hasFineLocation = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION);
             boolean hasCoarseLocation = hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
@@ -681,7 +679,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
             fireTrackingStatusChanged();
 
             callback.success();
->>>>>>> bluedotdirection
         });
     }
 
@@ -909,24 +906,14 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
                 long now = System.currentTimeMillis();
 
-<<<<<<< HEAD
-                // 1. Reject poor accuracy locations
-                if (location.hasAccuracy()
-                        && location.getAccuracy()
-=======
                 // 1. Reject readings without accuracy data or poor accuracy
                 if (!location.hasAccuracy()
                         || location.getAccuracy()
->>>>>>> bluedotdirection
                         > MAX_ACCEPTABLE_ACCURACY_METERS) {
                     return;
                 }
 
-<<<<<<< HEAD
-                // 2. Prevent excessive camera updates
-=======
                 // 2. Rate limit camera updates
->>>>>>> bluedotdirection
                 if (now - lastUserTrackingUpdateMs
                         < MIN_TRACKING_CAMERA_INTERVAL_MS) {
                     return;
@@ -943,10 +930,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
                 // 4. Reject GPS drift and unrealistic jumps
                 if (lastAcceptedTrackingLocation != null) {
-<<<<<<< HEAD
-                    float distance =
-                        lastAcceptedTrackingLocation.distanceTo(location);
-=======
                     double distance = calculateDistanceMeters(
                         lastAcceptedTrackingLocation.getLatitude(),
                         lastAcceptedTrackingLocation.getLongitude(),
@@ -954,7 +937,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         longitude
                     );
 
->>>>>>> bluedotdirection
                     long timeDifference =
                         location.getTime()
                         - lastAcceptedTrackingLocation.getTime();
@@ -965,15 +947,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     }
 
                     // Reject unrealistic jumps
-<<<<<<< HEAD
-                    if (timeDifference > 0) {
-                        float speed =
-                            distance / (timeDifference / 1000.0f);
-=======
                     if (Math.abs(timeDifference) > 0) {
                         float speed = (float) (distance
                             / (Math.abs(timeDifference) / 1000.0));
->>>>>>> bluedotdirection
                         if (speed > MAX_REASONABLE_SPEED_MPS) {
                             return;
                         }
@@ -981,16 +957,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 }
 
                 // Accept this location
-<<<<<<< HEAD
-                lastAcceptedTrackingLocation =
-                    new Location(location);
-                lastUserTrackingUpdateMs = now;
-
-                final Point cameraPoint =
-                    Point.fromLngLat(longitude, latitude);
-
-                // Update the camera for the accepted location.
-=======
                 lastAcceptedTrackingLocation = new Location(location);
                 lastUserTrackingUpdateMs = now;
 
@@ -1052,21 +1018,17 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 }
 
                 // 7. Update Mapbox puck and camera
->>>>>>> bluedotdirection
                 cordova.getActivity().runOnUiThread(() -> {
                     if (mapView == null) {
                         return;
                     }
 
-<<<<<<< HEAD
-=======
                     if (smoothedLocationProvider != null) {
                         smoothedLocationProvider.updateLocation(
                             filteredLocation
                         );
                     }
 
->>>>>>> bluedotdirection
                     CameraAnimationsPlugin cameraAnimations =
                         mapView.getPlugin(
                             Plugin.MAPBOX_CAMERA_PLUGIN_ID
@@ -1080,19 +1042,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         cameraAnimations.easeTo(
                             cameraOptions,
                             new MapAnimationOptions.Builder()
-<<<<<<< HEAD
-                                .duration(800L)
-=======
                                 .duration(500L)
->>>>>>> bluedotdirection
                                 .build(),
                             null
                         );
                     } else {
-<<<<<<< HEAD
-                        // Fallback if animation plugin is unavailable
-=======
->>>>>>> bluedotdirection
                         mapView.getMapboxMap()
                             .setCamera(cameraOptions);
                     }
@@ -1169,13 +1123,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
         userTrackingListener = null;
         lastUserTrackingUpdateMs = 0L;
-<<<<<<< HEAD
-
-        lastAcceptedTrackingLocation = null;
-=======
         lastAcceptedTrackingLocation = null;
         smoothedTrackingPoint = null;
->>>>>>> bluedotdirection
         isUserTrackingEnabled = false;
         fireTrackingStatusChanged();
     }
