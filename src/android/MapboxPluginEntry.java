@@ -616,46 +616,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private void enableUserLocation(CallbackContext callback) {
         cordova.getActivity().runOnUiThread(() -> {
-            try {
-                if (mapView == null) {
-                    callback.error("Map is not initialized.");
-                    return;
-                }
-
-                if (!hasLocationPermission()) {
-                    callback.error("Location permission is not granted.");
-                    return;
-                }
-
-                LocationComponentPlugin locationPlugin =
-                    mapView.getPlugin(
-                        Plugin.MAPBOX_LOCATION_COMPONENT_PLUGIN_ID
-                    );
-
-                if (locationPlugin == null) {
-                    callback.error("Location plugin is not available.");
-                    return;
-                }
-
-                locationPlugin.setPuckBearing(PuckBearing.HEADING);
-                locationPlugin.setEnabled(true);
-
-                callback.success("User location enabled");
-            } catch (Exception e) {
-                callback.error(
-                    e.getMessage() != null
-                        ? e.getMessage()
-                        : "Failed to enable user location"
-                );
-            }
-
-            boolean hasFineLocation = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION);
-            boolean hasCoarseLocation = hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
-
-            if (!hasFineLocation && !hasCoarseLocation) {
-                callback.error("Location permission is not granted.");
-                return;
-            }
+            // Old block removed - was causing duplicate callback.success()
+            // and double initialization of LocationComponentPlugin
 
             LocationComponentPlugin location =
                 mapView.getPlugin(Plugin.MAPBOX_LOCATION_COMPONENT_PLUGIN_ID);
@@ -665,19 +627,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 return;
             }
 
-            if (smoothedLocationProvider == null) {
-                smoothedLocationProvider =
-                    new SmoothedLocationProvider();
-            }
-
-            //location.setLocationProvider(smoothedLocationProvider);
             location.setPuckBearing(PuckBearing.HEADING);
-            //location.setPuckBearingEnabled(true);
             location.setEnabled(true);
 
             isUserLocationEnabled = true;
             fireTrackingStatusChanged();
-
             callback.success();
         });
     }
