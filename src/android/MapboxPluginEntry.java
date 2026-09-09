@@ -670,9 +670,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     new SmoothedLocationProvider();
             }
 
-            location.setLocationProvider(smoothedLocationProvider);
+            //location.setLocationProvider(smoothedLocationProvider);
             location.setPuckBearing(PuckBearing.HEADING);
-            location.setPuckBearingEnabled(true);
+            //location.setPuckBearingEnabled(true);
             location.setEnabled(true);
 
             isUserLocationEnabled = true;
