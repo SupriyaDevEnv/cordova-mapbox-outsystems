@@ -622,6 +622,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
     callback.error("Map is not initialized.");
     return;
             }
+            if (!hasLocationPermission()) {
+    callback.error("Location permission is not granted.");
+    return;
+}
 
             LocationComponentPlugin location =
                 mapView.getPlugin(Plugin.MAPBOX_LOCATION_COMPONENT_PLUGIN_ID);
