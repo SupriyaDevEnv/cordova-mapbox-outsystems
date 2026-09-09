@@ -133,6 +133,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private final List<Point> pathPoints = new ArrayList<>();
     private boolean isPathTrackingActive = false;
     private long pathTrackingStartTimeMs = 0L;
+    private boolean isPathVisible = true;
+    private String pathLineColor = "#FF0000";
+    private float pathLineWidth = 3.0f;
+    private float pathLineOpacity = 1.0f;
     private CallbackContext waypointSelectedCallback;
     private CallbackContext markerClickCallback;
     private CallbackContext offlineDownloadProgressCallback;
@@ -2096,12 +2100,16 @@ public class MapboxPluginEntry extends CordovaPlugin {
             pathAnnotation = null;
         }
 
+        if (!isPathVisible) {
+            return;
+        }
+
         LineString lineString = LineString.fromLngLats(pathPoints);
         PolylineAnnotationOptions options = new PolylineAnnotationOptions()
             .withGeometry(lineString)
-            .withLineColor("#FF0000")
-            .withLineWidth(3.0)
-            .withLineOpacity(1.0);
+            .withLineColor(pathLineColor)
+            .withLineWidth(pathLineWidth)
+            .withLineOpacity(pathLineOpacity);
 
         pathAnnotation = lineAnnotationManager.create(options);
     }
@@ -2119,9 +2127,14 @@ public class MapboxPluginEntry extends CordovaPlugin {
             }
 
             isPathTrackingActive = true;
+            isPathVisible = true;
             pathTrackingStartTimeMs = System.currentTimeMillis();
             pathPoints.clear();
             pathAnnotation = null;
+
+            pathLineColor = options.optString("lineColor", "#FF0000");
+            pathLineWidth = (float) options.optDouble("lineWidth", 3.0);
+            pathLineOpacity = (float) options.optDouble("lineOpacity", 1.0);
 
             String trackCamera = options.optString("trackCamera", "true");
             if ("true".equals(trackCamera)) {
@@ -2202,6 +2215,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
             double lineWidth = options.optDouble("lineWidth", 3.0);
             double lineOpacity = options.optDouble("lineOpacity", 1.0);
 
+            pathLineColor = lineColor;
+            pathLineWidth = (float) lineWidth;
+            pathLineOpacity = (float) lineOpacity;
+            isPathVisible = true;
+
             pathPoints.clear();
             for (int i = 0; i < pointsArray.length(); i++) {
                 JSONObject pointObj = pointsArray.optJSONObject(i);
@@ -2269,22 +2287,22 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
             boolean visible = options.optBoolean("visible", true);
 
-            if (lineAnnotationManager == null || pathAnnotation == null) {
+            if (pathPoints.isEmpty()) {
                 callback.error("No path is loaded. Use loadPath or startPathTracking first.");
                 return;
             }
 
+            isPathVisible = visible;
+
             if (visible) {
-                lineAnnotationManager.create(
-                    new PolylineAnnotationOptions()
-                        .withGeometry(pathAnnotation.getGeometry())
-                        .withLineColor(pathAnnotation.getLineColor())
-                        .withLineWidth(pathAnnotation.getLineWidth())
-                        .withLineOpacity(pathAnnotation.getLineOpacity())
-                );
+                if (pathAnnotation == null) {
+                    updatePathAnnotation();
+                }
             } else {
-                lineAnnotationManager.delete(pathAnnotation);
-                pathAnnotation = null;
+                if (pathAnnotation != null) {
+                    lineAnnotationManager.delete(pathAnnotation);
+                    pathAnnotation = null;
+                }
             }
 
             callback.success();
@@ -2536,6 +2554,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
         pathPoints.clear();
         isPathTrackingActive = false;
         pathTrackingStartTimeMs = 0L;
+        isPathVisible = true;
+        pathLineColor = "#FF0000";
+        pathLineWidth = 3.0f;
+        pathLineOpacity = 1.0f;
         markerRecordIds.clear();
         markerAnnotationsByRecordId.clear();
         markerPointsByRecordId.clear();

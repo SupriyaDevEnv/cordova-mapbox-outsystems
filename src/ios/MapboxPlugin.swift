@@ -17,6 +17,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var pathPoints: [CLLocationCoordinate2D] = []
     private var isPathTrackingActive = false
     private var pathTrackingStartTime: TimeInterval = 0
+    private var isPathVisible = true
+    private var pathLineColor: String = "#FF0000"
+    private var pathLineWidth: Double = 3.0
+    private var pathLineOpacity: Double = 1.0
     private var waypointSelectedCallbackId: String?
     private var markerClickCallbackId: String?
     private var offlineDownloadProgressCallbackId: String?
@@ -667,15 +671,17 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private func updatePathAnnotation() {
         guard pathPoints.count >= 2, ensureLineAnnotationManager() else { return }
 
-        if let existing = pathAnnotation {
-            lineAnnotationManager?.annotations.removeAll { $0 === existing }
+        if pathAnnotation != nil {
+            lineAnnotationManager?.annotations.removeAll()
             pathAnnotation = nil
         }
 
+        guard isPathVisible else { return }
+
         var annotation = PolylineAnnotation(lineCoordinates: pathPoints)
-        annotation.lineColor = StyleColor(.red)
-        annotation.lineWidth = 3.0
-        annotation.lineOpacity = 1.0
+        annotation.lineColor = StyleColor(colorOption(pathLineColor, defaultColor: .red))
+        annotation.lineWidth = pathLineWidth
+        annotation.lineOpacity = pathLineOpacity
         pathAnnotation = annotation
         lineAnnotationManager?.annotations.append(annotation)
     }
@@ -695,9 +701,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             self.isPathTrackingActive = true
+            self.isPathVisible = true
             self.pathTrackingStartTime = Date().timeIntervalSince1970
             self.pathPoints.removeAll()
             self.pathAnnotation = nil
+
+            self.pathLineColor = options["lineColor"] as? String ?? "#FF0000"
+            self.pathLineWidth = options["lineWidth"] as? Double ?? 3.0
+            self.pathLineOpacity = options["lineOpacity"] as? Double ?? 1.0
 
             let trackCamera = options["trackCamera"] as? String ?? "true"
             if trackCamera == "true" {
@@ -758,6 +769,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let lineWidth = options["lineWidth"] as? Double ?? 3.0
             let lineOpacity = options["lineOpacity"] as? Double ?? 1.0
 
+            self.pathLineColor = lineColorHex
+            self.pathLineWidth = lineWidth
+            self.pathLineOpacity = lineOpacity
+            self.isPathVisible = true
+
             self.pathPoints.removeAll()
             for pointDict in pointsArray {
                 let lat = self.doubleOption(pointDict["lat"] ?? pointDict["latitude"], defaultValue: Double.nan)
@@ -776,15 +792,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
-            if let existing = self.pathAnnotation {
-                self.lineAnnotationManager?.annotations.removeAll { $0 === existing }
+            if self.pathAnnotation != nil {
+                self.lineAnnotationManager?.annotations.removeAll()
                 self.pathAnnotation = nil
             }
 
             var annotation = PolylineAnnotation(lineCoordinates: self.pathPoints)
-            annotation.lineColor = StyleColor(self.colorOption(lineColorHex, defaultColor: .red))
-            annotation.lineWidth = lineWidth
-            annotation.lineOpacity = lineOpacity
+            annotation.lineColor = StyleColor(self.colorOption(self.pathLineColor, defaultColor: .red))
+            annotation.lineWidth = self.pathLineWidth
+            annotation.lineOpacity = self.pathLineOpacity
             self.pathAnnotation = annotation
             self.lineAnnotationManager?.annotations.append(annotation)
 
@@ -798,8 +814,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     @objc(clearPaths:)
     func clearPaths(command: CDVInvokedUrlCommand) {
         DispatchQueue.main.async {
-            if let existing = self.pathAnnotation {
-                self.lineAnnotationManager?.annotations.removeAll { $0 === existing }
+            if self.pathAnnotation != nil {
+                self.lineAnnotationManager?.annotations.removeAll()
                 self.pathAnnotation = nil
             }
             self.pathPoints.removeAll()
@@ -818,21 +834,22 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             let visible = options["visible"] as? Bool ?? true
 
-            guard let manager = self.lineAnnotationManager, let existing = self.pathAnnotation else {
+            guard !self.pathPoints.isEmpty else {
                 self.sendError("No path is loaded. Use loadPath or startPathTracking first.", command)
                 return
             }
 
+            self.isPathVisible = visible
+
             if visible {
-                var annotation = PolylineAnnotation(lineCoordinates: self.pathPoints)
-                annotation.lineColor = existing.lineColor
-                annotation.lineWidth = existing.lineWidth
-                annotation.lineOpacity = existing.lineOpacity
-                self.pathAnnotation = annotation
-                manager.annotations.append(annotation)
+                if self.pathAnnotation == nil {
+                    self.updatePathAnnotation()
+                }
             } else {
-                manager.annotations.removeAll { $0 === existing }
-                self.pathAnnotation = nil
+                if self.pathAnnotation != nil {
+                    self.lineAnnotationManager?.annotations.removeAll()
+                    self.pathAnnotation = nil
+                }
             }
 
             self.sendSuccess(command)
@@ -1447,6 +1464,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         pathPoints.removeAll()
         isPathTrackingActive = false
         pathTrackingStartTime = 0
+        isPathVisible = true
+        pathLineColor = "#FF0000"
+        pathLineWidth = 3.0
+        pathLineOpacity = 1.0
         waypointSelectedCallbackId = nil
         markerClickCallbackId = nil
         offlineDownloadProgressCallbackId = nil
@@ -1492,6 +1513,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         pathPoints.removeAll()
         pathAnnotation = nil
         pathTrackingStartTime = 0
+        isPathVisible = true
+        pathLineColor = "#FF0000"
+        pathLineWidth = 3.0
+        pathLineOpacity = 1.0
     }
 
     private func getAccessToken() -> String {
