@@ -12,8 +12,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var markers: [String: PointAnnotation] = [:]
     private var boundaryAnnotationManager: PolygonAnnotationManager?
     private var boundaryAnnotations: [PolygonAnnotation] = []
-    private var lineAnnotationManager: LineAnnotationManager?
-    private var pathAnnotation: LineAnnotation?
+    private var lineAnnotationManager: PolylineAnnotationManager?
+    private var pathAnnotation: PolylineAnnotation?
     private var pathPoints: [CLLocationCoordinate2D] = []
     private var isPathTrackingActive = false
     private var pathTrackingStartTime: TimeInterval = 0
@@ -660,7 +660,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private func ensureLineAnnotationManager() -> Bool {
         guard let mapView = mapView else { return false }
         if lineAnnotationManager != nil { return true }
-        lineAnnotationManager = mapView.annotations.makeLineAnnotationManager()
+        lineAnnotationManager = mapView.annotations.makePolylineAnnotationManager()
         return lineAnnotationManager != nil
     }
 
@@ -672,8 +672,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             pathAnnotation = nil
         }
 
-        let line = Line(from: pathPoints)
-        var annotation = LineAnnotation(line: line)
+        var annotation = PolylineAnnotation(lineCoordinates: pathPoints)
         annotation.lineColor = StyleColor(.red)
         annotation.lineWidth = 3.0
         annotation.lineOpacity = 1.0
@@ -773,7 +772,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             guard self.ensureLineAnnotationManager() else {
-                self.sendError("Line annotation manager is not available.", command)
+                self.sendError("Polyline annotation manager is not available.", command)
                 return
             }
 
@@ -782,8 +781,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 self.pathAnnotation = nil
             }
 
-            let line = Line(from: self.pathPoints)
-            var annotation = LineAnnotation(line: line)
+            var annotation = PolylineAnnotation(lineCoordinates: self.pathPoints)
             annotation.lineColor = StyleColor(self.colorOption(lineColorHex, defaultColor: .red))
             annotation.lineWidth = lineWidth
             annotation.lineOpacity = lineOpacity
@@ -826,8 +824,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             if visible {
-                let line = Line(from: self.pathPoints)
-                var annotation = LineAnnotation(line: line)
+                var annotation = PolylineAnnotation(lineCoordinates: self.pathPoints)
                 annotation.lineColor = existing.lineColor
                 annotation.lineWidth = existing.lineWidth
                 annotation.lineOpacity = existing.lineOpacity

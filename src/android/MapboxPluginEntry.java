@@ -65,10 +65,10 @@ import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotation;
 import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotationManager;
 import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotationManagerKt;
 import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotationOptions;
-import com.mapbox.maps.plugin.annotation.generated.LineAnnotation;
-import com.mapbox.maps.plugin.annotation.generated.LineAnnotationManager;
-import com.mapbox.maps.plugin.annotation.generated.LineAnnotationManagerKt;
-import com.mapbox.maps.plugin.annotation.generated.LineAnnotationOptions;
+import com.mapbox.maps.plugin.annotation.generated.PolylineAnnotation;
+import com.mapbox.maps.plugin.annotation.generated.PolylineAnnotationManager;
+import com.mapbox.maps.plugin.annotation.generated.PolylineAnnotationManagerKt;
+import com.mapbox.maps.plugin.annotation.generated.PolylineAnnotationOptions;
 import com.mapbox.maps.plugin.animation.CameraAnimationsPlugin;
 import com.mapbox.maps.plugin.animation.MapAnimationOptions;
 import com.mapbox.maps.plugin.gestures.GesturesPlugin;
@@ -128,8 +128,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private final Map<String, PointAnnotation> markerAnnotationsByRecordId = new HashMap<>();
     private final Map<String, Point> markerPointsByRecordId = new HashMap<>();
 
-    private LineAnnotationManager lineAnnotationManager;
-    private LineAnnotation pathAnnotation;
+    private PolylineAnnotationManager lineAnnotationManager;
+    private PolylineAnnotation pathAnnotation;
     private final List<Point> pathPoints = new ArrayList<>();
     private boolean isPathTrackingActive = false;
     private long pathTrackingStartTimeMs = 0L;
@@ -2078,7 +2078,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             return false;
         }
 
-        lineAnnotationManager = LineAnnotationManagerKt.createLineAnnotationManager(annotationPlugin, null);
+        lineAnnotationManager = PolylineAnnotationManagerKt.createPolylineAnnotationManager(annotationPlugin, null);
         return true;
     }
 
@@ -2097,7 +2097,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
         }
 
         LineString lineString = LineString.fromLngLats(pathPoints);
-        LineAnnotationOptions options = new LineAnnotationOptions()
+        PolylineAnnotationOptions options = new PolylineAnnotationOptions()
             .withGeometry(lineString)
             .withLineColor("#FF0000")
             .withLineWidth(3.0)
@@ -2220,7 +2220,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             }
 
             if (!ensureLineAnnotationManager()) {
-                callback.error("Line annotation manager is not available.");
+                callback.error("Polyline annotation manager is not available.");
                 return;
             }
 
@@ -2230,7 +2230,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             }
 
             LineString lineString = LineString.fromLngLats(pathPoints);
-            LineAnnotationOptions annOptions = new LineAnnotationOptions()
+            PolylineAnnotationOptions annOptions = new PolylineAnnotationOptions()
                 .withGeometry(lineString)
                 .withLineColor(lineColor)
                 .withLineWidth((float) lineWidth)
@@ -2276,7 +2276,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
             if (visible) {
                 lineAnnotationManager.create(
-                    new LineAnnotationOptions()
+                    new PolylineAnnotationOptions()
                         .withGeometry(pathAnnotation.getGeometry())
                         .withLineColor(pathAnnotation.getLineColor())
                         .withLineWidth(pathAnnotation.getLineWidth())
