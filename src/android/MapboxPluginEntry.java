@@ -618,6 +618,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
         cordova.getActivity().runOnUiThread(() -> {
             // Old block removed - was causing duplicate callback.success()
             // and double initialization of LocationComponentPlugin
+            if (mapView == null) {
+    callback.error("Map is not initialized.");
+    return;
+            }
 
             LocationComponentPlugin location =
                 mapView.getPlugin(Plugin.MAPBOX_LOCATION_COMPONENT_PLUGIN_ID);
