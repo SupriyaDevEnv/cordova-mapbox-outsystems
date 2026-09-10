@@ -18,11 +18,6 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
     private var pendingLocationActions: [PendingLocationAction] = []
     private var locationPermissionRequestInFlight = false
 
-    override func pluginInitialize() {
-        super.pluginInitialize()
-        permissionLocationManager.delegate = self
-    }
-
     @objc(enableUserLocation:)
     override func enableUserLocation(command: CDVInvokedUrlCommand) {
         runWhenLocationAuthorized(.enableUserLocation(command))
@@ -79,11 +74,13 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
         }
         pendingLocationActions.removeAll()
         locationPermissionRequestInFlight = false
+        permissionLocationManager.delegate = nil
         super.onReset()
     }
 
     private func runWhenLocationAuthorized(_ action: PendingLocationAction) {
         DispatchQueue.main.async {
+            self.permissionLocationManager.delegate = self
             let status = self.permissionLocationManager.authorizationStatus
 
             if status == .authorizedWhenInUse || status == .authorizedAlways {
