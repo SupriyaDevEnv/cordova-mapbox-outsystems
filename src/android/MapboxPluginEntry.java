@@ -98,7 +98,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final float LOW_METERS = 100f;
 
     private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
-    private static final float MAX_STATIONARY_JITTER_METERS = 5.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
     private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
     private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
@@ -964,17 +963,20 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         - lastAcceptedTrackingLocation.getTime();
 
                     // Reject unrealistic jumps and GPS drift while stationary
-                    if (Math.abs(timeDifference) > 0) {
-                        float speed = (float) (distance
-                            / (Math.abs(timeDifference) / 1000.0));
-
-                        // Reject unrealistic jumps (> 50 m/s = 180 km/h)
-                        if (speed > MAX_REASONABLE_SPEED_MPS) {
+                    if (location.hasSpeed()) {
+                        if (location.getSpeed()
+                                > MAX_REASONABLE_SPEED_MPS) {
                             return;
                         }
-
-                        // Ignore GPS drift while stationary (< 0.15 m/s)
-                        if (speed < MIN_MOVING_SPEED_MPS) {
+                        if (location.getSpeed()
+                                < MIN_MOVING_SPEED_MPS) {
+                            return;
+                        }
+                    } else if (Math.abs(timeDifference) > 0) {
+                        float fallbackSpeed = (float) (distance
+                            / (Math.abs(timeDifference) / 1000.0));
+                        if (fallbackSpeed
+                                > MAX_REASONABLE_SPEED_MPS) {
                             return;
                         }
                     }
