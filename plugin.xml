@@ -66,7 +66,7 @@
         <preference name="deployment-target" default="14.0" />
         <podspec>
             <pods use-frameworks="true">
-                <pod name="MapboxMaps" spec="11.20.2" />
+                <pod name="MapboxMaps" spec="11.30.0" />
             </pods>
         </podspec>
 

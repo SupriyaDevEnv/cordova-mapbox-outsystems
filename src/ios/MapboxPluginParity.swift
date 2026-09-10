@@ -5,16 +5,22 @@ import MapboxMaps
 
 /// Adds the Cordova actions that already exist on Android but were missing on iOS.
 /// The base MapboxPlugin keeps the existing implementation; this subclass only
-/// supplies the parity actions and delegates existing actions to the base class.
+/// supplies parity actions and behavior differences that need to match Android.
 @objc(MapboxPluginParity)
 class MapboxPluginParity: MapboxPlugin {
-    private let mapboxSdkVersion = "11.20.2"
+    private let mapboxSdkVersion = "11.30.0"
     private let maxLocationAge: TimeInterval = 30
     private let locationAccuracyCallbackInterval: TimeInterval = 0.5
+    private let trackingCameraInterval: TimeInterval = 0.7
 
     private var locationAccuracyCallbackId: String?
     private var accuracyLocationManager: CLLocationManager?
     private var lastLocationAccuracyUpdate: TimeInterval = 0
+    private var lastTrackingLocationUpdate: TimeInterval = 0
+
+    private var moveLocationManager: CLLocationManager?
+    private var moveLocationCallbackId: String?
+    private var moveLocationZoom: Double?
 
     @objc(getMapboxVersion:)
     func getMapboxVersion(command: CDVInvokedUrlCommand) {
@@ -89,6 +95,41 @@ class MapboxPluginParity: MapboxPlugin {
         }
     }
 
+    @objc(moveToCurrentLocation:)
+    override func moveToCurrentLocation(command: CDVInvokedUrlCommand) {
+        DispatchQueue.main.async {
+            guard self.activeMapView() != nil else {
+                self.sendParityError("Map is not initialized.", command: command)
+                return
+            }
+
+            let authorization = CLLocationManager.authorizationStatus()
+            if authorization == .denied || authorization == .restricted {
+                self.sendParityError("Location permission is not granted.", command: command)
+                return
+            }
+
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            self.moveLocationZoom = options["zoom"] == nil
+                ? nil
+                : self.doubleValue(options["zoom"], defaultValue: 0)
+            self.moveLocationCallbackId = command.callbackId
+
+            if self.moveLocationManager == nil {
+                let manager = CLLocationManager()
+                manager.delegate = self
+                manager.desiredAccuracy = kCLLocationAccuracyBest
+                self.moveLocationManager = manager
+            }
+
+            if authorization == .notDetermined {
+                self.moveLocationManager?.requestWhenInUseAuthorization()
+            }
+
+            self.moveLocationManager?.startUpdatingLocation()
+        }
+    }
+
     @objc(setLayerVisibility:)
     func setLayerVisibility(command: CDVInvokedUrlCommand) {
         DispatchQueue.main.async {
@@ -151,24 +192,104 @@ class MapboxPluginParity: MapboxPlugin {
     }
 
     override func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        if manager !== accuracyLocationManager {
-            super.locationManager(manager, didUpdateLocations: locations)
-        }
-
         guard let location = locations.last else {
             return
         }
+
+        if manager === moveLocationManager {
+            handleMoveToCurrentLocation(location, manager: manager)
+            return
+        }
+
+        if manager === accuracyLocationManager {
+            sendLocationAccuracyUpdate(location)
+            return
+        }
+
+        // The inherited iOS tracker previously forwarded camera updates every
+        // 500 ms. Android uses a 700 ms minimum interval, so gate inherited
+        // tracking updates here before letting the base implementation process them.
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastTrackingLocationUpdate >= trackingCameraInterval else {
+            return
+        }
+        lastTrackingLocationUpdate = now
+
+        super.locationManager(manager, didUpdateLocations: locations)
         sendLocationAccuracyUpdate(location)
+    }
+
+    override func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        if manager === moveLocationManager, let callbackId = moveLocationCallbackId {
+            stopMoveLocationUpdates()
+            sendParityError(
+                "Failed to get current location.",
+                callbackId: callbackId
+            )
+            return
+        }
+
+        super.locationManager(manager, didFailWithError: error)
     }
 
     override func close(command: CDVInvokedUrlCommand) {
         stopAccuracyMonitoring()
+        stopMoveLocationUpdates()
+        lastTrackingLocationUpdate = 0
         super.close(command: command)
     }
 
     override func onReset() {
         stopAccuracyMonitoring()
+        stopMoveLocationUpdates()
+        lastTrackingLocationUpdate = 0
         super.onReset()
+    }
+
+    private func handleMoveToCurrentLocation(_ location: CLLocation, manager: CLLocationManager) {
+        guard let callbackId = moveLocationCallbackId else {
+            return
+        }
+
+        let coordinate = location.coordinate
+        guard coordinate.latitude.isFinite, coordinate.longitude.isFinite,
+              coordinate.latitude >= -90, coordinate.latitude <= 90,
+              coordinate.longitude >= -180, coordinate.longitude <= 180 else {
+            stopMoveLocationUpdates()
+            sendParityError(
+                "Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].",
+                callbackId: callbackId
+            )
+            return
+        }
+
+        let zoom = moveLocationZoom
+        stopMoveLocationUpdates()
+
+        DispatchQueue.main.async {
+            guard let mapView = self.activeMapView() else {
+                self.sendParityError("Map is not initialized.", callbackId: callbackId)
+                return
+            }
+
+            if let zoom = zoom {
+                mapView.mapboxMap.setCamera(to: CameraOptions(center: coordinate, zoom: zoom))
+            } else {
+                mapView.mapboxMap.setCamera(to: CameraOptions(center: coordinate))
+            }
+
+            let accuracy = location.horizontalAccuracy >= 0 ? location.horizontalAccuracy : -1
+            let result = CDVPluginResult(
+                status: CDVCommandStatus_OK,
+                messageAs: [
+                    "latitude": coordinate.latitude,
+                    "longitude": coordinate.longitude,
+                    "accuracy": accuracy,
+                    "accuracyLabel": self.accuracyLabel(for: accuracy)
+                ]
+            )
+            self.commandDelegate.send(result, callbackId: callbackId)
+        }
     }
 
     private func sendLocationAccuracyUpdate(_ location: CLLocation) {
@@ -235,6 +356,14 @@ class MapboxPluginParity: MapboxPlugin {
         lastLocationAccuracyUpdate = 0
     }
 
+    private func stopMoveLocationUpdates() {
+        moveLocationManager?.stopUpdatingLocation()
+        moveLocationManager?.delegate = nil
+        moveLocationManager = nil
+        moveLocationCallbackId = nil
+        moveLocationZoom = nil
+    }
+
     private func activeMapView() -> MapView? {
         guard let root = webView.superview else {
             return nil
@@ -256,13 +385,26 @@ class MapboxPluginParity: MapboxPlugin {
         return nil
     }
 
+    private func doubleValue(_ value: Any?, defaultValue: Double) -> Double {
+        if let value = value as? Double { return value }
+        if let value = value as? Float { return Double(value) }
+        if let value = value as? Int { return Double(value) }
+        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String, let parsed = Double(value) { return parsed }
+        return defaultValue
+    }
+
     private func sendParitySuccess(_ command: CDVInvokedUrlCommand) {
         let result = CDVPluginResult(status: CDVCommandStatus_OK)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
     private func sendParityError(_ message: String, command: CDVInvokedUrlCommand) {
+        sendParityError(message, callbackId: command.callbackId)
+    }
+
+    private func sendParityError(_ message: String, callbackId: String) {
         let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: message)
-        commandDelegate.send(result, callbackId: command.callbackId)
+        commandDelegate.send(result, callbackId: callbackId)
     }
 }
