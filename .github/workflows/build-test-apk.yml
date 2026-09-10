@@ -39,17 +39,18 @@ jobs:
 
       - name: Create test application
         run: |
-          rm -rf build/realm-mapbox-test
-          mkdir -p build
-          cordova create build/realm-mapbox-test com.realmmapping.mapboxtest 'Realm Mapping Mapbox Test'
-          rm -rf build/realm-mapbox-test/www
-          cp -R test-app/www build/realm-mapbox-test/www
+          APP_DIR="$RUNNER_TEMP/realm-mapbox-test"
+          rm -rf "$APP_DIR"
+          cordova create "$APP_DIR" com.realmmapping.mapboxtest 'Realm Mapping Mapbox Test'
+          rm -rf "$APP_DIR/www"
+          cp -R "$GITHUB_WORKSPACE/test-app/www" "$APP_DIR/www"
 
       - name: Add Android platform and current plugin
         env:
           MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
         run: |
-          cd build/realm-mapbox-test
+          APP_DIR="$RUNNER_TEMP/realm-mapbox-test"
+          cd "$APP_DIR"
           cordova platform add android@15.0.0
           TOKEN="${MAPBOX_ACCESS_TOKEN:-pk.test-harness}"
           cordova plugin add "$GITHUB_WORKSPACE" --variable MAPBOX_ACCESS_TOKEN="$TOKEN"
@@ -57,13 +58,15 @@ jobs:
 
       - name: Build debug APK
         run: |
-          cd build/realm-mapbox-test
+          APP_DIR="$RUNNER_TEMP/realm-mapbox-test"
+          cd "$APP_DIR"
           cordova build android --debug --verbose
 
       - name: Collect APK
         run: |
+          APP_DIR="$RUNNER_TEMP/realm-mapbox-test"
           mkdir -p apk-output
-          cp build/realm-mapbox-test/platforms/android/app/build/outputs/apk/debug/app-debug.apk \
+          cp "$APP_DIR/platforms/android/app/build/outputs/apk/debug/app-debug.apk" \
             apk-output/realm-mapping-mapbox-test.apk
           sha256sum apk-output/realm-mapping-mapbox-test.apk > apk-output/SHA256.txt
 
