@@ -40,6 +40,7 @@ jobs:
       - name: Create test application
         run: |
           rm -rf build/realm-mapbox-test
+          mkdir -p build
           cordova create build/realm-mapbox-test com.realmmapping.mapboxtest 'Realm Mapping Mapbox Test'
           rm -rf build/realm-mapbox-test/www
           cp -R test-app/www build/realm-mapbox-test/www
