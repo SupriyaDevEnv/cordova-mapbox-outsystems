@@ -1,6 +1,6 @@
 def mapboxAndroidVersion = project.findProperty("MAPBOX_ANDROID_VERSION")
         ?: System.getenv("MAPBOX_ANDROID_VERSION")
-        ?: "11.27.0"
+        ?: "11.30.0"
 
 buildscript {
     repositories {
