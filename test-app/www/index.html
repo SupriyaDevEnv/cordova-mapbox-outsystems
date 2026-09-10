@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Realm Mapping Mapbox Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 18px; background: #f7f7f7; }
+    h1 { font-size: 22px; margin-top: 0; }
+    p { color: #444; }
+    button { display: block; width: 100%; padding: 14px; margin: 10px 0; font-size: 16px; }
+    #status { white-space: pre-wrap; background: #111; color: #eee; padding: 12px; min-height: 150px; border-radius: 8px; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h1>Realm Mapping Mapbox Test</h1>
+  <p>This APK directly tests the Cordova Mapbox plugin without OutSystems.</p>
+
+  <button id="initialize">1. Initialize map</button>
+  <button id="enableLocation">2. Enable user location / request permission</button>
+  <button id="moveLocation">3. Move to current location</button>
+  <button id="accuracy">4. Get current accuracy</button>
+  <button id="trackingOn">5. Enable user tracking</button>
+  <button id="trackingOff">6. Disable user tracking</button>
+  <button id="clearLog">Clear log</button>
+
+  <pre id="status">Waiting for Cordova deviceready…</pre>
+
+  <script src="cordova.js"></script>
+  <script src="js/index.js"></script>
+</body>
+</html>
