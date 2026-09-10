@@ -27,7 +27,7 @@
 
         <config-file parent="/*" target="res/xml/config.xml">
             <feature name="MapboxPlugin">
-                <param name="android-package" value="com.outsystems.mapbox.MapboxPluginEntry" />
+                <param name="android-package" value="com.outsystems.mapbox.MapboxPluginPermissionEntry" />
                 <param name="onload" value="true" />
             </feature>
         </config-file>
@@ -42,15 +42,15 @@
             <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
         </config-file>
 
-
         <framework src="src/android/mapbox-plugin.gradle" custom="true" type="gradleReference" />
         <source-file src="src/android/MapboxPluginEntry.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
+        <source-file src="src/android/MapboxPluginPermissionEntry.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
     </platform>
 
     <platform name="ios">
         <config-file parent="/*" target="config.xml">
             <feature name="MapboxPlugin">
-                <param name="ios-package" value="MapboxPluginParity" />
+                <param name="ios-package" value="MapboxPluginPermissionParity" />
                 <param name="onload" value="true" />
             </feature>
         </config-file>
@@ -60,7 +60,7 @@
         </config-file>
 
         <config-file parent="NSLocationWhenInUseUsageDescription" target="*-Info.plist">
-            <string>This app uses your location to show your position on the map.</string>
+            <string>Realm Mapping uses your location to show your position on the map.</string>
         </config-file>
 
         <preference name="deployment-target" default="14.0" />
@@ -72,5 +72,6 @@
 
         <source-file src="src/ios/MapboxPlugin.swift" />
         <source-file src="src/ios/MapboxPluginParity.swift" />
+        <source-file src="src/ios/MapboxPluginPermissionParity.swift" />
     </platform>
 </plugin>
