@@ -15,17 +15,31 @@
     statusEl.scrollTop = statusEl.scrollHeight;
   }
 
-  function ok(name) {
-    return function (result) { log('OK ' + name, result); };
+  function run(name, promise) {
+    log('CALL ' + name);
+    Promise.resolve(promise).then(function (result) {
+      log('OK ' + name, result);
+    }).catch(function (error) {
+      var message = error && error.message ? error.message : error;
+      log('ERROR ' + name, message);
+    });
   }
 
   function fail(name) {
-    return function (error) { log('ERROR ' + name, error); };
+    return function (error) {
+      var message = error && error.message ? error.message : error;
+      log('ERROR ' + name, message);
+    };
   }
 
   document.addEventListener('deviceready', function () {
     statusEl = document.getElementById('status');
     statusEl.textContent = 'Cordova ready. MapboxPlugin=' + (typeof MapboxPlugin);
+
+    if (typeof MapboxPlugin === 'undefined') {
+      log('ERROR', 'MapboxPlugin is not available.');
+      return;
+    }
 
     MapboxPlugin.onLocationAccuracyChanged(function (data) {
       log('EVENT locationAccuracy', data);
@@ -36,37 +50,39 @@
     }, fail('onTrackingStatusChanged'));
 
     document.getElementById('initialize').onclick = function () {
-      MapboxPlugin.initialize({
+      var mapHeight = 140;
+      var mapY = Math.max(0, window.innerHeight - mapHeight);
+      run('initialize', MapboxPlugin.initialize({
         inline: true,
         behindWebView: true,
         x: 0,
-        y: 460,
+        y: mapY,
         width: Math.max(1, window.innerWidth),
-        height: 360,
+        height: mapHeight,
         latitude: 17.3850,
         longitude: 78.4867,
         zoom: 12
-      }, ok('initialize'), fail('initialize'));
+      }));
     };
 
     document.getElementById('enableLocation').onclick = function () {
-      MapboxPlugin.enableUserLocation(ok('enableUserLocation'), fail('enableUserLocation'));
+      run('enableUserLocation', MapboxPlugin.enableUserLocation());
     };
 
     document.getElementById('moveLocation').onclick = function () {
-      MapboxPlugin.moveToCurrentLocation({ zoom: 16 }, ok('moveToCurrentLocation'), fail('moveToCurrentLocation'));
+      run('moveToCurrentLocation', MapboxPlugin.moveToCurrentLocation({ zoom: 16 }));
     };
 
     document.getElementById('accuracy').onclick = function () {
-      MapboxPlugin.getCurrentLocationAccuracy(ok('getCurrentLocationAccuracy'), fail('getCurrentLocationAccuracy'));
+      run('getCurrentLocationAccuracy', MapboxPlugin.getCurrentLocationAccuracy());
     };
 
     document.getElementById('trackingOn').onclick = function () {
-      MapboxPlugin.setUserTrackingEnabled({ enabled: true }, ok('trackingOn'), fail('trackingOn'));
+      run('trackingOn', MapboxPlugin.setUserTrackingEnabled({ enabled: true }));
     };
 
     document.getElementById('trackingOff').onclick = function () {
-      MapboxPlugin.setUserTrackingEnabled({ enabled: false }, ok('trackingOff'), fail('trackingOff'));
+      run('trackingOff', MapboxPlugin.setUserTrackingEnabled({ enabled: false }));
     };
 
     document.getElementById('clearLog').onclick = function () {
