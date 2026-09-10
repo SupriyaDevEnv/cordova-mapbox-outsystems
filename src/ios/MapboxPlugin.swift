@@ -12,6 +12,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var markers: [String: PointAnnotation] = [:]
     private var boundaryAnnotationManager: PolygonAnnotationManager?
     private var boundaryAnnotations: [PolygonAnnotation] = []
+    private var lineAnnotationManager: PolylineAnnotationManager?
+    private var pathAnnotation: PolylineAnnotation?
+    private var pathPoints: [CLLocationCoordinate2D] = []
+    private var isPathTrackingActive = false
+    private var pathTrackingStartTime: TimeInterval = 0
+    private var isPathVisible = true
+    private var pathLineColor: String = "#FF0000"
+    private var pathLineWidth: Double = 3.0
+    private var pathLineOpacity: Double = 1.0
     private var waypointSelectedCallbackId: String?
     private var markerClickCallbackId: String?
     private var offlineDownloadProgressCallbackId: String?
@@ -491,6 +500,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
         DispatchQueue.main.async {
             self.mapView?.mapboxMap.setCamera(to: CameraOptions(center: coordinate))
+
+            if self.isPathTrackingActive {
+                self.pathPoints.append(coordinate)
+                self.updatePathAnnotation()
+            }
         }
     }
 
@@ -641,6 +655,203 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     func clearBoundaries(command: CDVInvokedUrlCommand) {
         DispatchQueue.main.async {
             self.clearBoundariesInternal()
+            self.sendSuccess(command)
+        }
+    }
+
+    // --- Path Tracking Methods ---
+
+    private func ensureLineAnnotationManager() -> Bool {
+        guard let mapView = mapView else { return false }
+        if lineAnnotationManager != nil { return true }
+        lineAnnotationManager = mapView.annotations.makePolylineAnnotationManager()
+        return lineAnnotationManager != nil
+    }
+
+    private func updatePathAnnotation() {
+        guard pathPoints.count >= 2, ensureLineAnnotationManager() else { return }
+
+        if pathAnnotation != nil {
+            lineAnnotationManager?.annotations.removeAll()
+            pathAnnotation = nil
+        }
+
+        guard isPathVisible else { return }
+
+        var annotation = PolylineAnnotation(lineCoordinates: pathPoints)
+        annotation.lineColor = StyleColor(colorOption(pathLineColor, defaultColor: .red))
+        annotation.lineWidth = pathLineWidth
+        annotation.lineOpacity = pathLineOpacity
+        pathAnnotation = annotation
+        lineAnnotationManager?.annotations.append(annotation)
+    }
+
+    @objc(startPathTracking:)
+    func startPathTracking(command: CDVInvokedUrlCommand) {
+        DispatchQueue.main.async {
+            guard self.mapView != nil else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            if self.isPathTrackingActive {
+                self.sendError("Path tracking is already active. Call stopPathTracking first.", command)
+                return
+            }
+
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            self.isPathTrackingActive = true
+            self.isPathVisible = true
+            self.pathTrackingStartTime = Date().timeIntervalSince1970
+            self.pathPoints.removeAll()
+            self.pathAnnotation = nil
+
+            self.pathLineColor = options["lineColor"] as? String ?? "#FF0000"
+            self.pathLineWidth = options["lineWidth"] as? Double ?? 3.0
+            self.pathLineOpacity = options["lineOpacity"] as? Double ?? 1.0
+
+            let trackCamera = options["trackCamera"] as? String ?? "true"
+            if trackCamera == "true" {
+                self.startUserTracking(command)
+            } else {
+                self.sendSuccess(["status": "started"], command)
+            }
+        }
+    }
+
+    @objc(stopPathTracking:)
+    func stopPathTracking(command: CDVInvokedUrlCommand) {
+        DispatchQueue.main.async {
+            guard self.isPathTrackingActive else {
+                self.sendError("Path tracking is not active.", command)
+                return
+            }
+
+            self.isPathTrackingActive = false
+            let duration = Date().timeIntervalSince1970 - self.pathTrackingStartTime
+
+            var totalDistance: Double = 0
+            for i in 1..<self.pathPoints.count {
+                let from = CLLocation(latitude: self.pathPoints[i - 1].latitude, longitude: self.pathPoints[i - 1].longitude)
+                let to = CLLocation(latitude: self.pathPoints[i].latitude, longitude: self.pathPoints[i].longitude)
+                totalDistance += from.distance(from: to)
+            }
+
+            let pointsArray: [[String: Double]] = self.pathPoints.map { ["lat": $0.latitude, "lon": $0.longitude] }
+            self.sendSuccess([
+                "points": pointsArray,
+                "distance": (totalDistance * 100).rounded() / 100,
+                "duration": (duration * 1000).rounded()
+            ], command)
+        }
+    }
+
+    @objc(loadPath:)
+    func loadPath(command: CDVInvokedUrlCommand) {
+        DispatchQueue.main.async {
+            guard self.mapView != nil else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            if self.isPathTrackingActive {
+                self.sendError("Cannot load a path while path tracking is active. Stop tracking first.", command)
+                return
+            }
+
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard let pointsArray = options["points"] as? [[String: Any]], pointsArray.count >= 2 else {
+                self.sendError("A path requires at least 2 points.", command)
+                return
+            }
+
+            let lineColorHex = options["lineColor"] as? String ?? "#FF0000"
+            let lineWidth = options["lineWidth"] as? Double ?? 3.0
+            let lineOpacity = options["lineOpacity"] as? Double ?? 1.0
+
+            self.pathLineColor = lineColorHex
+            self.pathLineWidth = lineWidth
+            self.pathLineOpacity = lineOpacity
+            self.isPathVisible = true
+
+            self.pathPoints.removeAll()
+            for pointDict in pointsArray {
+                let lat = self.doubleOption(pointDict["lat"] ?? pointDict["latitude"], defaultValue: Double.nan)
+                let lon = self.doubleOption(pointDict["lon"] ?? pointDict["lng"] ?? pointDict["longitude"], defaultValue: Double.nan)
+                guard lat.isFinite, lon.isFinite, self.isValidLatitude(lat), self.isValidLongitude(lon) else { continue }
+                self.pathPoints.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+            }
+
+            guard self.pathPoints.count >= 2 else {
+                self.sendError("A path requires at least 2 valid points.", command)
+                return
+            }
+
+            guard self.ensureLineAnnotationManager() else {
+                self.sendError("Polyline annotation manager is not available.", command)
+                return
+            }
+
+            if self.pathAnnotation != nil {
+                self.lineAnnotationManager?.annotations.removeAll()
+                self.pathAnnotation = nil
+            }
+
+            var annotation = PolylineAnnotation(lineCoordinates: self.pathPoints)
+            annotation.lineColor = StyleColor(self.colorOption(self.pathLineColor, defaultColor: .red))
+            annotation.lineWidth = self.pathLineWidth
+            annotation.lineOpacity = self.pathLineOpacity
+            self.pathAnnotation = annotation
+            self.lineAnnotationManager?.annotations.append(annotation)
+
+            self.sendSuccess([
+                "status": "loaded",
+                "pointCount": self.pathPoints.count
+            ], command)
+        }
+    }
+
+    @objc(clearPaths:)
+    func clearPaths(command: CDVInvokedUrlCommand) {
+        DispatchQueue.main.async {
+            if self.pathAnnotation != nil {
+                self.lineAnnotationManager?.annotations.removeAll()
+                self.pathAnnotation = nil
+            }
+            self.pathPoints.removeAll()
+            self.sendSuccess(command)
+        }
+    }
+
+    @objc(setPathVisibility:)
+    func setPathVisibility(command: CDVInvokedUrlCommand) {
+        DispatchQueue.main.async {
+            guard self.mapView != nil else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            let visible = options["visible"] as? Bool ?? true
+
+            guard !self.pathPoints.isEmpty else {
+                self.sendError("No path is loaded. Use loadPath or startPathTracking first.", command)
+                return
+            }
+
+            self.isPathVisible = visible
+
+            if visible {
+                if self.pathAnnotation == nil {
+                    self.updatePathAnnotation()
+                }
+            } else {
+                if self.pathAnnotation != nil {
+                    self.lineAnnotationManager?.annotations.removeAll()
+                    self.pathAnnotation = nil
+                }
+            }
+
             self.sendSuccess(command)
         }
     }
@@ -1247,6 +1458,16 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         annotations = nil
         clearBoundariesInternal()
         boundaryAnnotationManager = nil
+        lineAnnotationManager?.annotations.removeAll()
+        lineAnnotationManager = nil
+        pathAnnotation = nil
+        pathPoints.removeAll()
+        isPathTrackingActive = false
+        pathTrackingStartTime = 0
+        isPathVisible = true
+        pathLineColor = "#FF0000"
+        pathLineWidth = 3.0
+        pathLineOpacity = 1.0
         waypointSelectedCallbackId = nil
         markerClickCallbackId = nil
         offlineDownloadProgressCallbackId = nil
@@ -1288,6 +1509,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         isUserTrackingEnabled = false
         isDeviceHeadingEnabled = false
         isHeadingFollowModeEnabled = false
+        isPathTrackingActive = false
+        pathPoints.removeAll()
+        pathAnnotation = nil
+        pathTrackingStartTime = 0
+        isPathVisible = true
+        pathLineColor = "#FF0000"
+        pathLineWidth = 3.0
+        pathLineOpacity = 1.0
     }
 
     private func getAccessToken() -> String {

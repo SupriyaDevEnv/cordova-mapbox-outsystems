@@ -42,6 +42,7 @@ import com.mapbox.common.Cancelable;
 import com.mapbox.common.TileRegionLoadOptions;
 import com.mapbox.common.TileStore;
 import com.mapbox.common.TilesetDescriptor;
+import com.mapbox.geojson.LineString;
 import com.mapbox.geojson.Point;
 import com.mapbox.geojson.Polygon;
 import com.mapbox.maps.CameraOptions;
@@ -67,6 +68,10 @@ import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotation;
 import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotationManager;
 import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotationManagerKt;
 import com.mapbox.maps.plugin.annotation.generated.PolygonAnnotationOptions;
+import com.mapbox.maps.plugin.annotation.generated.PolylineAnnotation;
+import com.mapbox.maps.plugin.annotation.generated.PolylineAnnotationManager;
+import com.mapbox.maps.plugin.annotation.generated.PolylineAnnotationManagerKt;
+import com.mapbox.maps.plugin.annotation.generated.PolylineAnnotationOptions;
 import com.mapbox.maps.plugin.animation.CameraAnimationsPlugin;
 import com.mapbox.maps.plugin.animation.MapAnimationOptions;
 import com.mapbox.maps.plugin.gestures.GesturesPlugin;
@@ -127,6 +132,16 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private final Map<String, String> markerRecordIds = new HashMap<>();
     private final Map<String, PointAnnotation> markerAnnotationsByRecordId = new HashMap<>();
     private final Map<String, Point> markerPointsByRecordId = new HashMap<>();
+
+    private PolylineAnnotationManager lineAnnotationManager;
+    private PolylineAnnotation pathAnnotation;
+    private final List<Point> pathPoints = new ArrayList<>();
+    private boolean isPathTrackingActive = false;
+    private long pathTrackingStartTimeMs = 0L;
+    private boolean isPathVisible = true;
+    private String pathLineColor = "#FF0000";
+    private float pathLineWidth = 3.0f;
+    private float pathLineOpacity = 1.0f;
     private CallbackContext waypointSelectedCallback;
     private CallbackContext markerClickCallback;
     private CallbackContext offlineDownloadProgressCallback;
@@ -287,6 +302,21 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 return true;
             case "clearBoundaries":
                 clearBoundaries(callbackContext);
+                return true;
+            case "startPathTracking":
+                startPathTracking(options, callbackContext);
+                return true;
+            case "stopPathTracking":
+                stopPathTracking(callbackContext);
+                return true;
+            case "loadPath":
+                loadPath(options, callbackContext);
+                return true;
+            case "clearPaths":
+                clearPaths(callbackContext);
+                return true;
+            case "setPathVisibility":
+                setPathVisibility(options, callbackContext);
                 return true;
             case "close":
                 close(callbackContext);
@@ -1013,6 +1043,16 @@ public class MapboxPluginEntry extends CordovaPlugin {
                             .setCamera(cameraOptions);
                     }
                 });
+
+                // Collect path point if path tracking is active
+                if (isPathTrackingActive) {
+                    pathPoints.add(cameraPoint);
+                    cordova.getActivity().runOnUiThread(() -> {
+                        if (mapView != null) {
+                            updatePathAnnotation();
+                        }
+                    });
+                }
             }
 
             @Override
@@ -2250,6 +2290,249 @@ public class MapboxPluginEntry extends CordovaPlugin {
         boundaryVisible = true;
     }
 
+    // --- Path Tracking Methods ---
+
+    private boolean ensureLineAnnotationManager() {
+        if (mapView == null) {
+            return false;
+        }
+
+        if (lineAnnotationManager != null) {
+            return true;
+        }
+
+        AnnotationPlugin annotationPlugin = mapView.getPlugin(Plugin.MAPBOX_ANNOTATION_PLUGIN_ID);
+        if (annotationPlugin == null) {
+            return false;
+        }
+
+        lineAnnotationManager = PolylineAnnotationManagerKt.createPolylineAnnotationManager(annotationPlugin, null);
+        return true;
+    }
+
+    private void updatePathAnnotation() {
+        if (pathPoints.size() < 2) {
+            return;
+        }
+
+        if (!ensureLineAnnotationManager()) {
+            return;
+        }
+
+        if (pathAnnotation != null) {
+            lineAnnotationManager.delete(pathAnnotation);
+            pathAnnotation = null;
+        }
+
+        if (!isPathVisible) {
+            return;
+        }
+
+        LineString lineString = LineString.fromLngLats(pathPoints);
+        PolylineAnnotationOptions options = new PolylineAnnotationOptions()
+            .withGeometry(lineString)
+            .withLineColor(pathLineColor)
+            .withLineWidth(pathLineWidth)
+            .withLineOpacity(pathLineOpacity);
+
+        pathAnnotation = lineAnnotationManager.create(options);
+    }
+
+    private void startPathTracking(JSONObject options, CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
+
+            if (isPathTrackingActive) {
+                callback.error("Path tracking is already active. Call stopPathTracking first.");
+                return;
+            }
+
+            isPathTrackingActive = true;
+            isPathVisible = true;
+            pathTrackingStartTimeMs = System.currentTimeMillis();
+            pathPoints.clear();
+            pathAnnotation = null;
+
+            pathLineColor = options.optString("lineColor", "#FF0000");
+            pathLineWidth = (float) options.optDouble("lineWidth", 3.0);
+            pathLineOpacity = (float) options.optDouble("lineOpacity", 1.0);
+
+            String trackCamera = options.optString("trackCamera", "true");
+            if ("true".equals(trackCamera)) {
+                startUserTracking(callback);
+            } else {
+                try {
+                    JSONObject result = new JSONObject();
+                    result.put("status", "started");
+                    callback.success(result);
+                } catch (Exception e) {
+                    callback.error(sanitizeError("An internal error occurred.", e));
+                }
+            }
+        });
+    }
+
+    private void stopPathTracking(CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (!isPathTrackingActive) {
+                callback.error("Path tracking is not active.");
+                return;
+            }
+
+            isPathTrackingActive = false;
+            long durationMs = System.currentTimeMillis() - pathTrackingStartTimeMs;
+
+            double totalDistance = 0.0;
+            for (int i = 1; i < pathPoints.size(); i++) {
+                float[] results = new float[1];
+                Location.distanceBetween(
+                    pathPoints.get(i - 1).latitude(),
+                    pathPoints.get(i - 1).longitude(),
+                    pathPoints.get(i).latitude(),
+                    pathPoints.get(i).longitude(),
+                    results
+                );
+                totalDistance += results[0];
+            }
+
+            try {
+                JSONObject result = new JSONObject();
+                JSONArray pointsArray = new JSONArray();
+                for (Point point : pathPoints) {
+                    JSONObject pointObj = new JSONObject();
+                    pointObj.put("lat", point.latitude());
+                    pointObj.put("lon", point.longitude());
+                    pointsArray.put(pointObj);
+                }
+                result.put("points", pointsArray);
+                result.put("distance", Math.round(totalDistance * 100.0) / 100.0);
+                result.put("duration", durationMs);
+                callback.success(result);
+            } catch (Exception e) {
+                callback.error(sanitizeError("An internal error occurred.", e));
+            }
+        });
+    }
+
+    private void loadPath(JSONObject options, CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
+
+            if (isPathTrackingActive) {
+                callback.error("Cannot load a path while path tracking is active. Stop tracking first.");
+                return;
+            }
+
+            JSONArray pointsArray = options.optJSONArray("points");
+            if (pointsArray == null || pointsArray.length() < 2) {
+                callback.error("A path requires at least 2 points.");
+                return;
+            }
+
+            String lineColor = options.optString("lineColor", "#FF0000");
+            double lineWidth = options.optDouble("lineWidth", 3.0);
+            double lineOpacity = options.optDouble("lineOpacity", 1.0);
+
+            pathLineColor = lineColor;
+            pathLineWidth = (float) lineWidth;
+            pathLineOpacity = (float) lineOpacity;
+            isPathVisible = true;
+
+            pathPoints.clear();
+            for (int i = 0; i < pointsArray.length(); i++) {
+                JSONObject pointObj = pointsArray.optJSONObject(i);
+                if (pointObj == null) continue;
+                double lat = readFiniteDouble(pointObj, "lat", "latitude");
+                double lon = readFiniteDouble(pointObj, "lon", "lng", "longitude");
+                if (!Double.isNaN(lat) && !Double.isNaN(lon)
+                        && isValidLatitude(lat) && isValidLongitude(lon)) {
+                    pathPoints.add(Point.fromLngLat(lon, lat));
+                }
+            }
+
+            if (pathPoints.size() < 2) {
+                callback.error("A path requires at least 2 valid points.");
+                return;
+            }
+
+            if (!ensureLineAnnotationManager()) {
+                callback.error("Polyline annotation manager is not available.");
+                return;
+            }
+
+            if (pathAnnotation != null) {
+                lineAnnotationManager.delete(pathAnnotation);
+                pathAnnotation = null;
+            }
+
+            LineString lineString = LineString.fromLngLats(pathPoints);
+            PolylineAnnotationOptions annOptions = new PolylineAnnotationOptions()
+                .withGeometry(lineString)
+                .withLineColor(lineColor)
+                .withLineWidth((float) lineWidth)
+                .withLineOpacity((float) lineOpacity);
+
+            pathAnnotation = lineAnnotationManager.create(annOptions);
+
+            try {
+                JSONObject result = new JSONObject();
+                result.put("status", "loaded");
+                result.put("pointCount", pathPoints.size());
+                callback.success(result);
+            } catch (Exception e) {
+                callback.error(sanitizeError("An internal error occurred.", e));
+            }
+        });
+    }
+
+    private void clearPaths(CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (lineAnnotationManager != null && pathAnnotation != null) {
+                lineAnnotationManager.delete(pathAnnotation);
+                pathAnnotation = null;
+            }
+            pathPoints.clear();
+            callback.success();
+        });
+    }
+
+    private void setPathVisibility(JSONObject options, CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
+
+            boolean visible = options.optBoolean("visible", true);
+
+            if (pathPoints.isEmpty()) {
+                callback.error("No path is loaded. Use loadPath or startPathTracking first.");
+                return;
+            }
+
+            isPathVisible = visible;
+
+            if (visible) {
+                if (pathAnnotation == null) {
+                    updatePathAnnotation();
+                }
+            } else {
+                if (pathAnnotation != null) {
+                    lineAnnotationManager.delete(pathAnnotation);
+                    pathAnnotation = null;
+                }
+            }
+
+            callback.success();
+        });
+    }
+
     private Bitmap createWaypointMarkerBitmap() {
         int width = 72;
         int height = 96;
@@ -2497,6 +2780,15 @@ public class MapboxPluginEntry extends CordovaPlugin {
         boundaryAnnotationOptions.clear();
         boundaryAnnotations.clear();
         boundaryVisible = true;
+        lineAnnotationManager = null;
+        pathAnnotation = null;
+        pathPoints.clear();
+        isPathTrackingActive = false;
+        pathTrackingStartTimeMs = 0L;
+        isPathVisible = true;
+        pathLineColor = "#FF0000";
+        pathLineWidth = 3.0f;
+        pathLineOpacity = 1.0f;
         markerRecordIds.clear();
         markerAnnotationsByRecordId.clear();
         markerPointsByRecordId.clear();
