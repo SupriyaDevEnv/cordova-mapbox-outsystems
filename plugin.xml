@@ -50,7 +50,7 @@
     <platform name="ios">
         <config-file parent="/*" target="config.xml">
             <feature name="MapboxPlugin">
-                <param name="ios-package" value="MapboxPlugin" />
+                <param name="ios-package" value="MapboxPluginParity" />
                 <param name="onload" value="true" />
             </feature>
         </config-file>
@@ -71,5 +71,6 @@
         </podspec>
 
         <source-file src="src/ios/MapboxPlugin.swift" />
+        <source-file src="src/ios/MapboxPluginParity.swift" />
     </platform>
 </plugin>
