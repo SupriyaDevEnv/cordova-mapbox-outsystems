@@ -101,7 +101,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final float MAX_STATIONARY_JITTER_METERS = 5.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
     private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
-    private static final double LOCATION_SMOOTHING_FACTOR = 0.25;
+    private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
+    private static final float MIN_MOVING_SPEED_MPS = 0.15f;
 
     private MapView mapView;
     private FrameLayout rootView;
@@ -677,6 +678,25 @@ public class MapboxPluginEntry extends CordovaPlugin {
             location.setPuckBearingEnabled(true);
             location.setEnabled(true);
 
+            LocationManager lm = (LocationManager) cordova.getActivity()
+                .getSystemService(Context.LOCATION_SERVICE);
+            if (lm != null) {
+                try {
+                    Location lastKnown = lm.getLastKnownLocation(
+                        LocationManager.GPS_PROVIDER
+                    );
+                    if (lastKnown == null) {
+                        lastKnown = lm.getLastKnownLocation(
+                            LocationManager.NETWORK_PROVIDER
+                        );
+                    }
+                    if (lastKnown != null) {
+                        smoothedLocationProvider.updateLocation(lastKnown);
+                    }
+                } catch (SecurityException ignored) {
+                }
+            }
+
             isUserLocationEnabled = true;
             fireTrackingStatusChanged();
 
@@ -943,16 +963,18 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         location.getTime()
                         - lastAcceptedTrackingLocation.getTime();
 
-                    // Ignore tiny movements while stationary
-                    if (distance < MAX_STATIONARY_JITTER_METERS) {
-                        return;
-                    }
-
-                    // Reject unrealistic jumps
+                    // Reject unrealistic jumps and GPS drift while stationary
                     if (Math.abs(timeDifference) > 0) {
                         float speed = (float) (distance
                             / (Math.abs(timeDifference) / 1000.0));
+
+                        // Reject unrealistic jumps (> 50 m/s = 180 km/h)
                         if (speed > MAX_REASONABLE_SPEED_MPS) {
+                            return;
+                        }
+
+                        // Ignore GPS drift while stationary (< 0.15 m/s)
+                        if (speed < MIN_MOVING_SPEED_MPS) {
                             return;
                         }
                     }
