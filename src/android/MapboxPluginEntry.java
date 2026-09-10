@@ -646,37 +646,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private void enableUserLocation(CallbackContext callback) {
         cordova.getActivity().runOnUiThread(() -> {
-            try {
-                if (mapView == null) {
-                    callback.error("Map is not initialized.");
-                    return;
-                }
-
-                if (!hasLocationPermission()) {
-                    callback.error("Location permission is not granted.");
-                    return;
-                }
-
-                LocationComponentPlugin locationPlugin =
-                    mapView.getPlugin(
-                        Plugin.MAPBOX_LOCATION_COMPONENT_PLUGIN_ID
-                    );
-
-                if (locationPlugin == null) {
-                    callback.error("Location plugin is not available.");
-                    return;
-                }
-
-                locationPlugin.setPuckBearing(PuckBearing.HEADING);
-                locationPlugin.setEnabled(true);
-
-                callback.success("User location enabled");
-            } catch (Exception e) {
-                callback.error(
-                    e.getMessage() != null
-                        ? e.getMessage()
-                        : "Failed to enable user location"
-                );
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
             }
 
             boolean hasFineLocation = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION);
@@ -686,7 +658,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 callback.error("Location permission is not granted.");
                 return;
             }
-            
+
             LocationComponentPlugin location =
                 mapView.getPlugin(Plugin.MAPBOX_LOCATION_COMPONENT_PLUGIN_ID);
 
@@ -707,6 +679,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
             isUserLocationEnabled = true;
             fireTrackingStatusChanged();
+
             callback.success();
         });
     }
