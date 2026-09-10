@@ -35,6 +35,24 @@ module.exports = function (context) {
     console.log('  <param name="android-package" value="com.outsystems.mapbox.MapboxPluginEntry" />');
     console.log('</feature>');
   }
-  var hasTokenPref = config.indexOf('name="MAPBOX_ACCESS_TOKEN"') >= 0;
+
+  const tokenPreference = config.match(
+    /<preference\b[^>]*\bname=["']MAPBOX_ACCESS_TOKEN["'][^>]*\/?>/i
+  );
+  const hasTokenPref = Boolean(tokenPreference);
   console.log('[MapboxPlugin] Android config.xml MAPBOX_ACCESS_TOKEN present: ' + hasTokenPref);
+
+  if (!tokenPreference) {
+    return;
+  }
+
+  const tokenValueMatch = tokenPreference[0].match(/\bvalue=["']([^"']*)["']/i);
+  const tokenValue = tokenValueMatch ? tokenValueMatch[1].trim() : '';
+
+  if (tokenValue.startsWith('sk.')) {
+    throw new Error(
+      '[MapboxPlugin] Refusing to package a Mapbox secret token (sk.*). ' +
+      'Use a public pk.* access token for mobile applications and rotate any secret token that was previously embedded.'
+    );
+  }
 };
