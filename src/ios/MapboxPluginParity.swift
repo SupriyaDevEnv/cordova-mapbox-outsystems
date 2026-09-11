@@ -11,12 +11,16 @@ class MapboxPluginParity: MapboxPlugin {
     private let mapboxSdkVersion = "11.30.0"
     private let maxLocationAge: TimeInterval = 30
     private let locationAccuracyCallbackInterval: TimeInterval = 0.5
-    private let trackingCameraInterval: TimeInterval = 0.7
+    private let trackingCameraInterval: TimeInterval = 0.4
+    private let locationSmoothingFactor: Double = 0.35
+    private let trackingCameraAnimationDuration: TimeInterval = 0.25
 
     private var locationAccuracyCallbackId: String?
     private var accuracyLocationManager: CLLocationManager?
     private var lastLocationAccuracyUpdate: TimeInterval = 0
     private var lastTrackingLocationUpdate: TimeInterval = 0
+    private var smoothedTrackingCoordinate: CLLocationCoordinate2D?
+    private var parityPathTrackingActive = false
 
     private var moveLocationManager: CLLocationManager?
     private var moveLocationCallbackId: String?
@@ -52,6 +56,7 @@ class MapboxPluginParity: MapboxPlugin {
                 let manager = CLLocationManager()
                 manager.delegate = self
                 manager.desiredAccuracy = kCLLocationAccuracyBest
+                manager.distanceFilter = kCLDistanceFilterNone
                 self.accuracyLocationManager = manager
             }
 
@@ -76,6 +81,7 @@ class MapboxPluginParity: MapboxPlugin {
                 let manager = CLLocationManager()
                 manager.delegate = self
                 manager.desiredAccuracy = kCLLocationAccuracyBest
+                manager.distanceFilter = kCLDistanceFilterNone
                 self.accuracyLocationManager = manager
             }
 
@@ -93,6 +99,31 @@ class MapboxPluginParity: MapboxPlugin {
                 command: command
             )
         }
+    }
+
+    @objc(setUserTrackingEnabled:)
+    override func setUserTrackingEnabled(command: CDVInvokedUrlCommand) {
+        let options = command.argument(at: 0) as? [String: Any] ?? [:]
+        let enabled = options["enabled"] as? Bool ?? true
+        resetTrackingSmoothing()
+        if !enabled {
+            parityPathTrackingActive = false
+        }
+        super.setUserTrackingEnabled(command: command)
+    }
+
+    @objc(startPathTracking:)
+    override func startPathTracking(command: CDVInvokedUrlCommand) {
+        parityPathTrackingActive = true
+        resetTrackingSmoothing()
+        super.startPathTracking(command: command)
+    }
+
+    @objc(stopPathTracking:)
+    override func stopPathTracking(command: CDVInvokedUrlCommand) {
+        super.stopPathTracking(command: command)
+        parityPathTrackingActive = false
+        resetTrackingSmoothing()
     }
 
     @objc(moveToCurrentLocation:)
@@ -119,6 +150,7 @@ class MapboxPluginParity: MapboxPlugin {
                 let manager = CLLocationManager()
                 manager.delegate = self
                 manager.desiredAccuracy = kCLLocationAccuracyBest
+                manager.distanceFilter = kCLDistanceFilterNone
                 self.moveLocationManager = manager
             }
 
@@ -206,17 +238,66 @@ class MapboxPluginParity: MapboxPlugin {
             return
         }
 
-        // The inherited iOS tracker previously forwarded camera updates every
-        // 500 ms. Android uses a 700 ms minimum interval, so gate inherited
-        // tracking updates here before letting the base implementation process them.
+        // Accuracy updates are independent from camera throttling so the UI can
+        // receive fresh GPS quality information even while camera updates are gated.
+        sendLocationAccuracyUpdate(location)
+
+        let rawCoordinate = location.coordinate
+        guard rawCoordinate.latitude.isFinite,
+              rawCoordinate.longitude.isFinite,
+              rawCoordinate.latitude >= -90,
+              rawCoordinate.latitude <= 90,
+              rawCoordinate.longitude >= -180,
+              rawCoordinate.longitude <= 180 else {
+            return
+        }
+
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastTrackingLocationUpdate >= trackingCameraInterval else {
             return
         }
         lastTrackingLocationUpdate = now
 
-        super.locationManager(manager, didUpdateLocations: locations)
-        sendLocationAccuracyUpdate(location)
+        let cameraCoordinate: CLLocationCoordinate2D
+        if let previous = smoothedTrackingCoordinate {
+            cameraCoordinate = CLLocationCoordinate2D(
+                latitude: previous.latitude
+                    + (rawCoordinate.latitude - previous.latitude) * locationSmoothingFactor,
+                longitude: previous.longitude
+                    + (rawCoordinate.longitude - previous.longitude) * locationSmoothingFactor
+            )
+        } else {
+            // Accept the first valid fix immediately. iOS has no 25 m gate here,
+            // so the camera does not wait for a high-accuracy cold-start fix.
+            cameraCoordinate = rawCoordinate
+        }
+        smoothedTrackingCoordinate = cameraCoordinate
+
+        if parityPathTrackingActive {
+            // Preserve the inherited path recorder, but feed it the same smoothed
+            // coordinate used by the camera so path tracking does not reintroduce
+            // raw GPS jitter.
+            let smoothedLocation = CLLocation(
+                coordinate: cameraCoordinate,
+                altitude: location.altitude,
+                horizontalAccuracy: location.horizontalAccuracy,
+                verticalAccuracy: location.verticalAccuracy,
+                course: location.course,
+                speed: location.speed,
+                timestamp: location.timestamp
+            )
+            super.locationManager(manager, didUpdateLocations: [smoothedLocation])
+        }
+
+        runForSession {
+            guard let mapView = self.activeMapView() else {
+                return
+            }
+            mapView.camera.ease(
+                to: CameraOptions(center: cameraCoordinate),
+                duration: self.trackingCameraAnimationDuration
+            )
+        }
     }
 
     override func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
@@ -235,8 +316,14 @@ class MapboxPluginParity: MapboxPlugin {
     override func closeInternal() {
         stopAccuracyMonitoring()
         stopMoveLocationUpdates()
-        lastTrackingLocationUpdate = 0
+        parityPathTrackingActive = false
+        resetTrackingSmoothing()
         super.closeInternal()
+    }
+
+    private func resetTrackingSmoothing() {
+        lastTrackingLocationUpdate = 0
+        smoothedTrackingCoordinate = nil
     }
 
     private func handleMoveToCurrentLocation(_ location: CLLocation, manager: CLLocationManager) {
