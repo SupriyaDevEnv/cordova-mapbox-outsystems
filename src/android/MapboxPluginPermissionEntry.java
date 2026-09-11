@@ -29,6 +29,10 @@ public class MapboxPluginPermissionEntry extends MapboxPluginEntry {
         }
 
         synchronized (pendingLocationActions) {
+            if (pendingLocationActions.size() >= 32 || args.toString().length() > MapboxSecurity.MAX_INPUT_CHARS) {
+                callbackContext.error("Too many pending location requests or input too large.");
+                return true;
+            }
             pendingLocationActions.add(new PendingAction(action, args, callbackContext));
         }
 
@@ -40,6 +44,7 @@ public class MapboxPluginPermissionEntry extends MapboxPluginEntry {
         return "enableUserLocation".equals(action)
             || "setDeviceHeadingEnabled".equals(action)
             || "setUserTrackingEnabled".equals(action)
+            || "startPathTracking".equals(action)
             || "moveToCurrentLocation".equals(action);
     }
 
@@ -105,15 +110,13 @@ public class MapboxPluginPermissionEntry extends MapboxPluginEntry {
     }
 
     @Override
-    public void onReset() {
+    protected void cancelPendingLocationActions() {
         synchronized (pendingLocationActions) {
             for (PendingAction action : pendingLocationActions) {
                 action.callbackContext.error("Location request was cancelled.");
             }
             pendingLocationActions.clear();
-            locationPermissionRequestInFlight = false;
         }
-        super.onReset();
     }
 
     private static final class PendingAction {

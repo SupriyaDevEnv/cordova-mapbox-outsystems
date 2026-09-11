@@ -1,0 +1,34 @@
+name: Native security regression tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  security:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: node --test tests/security.test.cjs
+      - name: Compile and run Android input policy
+        run: |
+          mkdir -p "$RUNNER_TEMP/mapbox-tests"
+          javac -d "$RUNNER_TEMP/mapbox-tests" src/android/MapboxSecurity.java tests/MapboxSecurityTest.java
+          java -cp "$RUNNER_TEMP/mapbox-tests" com.outsystems.mapbox.MapboxSecurityTest
+      - name: Compile and run iOS input policy
+        run: |
+          swiftc src/ios/MapboxSecurity.swift tests/security-main.swift -o "$RUNNER_TEMP/security-tests"
+          "$RUNNER_TEMP/security-tests"
+      - name: Regress empty-path native crash
+        run: python3 tests/test-empty-path.py
+      - name: Parse all iOS plugin sources
+        run: swiftc -frontend -parse src/ios/*.swift

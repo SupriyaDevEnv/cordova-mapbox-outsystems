@@ -47,7 +47,7 @@ class MapboxPluginParity: MapboxPlugin {
         result?.setKeepCallbackAs(true)
         commandDelegate.send(result, callbackId: command.callbackId)
 
-        DispatchQueue.main.async {
+        runForSession {
             if self.accuracyLocationManager == nil {
                 let manager = CLLocationManager()
                 manager.delegate = self
@@ -65,7 +65,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(getCurrentLocationAccuracy:)
     func getCurrentLocationAccuracy(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        runForSession {
             guard CLLocationManager.authorizationStatus() == .authorizedWhenInUse
                     || CLLocationManager.authorizationStatus() == .authorizedAlways else {
                 self.sendAccuracyResult(accuracy: -1, label: "Unknown", command: command)
@@ -97,7 +97,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(moveToCurrentLocation:)
     override func moveToCurrentLocation(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        runForSession {
             guard self.activeMapView() != nil else {
                 self.sendParityError("Map is not initialized.", command: command)
                 return
@@ -132,7 +132,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(setLayerVisibility:)
     func setLayerVisibility(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        runForSession {
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             let layerId = (options["layerId"] as? String ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -174,7 +174,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(getLayerIds:)
     func getLayerIds(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        runForSession {
             guard let mapView = self.activeMapView() else {
                 self.sendParityError("Map is not initialized.", command: command)
                 return
@@ -232,18 +232,11 @@ class MapboxPluginParity: MapboxPlugin {
         super.locationManager(manager, didFailWithError: error)
     }
 
-    override func close(command: CDVInvokedUrlCommand) {
+    override func closeInternal() {
         stopAccuracyMonitoring()
         stopMoveLocationUpdates()
         lastTrackingLocationUpdate = 0
-        super.close(command: command)
-    }
-
-    override func onReset() {
-        stopAccuracyMonitoring()
-        stopMoveLocationUpdates()
-        lastTrackingLocationUpdate = 0
-        super.onReset()
+        super.closeInternal()
     }
 
     private func handleMoveToCurrentLocation(_ location: CLLocation, manager: CLLocationManager) {
@@ -266,7 +259,7 @@ class MapboxPluginParity: MapboxPlugin {
         let zoom = moveLocationZoom
         stopMoveLocationUpdates()
 
-        DispatchQueue.main.async {
+        runForSession {
             guard let mapView = self.activeMapView() else {
                 self.sendParityError("Map is not initialized.", callbackId: callbackId)
                 return

@@ -31,9 +31,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import android.content.SharedPreferences;
-import androidx.security.crypto.EncryptedSharedPreferences;
-import androidx.security.crypto.MasterKey;
 
 import com.mapbox.bindgen.Value;
 
@@ -103,7 +100,18 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
     private static final float MIN_MOVING_SPEED_MPS = 0.15f;
 
+    private volatile long sessionGeneration = 0;
     private MapView mapView;
+
+    protected void cancelPendingLocationActions() { }
+
+    private void runForSession(Runnable action) {
+        final long generation = sessionGeneration;
+        cordova.getActivity().runOnUiThread(() -> {
+            if (generation == sessionGeneration) action.run();
+        });
+    }
+
     private FrameLayout rootView;
     private final List<TouchRect> touchableRects = new ArrayList<>();
     private SensorManager sensorManager;
@@ -173,6 +181,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) {
+        if (args.toString().length() > MapboxSecurity.MAX_INPUT_CHARS) {
+            callbackContext.error("Map input exceeds the 4 MiB limit.");
+            return true;
+        }
         JSONObject options = args.optJSONObject(0);
         if (options == null) {
             options = new JSONObject();
@@ -330,17 +342,21 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void initialize(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             try {
                 String token = getAccessToken();
                 if (token.isEmpty()) {
-                    callback.error("Mapbox access token is required. Configure MAPBOX_ACCESS_TOKEN in OutSystems Extensibility Configuration.");
+                    callback.error("A public pk.* Mapbox token is required. Configure MAPBOX_ACCESS_TOKEN in OutSystems Extensibility Configuration.");
                     return;
                 }
 
                 MapboxOptions.setAccessToken(token);
 
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
+            if (!styleAllowed(styleUrl)) {
+                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
+                return;
+            }
                 double latitude = options.optDouble("latitude", 0.0);
                 double longitude = options.optDouble("longitude", 0.0);
                 double zoom = options.optDouble("zoom", 12.0);
@@ -400,10 +416,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 mapView.getMapboxMap().loadStyle(
                     styleUrl,
                     style -> {
-                        cordova.getActivity().runOnUiThread(() -> {
+                        runForSession(() -> {
                             Log.d(
                                 "MapboxPlugin",
-                                "Map style loaded: " + styleUrl
+                                "Map style loaded"
                             );
 
                             try {
@@ -425,59 +441,22 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private String getAccessToken() {
-        String token = getTokenFromSecureStorage();
-        if (!token.isEmpty()) {
-            return token;
-        }
-
-        token = preferences.getString("MAPBOX_ACCESS_TOKEN", "");
-        if ("__MAPBOX_ACCESS_TOKEN_NOT_SET__".equals(token)) {
-            token = "";
-        }
-        if (!token.isEmpty()) {
-            saveTokenToSecureStorage(token);
-        }
-        return token;
+        // Public runtime tokens are already bundled in config.xml. Read the
+        // authoritative configuration on every initialization; never prefer an old cache.
+        String token = preferences.getString("MAPBOX_ACCESS_TOKEN", "").trim();
+        // Remove values written by releases that cached credentials.
+        cordova.getActivity().getSharedPreferences("mapbox_secure_prefs", Context.MODE_PRIVATE)
+            .edit().clear().apply();
+        return MapboxSecurity.publicToken(token) ? token : "";
     }
 
-    private String getTokenFromSecureStorage() {
-        try {
-            MasterKey masterKey = new MasterKey.Builder(cordova.getActivity())
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build();
-            SharedPreferences securePrefs = EncryptedSharedPreferences.create(
-                cordova.getActivity(),
-                "mapbox_secure_prefs",
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            );
-            return securePrefs.getString("mapbox_access_token", "");
-        } catch (Exception e) {
-            return "";
-        }
-    }
-
-    private void saveTokenToSecureStorage(String token) {
-        try {
-            MasterKey masterKey = new MasterKey.Builder(cordova.getActivity())
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build();
-            SharedPreferences securePrefs = EncryptedSharedPreferences.create(
-                cordova.getActivity(),
-                "mapbox_secure_prefs",
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            );
-            securePrefs.edit().putString("mapbox_access_token", token).apply();
-        } catch (Exception e) {
-            // Silent fail — next launch will fall back to preferences
-        }
+    private boolean styleAllowed(String style) {
+        return MapboxSecurity.styleAllowed(style,
+            preferences.getString("MAPBOX_ALLOWED_STYLE_HOSTS", "api.mapbox.com"));
     }
 
     private void setViewport(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (rootView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -490,7 +469,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void resizeMap(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (rootView == null || mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -539,7 +518,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
    private void setTouchableRects(JSONArray args, CallbackContext callback) {
-    cordova.getActivity().runOnUiThread(() -> {
+    runForSession(() -> {
         touchableRects.clear();
 
         JSONArray rects = args.optJSONArray(0);
@@ -583,7 +562,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     });
 }
     private void setCamera(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -608,7 +587,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void flyTo(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -645,7 +624,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void enableUserLocation(CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -717,7 +696,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void setDeviceHeadingEnabled(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -752,7 +731,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void setHeadingFollowMode(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -825,7 +804,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 lastHeadingUpdateMs = now;
 
                 final double cameraBearing = bearing;
-                cordova.getActivity().runOnUiThread(() -> {
+                runForSession(() -> {
                     if (mapView != null) {
                         mapView.getMapboxMap().setCamera(new CameraOptions.Builder()
                             .bearing(cameraBearing)
@@ -877,7 +856,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void setUserTrackingEnabled(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -912,6 +891,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             return;
         }
 
+        final long trackingGeneration = sessionGeneration;
         userTrackingListener = new LocationListener() {
             @Override
             public void onLocationChanged(Location location) {
@@ -919,6 +899,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     return;
                 }
 
+                if (trackingGeneration != sessionGeneration) return;
                 sendLocationAccuracyUpdate(location);
 
                 if (mapView == null) {
@@ -1044,7 +1025,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 }
 
                 // 7. Update Mapbox puck and camera
-                cordova.getActivity().runOnUiThread(() -> {
+                runForSession(() -> {
                     if (mapView == null) {
                         return;
                     }
@@ -1080,8 +1061,12 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
                 // Collect path point if path tracking is active
                 if (isPathTrackingActive) {
+                    if (pathPoints.size() >= MapboxSecurity.MAX_POINTS) {
+                        stopUserTracking();
+                        return; // Keep the recording available to stopPathTracking().
+                    }
                     pathPoints.add(cameraPoint);
-                    cordova.getActivity().runOnUiThread(() -> {
+                    runForSession(() -> {
                         if (mapView != null) {
                             updatePathAnnotation();
                         }
@@ -1166,7 +1151,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void moveToCurrentLocation(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -1228,7 +1213,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
                 moveToCurrentLocationCallback = null;
 
-                cordova.getActivity().runOnUiThread(() -> {
+                runForSession(() -> {
                     if (mapView != null) {
                         CameraOptions.Builder cameraBuilder = new CameraOptions.Builder()
                             .center(Point.fromLngLat(longitude, latitude));
@@ -1333,7 +1318,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private void downloadOfflineRegion(JSONObject options, CallbackContext callback) {
         sendOfflineProgress("started", 0, 100);
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             try {
                 sendOfflineProgress("native-entered", 0, 100);
 
@@ -1354,6 +1339,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 double minZoom = options.optDouble("minZoom", 10.0);
                 double maxZoom = options.optDouble("maxZoom", 16.0);
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
+            if (!styleAllowed(styleUrl)) {
+                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
+                return;
+            }
                 String regionId = options.optString(
                     "regionId",
                     "offline-" + Math.round(latitude * 100000.0) + "-" + Math.round(longitude * 100000.0)
@@ -1378,7 +1367,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private void downloadOfflineRegionForRect(JSONObject options, CallbackContext callback) {
         sendOfflineProgress("started", 0, 100);
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             try {
                 sendOfflineProgress("native-entered", 0, 100);
 
@@ -1391,9 +1380,18 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 double y = options.optDouble("y", 0.0);
                 double width = options.optDouble("width", 1.0);
                 double height = options.optDouble("height", 1.0);
+                if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(width) || !Double.isFinite(height)
+                        || Math.abs(x) > 1000000 || Math.abs(y) > 1000000 || width <= 0 || height <= 0
+                        || width > 1000000 || height > 1000000) {
+                    callback.error("Invalid offline rectangle."); return;
+                }
                 double minZoom = options.optDouble("minZoom", 10.0);
                 double maxZoom = options.optDouble("maxZoom", 16.0);
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
+            if (!styleAllowed(styleUrl)) {
+                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
+                return;
+            }
                 String regionId = options.optString("regionId", "offline-rect-" + System.currentTimeMillis());
 
                 Polygon polygon = createRectPolygon(x, y, width, height);
@@ -1433,6 +1431,23 @@ public class MapboxPluginEntry extends CordovaPlugin {
             callback.error("An offline region download is already in progress.");
             return;
         }
+        if (!Double.isFinite(radiusKm) || radiusKm < 0 || radiusKm > MAX_OFFLINE_RADIUS_KM
+                || !MapboxSecurity.validZoom(minZoom) || !MapboxSecurity.validZoom(maxZoom)
+                || minZoom > maxZoom || regionId.isEmpty() || regionId.length() > 256) {
+            callback.error("Invalid offline radius, zoom range, or region id."); return;
+        }
+        Polygon downloadGeometry = geometry == null ? createCirclePolygon(longitude, latitude, radiusKm) : geometry;
+        double south = 90, west = 180, north = -90, east = -180;
+        for (List<Point> ring : downloadGeometry.coordinates()) {
+            for (Point point : ring) {
+                south = Math.min(south, point.latitude()); north = Math.max(north, point.latitude());
+                west = Math.min(west, point.longitude()); east = Math.max(east, point.longitude());
+            }
+        }
+        if (!MapboxSecurity.offlineBounds(south, west, north, east, maxZoom)) {
+            callback.error("Offline region exceeds the geographic or 50000-tile budget."); return;
+        }
+        final long downloadGeneration = sessionGeneration;
         final double clampedRadiusKm = clamp(radiusKm, 0.0, MAX_OFFLINE_RADIUS_KM);
         final double clampedMinZoom = clamp(minZoom, MIN_OFFLINE_ZOOM, MAX_OFFLINE_ZOOM);
         final double clampedMaxZoom = clamp(maxZoom, clampedMinZoom, MAX_OFFLINE_ZOOM);
@@ -1450,17 +1465,24 @@ public class MapboxPluginEntry extends CordovaPlugin {
         activeStylePackDownload = activeOfflineManager.loadStylePack(
             styleUrl,
             stylePackOptions,
-            progress -> sendOfflineProgress("style", progress.getCompletedResourceCount(), progress.getRequiredResourceCount()),
+            progress -> {
+                if (downloadGeneration == sessionGeneration) {
+                    sendOfflineProgress("style", progress.getCompletedResourceCount(), progress.getRequiredResourceCount());
+                }
+            },
             expectedStylePack -> expectedStylePack.fold(
                 error -> {
+                    if (downloadGeneration != sessionGeneration) return null;
                     isOfflineDownloading = false;
                     callback.error(sanitizeError("Failed to download style pack.", error));
                     return null;
                 },
                 stylePack -> {
+                    if (downloadGeneration != sessionGeneration) return null;
                     sendOfflineProgress("tiles-start", 0, 100);
                     downloadOfflineTiles(
                         activeOfflineManager,
+                        downloadGeneration,
                         regionId,
                         latitude,
                         longitude,
@@ -1479,6 +1501,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private void downloadOfflineTiles(
         OfflineManager offlineManager,
+        long downloadGeneration,
         String regionId,
         double latitude,
         double longitude,
@@ -1489,8 +1512,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
         Polygon geometry,
         CallbackContext callback
     ) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             try {
+                if (downloadGeneration != sessionGeneration) return;
                 TilesetDescriptorOptions descriptorOptions = new TilesetDescriptorOptions.Builder()
                     .styleURI(styleUrl)
                     .pixelRatio(cordova.getActivity().getResources().getDisplayMetrics().density)
@@ -1511,14 +1535,20 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 activeTileRegionDownload = activeOfflineTileStore.loadTileRegion(
                     regionId,
                     tileRegionOptions,
-                    progress -> sendOfflineProgress("tiles", progress.getCompletedResourceCount(), progress.getRequiredResourceCount()),
+                    progress -> {
+                        if (downloadGeneration == sessionGeneration) {
+                            sendOfflineProgress("tiles", progress.getCompletedResourceCount(), progress.getRequiredResourceCount());
+                        }
+                    },
                     expectedTileRegion -> expectedTileRegion.fold(
                         error -> {
+                            if (downloadGeneration != sessionGeneration) return null;
                             isOfflineDownloading = false;
                             callback.error(sanitizeError("Failed to download tile region.", error));
                             return null;
                         },
                         tileRegion -> {
+                            if (downloadGeneration != sessionGeneration) return null;
                             isOfflineDownloading = false;
                             try {
                                 JSONObject result = new JSONObject();
@@ -1588,7 +1618,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void showOfflineRegion(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -1604,6 +1634,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
             double zoom = options.optDouble("zoom", 13.0);
             String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
+            if (!styleAllowed(styleUrl)) {
+                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
+                return;
+            }
 
             mapView.getMapboxMap().loadStyle(styleUrl);
             mapView.getMapboxMap().setCamera(new CameraOptions.Builder()
@@ -1616,10 +1650,14 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void deleteOfflineRegion(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             try {
                 String regionId = options.optString("regionId", "");
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
+            if (!styleAllowed(styleUrl)) {
+                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
+                return;
+            }
                 boolean deleteStylePack = options.optBoolean("deleteStylePack", true);
 
                 if (regionId.trim().isEmpty()) {
@@ -1955,7 +1993,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void addMarker(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -1971,7 +2009,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             }
 
             if (!addMarkerInternal(id, latitude, longitude)) {
-                callback.error("Marker manager is not available.");
+                callback.error("Marker unavailable or marker/id limit exceeded.");
                 return;
             }
 
@@ -1986,31 +2024,33 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void loadMarkers(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
             }
 
             if (!ensurePointAnnotationManager()) {
-                callback.error("Marker manager is not available.");
+                callback.error("Marker unavailable or marker/id limit exceeded.");
                 return;
-            }
-
-            if (options.optBoolean("replace", true)) {
-                clearMarkersInternal();
             }
 
             JSONArray markers = options.optJSONArray("markers");
-            if (markers == null) {
-                callback.success();
+            if (markers == null) { callback.success(); return; }
+            java.util.Set<String> ids = new java.util.HashSet<>();
+            if (!options.optBoolean("replace", true)) ids.addAll(markerAnnotationsByRecordId.keySet());
+            for (int i = 0; i < markers.length(); i++) {
+                JSONObject marker = markers.optJSONObject(i);
+                if (marker == null) continue;
+                String id = marker.optString("id", String.valueOf(i));
+                if (id.isEmpty() || id.length() > 256) { callback.error("Invalid marker id."); return; }
+                ids.add(id);
+            }
+            if (markers.length() > MAX_MARKERS || ids.size() > MAX_MARKERS) {
+                callback.error("Too many markers: maximum total is " + MAX_MARKERS + ".");
                 return;
             }
-
-            if (markers.length() > MAX_MARKERS) {
-                callback.error("Too many markers: maximum allowed is " + MAX_MARKERS + ".");
-                return;
-            }
+            if (options.optBoolean("replace", true)) clearMarkersInternal();
 
             for (int i = 0; i < markers.length(); i++) {
                 JSONObject marker = markers.optJSONObject(i);
@@ -2040,6 +2080,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
             return false;
         }
 
+        if (id == null || id.isEmpty() || id.length() > 256
+                || (!markerAnnotationsByRecordId.containsKey(id)
+                    && markerAnnotationsByRecordId.size() >= MAX_MARKERS)) return false;
         removeMarkerInternal(id);
 
         PointAnnotationOptions markerOptions = new PointAnnotationOptions()
@@ -2056,7 +2099,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void removeMarker(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             removeMarkerInternal(options.optString("id", ""));
             callback.success();
         });
@@ -2076,7 +2119,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void clearMarkers(CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             clearMarkersInternal();
             callback.success();
         });
@@ -2096,12 +2139,23 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void loadBoundaries(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
             }
 
+            JSONArray inputBoundaries = options.optJSONArray("boundaries");
+            int vertices = 0;
+            if (inputBoundaries != null) {
+                if (inputBoundaries.length() > MAX_BOUNDARIES) { callback.error("Too many boundaries."); return; }
+                for (int i = 0; i < inputBoundaries.length(); i++) {
+                    JSONObject boundary = inputBoundaries.optJSONObject(i);
+                    JSONArray ring = boundary == null ? null : boundary.optJSONArray("geometry");
+                    vertices += ring == null ? 0 : ring.length();
+                    if (vertices > MapboxSecurity.MAX_POINTS) { callback.error("Too many boundary vertices."); return; }
+                }
+            }
             boundaryVisible = options.optBoolean("visible", true);
             boundaryAnnotationOptions.clear();
             clearBoundaryAnnotations();
@@ -2139,7 +2193,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void setBoundaryVisibility(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             boundaryVisible = options.optBoolean("visible", true);
             applyBoundaryVisibility();
             callback.success();
@@ -2158,7 +2212,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             return;
         }
 
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -2194,7 +2248,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void getLayerIds(CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -2223,7 +2277,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void clearBoundaries(CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             clearBoundariesInternal();
             callback.success();
         });
@@ -2373,7 +2427,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void startPathTracking(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -2410,7 +2464,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void stopPathTracking(CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (!isPathTrackingActive) {
                 callback.error("Path tracking is not active.");
                 return;
@@ -2452,7 +2506,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void loadPath(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -2464,8 +2518,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
             }
 
             JSONArray pointsArray = options.optJSONArray("points");
-            if (pointsArray == null || pointsArray.length() < 2) {
-                callback.error("A path requires at least 2 points.");
+            if (pointsArray == null || pointsArray.length() < 2 || pointsArray.length() > MapboxSecurity.MAX_POINTS) {
+                callback.error("A path requires between 2 and 20000 points.");
                 return;
             }
 
@@ -2526,7 +2580,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void clearPaths(CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (lineAnnotationManager != null && pathAnnotation != null) {
                 lineAnnotationManager.delete(pathAnnotation);
                 pathAnnotation = null;
@@ -2537,7 +2591,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void setPathVisibility(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -2622,7 +2676,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void getCamera(CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -2645,7 +2699,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private void getCurrentLocationAccuracy(final CallbackContext callbackContext) {
         // Run on the UI thread for consistency with every other plugin action in this
         // class, even though LocationManager access here doesn't strictly require it.
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (!hasLocationPermission()) {
                 Log.d("MapboxPlugin", "getCurrentLocationAccuracy: location permission not granted");
                 callbackContext.success(buildAccuracyResult(-1f, "Unknown"));
@@ -2746,13 +2800,17 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void setMapStyle(JSONObject options, CallbackContext callback) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
             }
 
             String styleUrl = options.optString("styleUrl", "");
+            if (!styleAllowed(styleUrl)) {
+                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
+                return;
+            }
             if (styleUrl.isEmpty()) {
                 callback.error("styleUrl is required");
                 return;
@@ -2761,7 +2819,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             mapView.getMapboxMap().loadStyle(
                 styleUrl,
                 style -> {
-                    cordova.getActivity().runOnUiThread(() -> {
+                    runForSession(() -> {
                         JSONObject result = new JSONObject();
                         try {
                             result.put("status", "styleChanged");
@@ -2789,7 +2847,12 @@ public class MapboxPluginEntry extends CordovaPlugin {
         activeOfflineTileStore = null;
     }
 
-    private void closeInternal() {
+    protected void closeInternal() {
+        sessionGeneration++;
+        cancelPendingLocationActions();
+        // Clear callbacks before stopping services so cleanup emits no stale events.
+        trackingStatusCallback = null;
+        locationAccuracyCallback = null;
         stopHeadingFollowMode();
         stopUserTracking();
         cancelMoveToCurrentLocation();
@@ -2915,12 +2978,12 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private String sanitizeError(String contextMessage, Throwable t) {
-        Log.e("MapboxPlugin", contextMessage, t);
+        Log.e("MapboxPlugin", contextMessage);
         return contextMessage;
     }
 
     private String sanitizeError(String contextMessage, Object t) {
-        Log.e("MapboxPlugin", contextMessage + ": " + t);
+        Log.e("MapboxPlugin", contextMessage);
         return contextMessage;
     }
 
@@ -3008,12 +3071,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     @Override
     public void onReset() {
-        cancelMoveToCurrentLocation();
-        waypointSelectedCallback = null;
-        markerClickCallback = null;
-        offlineDownloadProgressCallback = null;
-        lastKeepCallbackOfflineMs = 0L;
-        lastKeepCallbackWaypointMs = 0L;
-        lastKeepCallbackMarkerMs = 0L;
+        // Invalidate queued work immediately, then release UI-owned resources.
+        sessionGeneration++;
+        cordova.getActivity().runOnUiThread(this::closeInternal);
+        super.onReset();
     }
 }

@@ -1,6 +1,9 @@
 {
   "name": "cordova-plugin-outsystems-mapbox",
-  "version": "1.0.2",
+  "version": "1.0.3",
+  "scripts": {
+    "test": "node --test tests/security.test.cjs"
+  },
   "description": "OutSystems-compatible Cordova plugin wrapper for Mapbox Maps Android and iOS.",
   "cordova": {
     "id": "cordova-plugin-outsystems-mapbox",

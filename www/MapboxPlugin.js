@@ -4,6 +4,21 @@ var SERVICE = 'MapboxPlugin';
 
 function call(action, args) {
   return new Promise(function (resolve, reject) {
+    try {
+      var json = JSON.stringify(args || []);
+      if (json.length > 4 * 1024 * 1024) throw new Error('Map input exceeds the 4 MiB limit.');
+      var options = (args || [])[0] || {};
+      if (action === 'downloadOfflineRegion' || action === 'downloadOfflineRegionForRect') {
+        var minZoom = options.minZoom === undefined ? 10 : Number(options.minZoom);
+        var maxZoom = options.maxZoom === undefined ? 16 : Number(options.maxZoom);
+        if (!isFinite(minZoom) || !isFinite(maxZoom) || minZoom < 2 || maxZoom > 18 || minZoom > maxZoom) {
+          throw new Error('Offline zoom must be between 2 and 18 with minZoom <= maxZoom.');
+        }
+      }
+    } catch (error) {
+      reject(error);
+      return;
+    }
     exec(resolve, reject, SERVICE, action, args || []);
   });
 }
@@ -158,6 +173,7 @@ var api = {
   loadBoundaries: function (boundaries, options) {
     options = options || {};
     if (typeof boundaries === 'string') {
+      if (boundaries.length > 4 * 1024 * 1024) return Promise.reject(new Error('Boundary input is too large.'));
       try {
         boundaries = JSON.parse(boundaries);
       } catch (error) {
@@ -172,6 +188,12 @@ var api = {
     var MAX_BOUNDARIES = 1000;
     if (boundaries.length > MAX_BOUNDARIES) {
       return Promise.reject(new Error('Too many boundaries: maximum allowed is ' + MAX_BOUNDARIES + '.'));
+    }
+    var vertices = 0;
+    for (var i = 0; i < boundaries.length; i++) {
+      var geometry = boundaries[i] && boundaries[i].geometry;
+      vertices += Array.isArray(geometry) ? geometry.length : 0;
+      if (vertices > 20000) return Promise.reject(new Error('Too many boundary vertices: maximum total is 20000.'));
     }
     options.boundaries = boundaries;
     return call('loadBoundaries', [options]);
@@ -220,6 +242,7 @@ var api = {
   loadPath: function (pathData, options) {
     options = options || {};
     if (typeof pathData === 'string') {
+      if (pathData.length > 4 * 1024 * 1024) return Promise.reject(new Error('Path input is too large.'));
       try {
         pathData = JSON.parse(pathData);
       } catch (error) {
@@ -230,6 +253,9 @@ var api = {
     }
     if (!pathData || !Array.isArray(pathData.points)) {
       return Promise.reject(new Error('Path data must have a "points" array.'));
+    }
+    if (pathData.points.length < 2 || pathData.points.length > 20000) {
+      return Promise.reject(new Error('A path requires between 2 and 20000 points.'));
     }
     options.points = pathData.points;
     return call('loadPath', [options]);
