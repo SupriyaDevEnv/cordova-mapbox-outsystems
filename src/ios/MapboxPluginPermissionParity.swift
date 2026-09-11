@@ -12,6 +12,7 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
         case setHeadingFollowMode(CDVInvokedUrlCommand)
         case setUserTrackingEnabled(CDVInvokedUrlCommand)
         case moveToCurrentLocation(CDVInvokedUrlCommand)
+        case startPathTracking(CDVInvokedUrlCommand)
     }
 
     private let permissionLocationManager = CLLocationManager()
@@ -43,6 +44,11 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
         runWhenLocationAuthorized(.moveToCurrentLocation(command))
     }
 
+    @objc(startPathTracking:)
+    override func startPathTracking(command: CDVInvokedUrlCommand) {
+        runWhenLocationAuthorized(.startPathTracking(command))
+    }
+
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         guard manager === permissionLocationManager else {
             return
@@ -68,18 +74,18 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
         }
     }
 
-    override func onReset() {
+    override func closeInternal() {
         for action in pendingLocationActions {
             fail(action, message: "Location request was cancelled.")
         }
         pendingLocationActions.removeAll()
         locationPermissionRequestInFlight = false
         permissionLocationManager.delegate = nil
-        super.onReset()
+        super.closeInternal()
     }
 
     private func runWhenLocationAuthorized(_ action: PendingLocationAction) {
-        DispatchQueue.main.async {
+        runForSession {
             self.permissionLocationManager.delegate = self
             let status = self.permissionLocationManager.authorizationStatus
 
@@ -93,6 +99,9 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
                 return
             }
 
+            guard self.pendingLocationActions.count < 32 else {
+                self.fail(action, message: "Too many pending location requests."); return
+            }
             self.pendingLocationActions.append(action)
             if !self.locationPermissionRequestInFlight {
                 self.locationPermissionRequestInFlight = true
@@ -113,6 +122,8 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
             super.setUserTrackingEnabled(command: command)
         case .moveToCurrentLocation(let command):
             super.moveToCurrentLocation(command: command)
+        case .startPathTracking(let command):
+            super.startPathTracking(command: command)
         }
     }
 
@@ -123,7 +134,8 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
              .setDeviceHeadingEnabled(let command),
              .setHeadingFollowMode(let command),
              .setUserTrackingEnabled(let command),
-             .moveToCurrentLocation(let command):
+             .moveToCurrentLocation(let command),
+             .startPathTracking(let command):
             callbackId = command.callbackId
         }
 
