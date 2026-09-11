@@ -414,26 +414,26 @@ if (gestures != null) {
     }
 );
 
-        gestures.addOnScaleListener(
-            new com.mapbox.maps.plugin.gestures.OnScaleListener() {
-                @Override
-                public void onScaleBegin(
-                        com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
-                    isCameraFollowingUser = false;
+            gestures.addOnScaleListener(
+                new com.mapbox.maps.plugin.gestures.OnScaleListener() {
+                    @Override
+                    public void onScaleBegin(
+                            com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
+                        isCameraFollowingUser = false;
+                    }
+            
+                    @Override
+                    public void onScale(
+                            com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
+                        // No additional action needed.
+                    }
+            
+                    @Override
+                    public void onScaleEnd(
+                            com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
+                    }
                 }
-        
-                @Override
-                public boolean onScale(
-                        com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
-                    return false;
-                }
-        
-                @Override
-                public void onScaleEnd(
-                        com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
-                }
-            }
-        );
+            );
 }    
 
                 if (!options.optBoolean("inline", false)) {
