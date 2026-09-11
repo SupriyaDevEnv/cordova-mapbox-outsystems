@@ -394,25 +394,25 @@ private static final double LOCATION_SMOOTHING_FACTOR = 0.35;
 if (gestures != null) {
 
     gestures.addOnMoveListener(
-        new com.mapbox.maps.plugin.gestures.OnMoveListener() {
-            @Override
-            public void onMoveBegin(
-                    com.mapbox.maps.plugin.gestures.MoveGestureDetector detector) {
-                isCameraFollowingUser = false;
-            }
-
-            @Override
-            public boolean onMove(
-                    com.mapbox.maps.plugin.gestures.MoveGestureDetector detector) {
-                return false;
-            }
-
-            @Override
-            public void onMoveEnd(
-                    com.mapbox.maps.plugin.gestures.MoveGestureDetector detector) {
-            }
+    new com.mapbox.maps.plugin.gestures.OnMoveListener() {
+        @Override
+        public void onMoveBegin(
+                com.mapbox.android.gestures.MoveGestureDetector detector) {
+            isCameraFollowingUser = false;
         }
-    );
+
+        @Override
+        public boolean onMove(
+                com.mapbox.android.gestures.MoveGestureDetector detector) {
+            return false;
+        }
+
+        @Override
+        public void onMoveEnd(
+                com.mapbox.android.gestures.MoveGestureDetector detector) {
+        }
+    }
+);
 
         gestures.addOnScaleListener(
             new com.mapbox.maps.plugin.gestures.OnScaleListener() {
