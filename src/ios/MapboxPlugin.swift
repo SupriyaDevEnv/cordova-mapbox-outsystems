@@ -9,7 +9,10 @@ import Turf
 class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDelegate {
     private var sessionGeneration: UInt64 = 0
     func runForSession(_ work: @escaping () -> Void) {
-        let generation = sessionGeneration
+        runForGeneration(sessionGeneration, work)
+    }
+
+    private func runForGeneration(_ generation: UInt64, _ work: @escaping () -> Void) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.sessionGeneration == generation else { return }
             work()
@@ -1076,33 +1079,35 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             for: styleURI,
             loadOptions: stylePackOptions
         ) { progress in
-            guard downloadGeneration == self.sessionGeneration else { return }
-            self.sendOfflineProgress(
-                phase: "style",
-                completed: UInt64(progress.completedResourceCount),
-                required: UInt64(progress.requiredResourceCount)
-            )
-        } completion: { result in
-            guard downloadGeneration == self.sessionGeneration else { return }
-            switch result {
-            case .success:
-                self.sendOfflineProgress(phase: "tiles-start", completed: 0, required: 100)
-                self.downloadOfflineTiles(
-                    offlineManager: offlineManager,
-                    downloadGeneration: downloadGeneration,
-                    regionId: regionId,
-                    latitude: latitude,
-                    longitude: longitude,
-                    radiusKm: boundedRadiusKm,
-                    minZoom: boundedMinZoom,
-                    maxZoom: boundedMaxZoom,
-                    styleURI: styleURI,
-                    geometry: geometry,
-                    command: command
+            self.runForGeneration(downloadGeneration) {
+                self.sendOfflineProgress(
+                    phase: "style",
+                    completed: UInt64(progress.completedResourceCount),
+                    required: UInt64(progress.requiredResourceCount)
                 )
-            case .failure(let error):
-                self.isOfflineDownloading = false
-                self.sendError(self.sanitizeError(contextMessage: "Failed to download style pack.", error: error), command)
+            }
+        } completion: { result in
+            self.runForGeneration(downloadGeneration) {
+                switch result {
+                case .success:
+                    self.sendOfflineProgress(phase: "tiles-start", completed: 0, required: 100)
+                    self.downloadOfflineTiles(
+                        offlineManager: offlineManager,
+                        downloadGeneration: downloadGeneration,
+                        regionId: regionId,
+                        latitude: latitude,
+                        longitude: longitude,
+                        radiusKm: boundedRadiusKm,
+                        minZoom: boundedMinZoom,
+                        maxZoom: boundedMaxZoom,
+                        styleURI: styleURI,
+                        geometry: geometry,
+                        command: command
+                    )
+                case .failure(let error):
+                    self.isOfflineDownloading = false
+                    self.sendError(self.sanitizeError(contextMessage: "Failed to download style pack.", error: error), command)
+                }
             }
         }
     }
@@ -1145,25 +1150,27 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             forId: regionId,
             loadOptions: loadOptions
         ) { progress in
-            guard downloadGeneration == self.sessionGeneration else { return }
-            self.sendOfflineProgress(
-                phase: "tiles",
-                completed: UInt64(progress.completedResourceCount),
-                required: UInt64(progress.requiredResourceCount)
-            )
+            self.runForGeneration(downloadGeneration) {
+                self.sendOfflineProgress(
+                    phase: "tiles",
+                    completed: UInt64(progress.completedResourceCount),
+                    required: UInt64(progress.requiredResourceCount)
+                )
+            }
         } completion: { result in
-            guard downloadGeneration == self.sessionGeneration else { return }
-            self.isOfflineDownloading = false
-            switch result {
-            case .success:
-                self.sendSuccess([
-                    "regionId": regionId,
-                    "latitude": latitude,
-                    "longitude": longitude,
-                    "radiusKm": radiusKm
-                ], command)
-            case .failure(let error):
-                self.sendError(self.sanitizeError(contextMessage: "Failed to download tile region.", error: error), command)
+            self.runForGeneration(downloadGeneration) {
+                self.isOfflineDownloading = false
+                switch result {
+                case .success:
+                    self.sendSuccess([
+                        "regionId": regionId,
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "radiusKm": radiusKm
+                    ], command)
+                case .failure(let error):
+                    self.sendError(self.sanitizeError(contextMessage: "Failed to download tile region.", error: error), command)
+                }
             }
         }
     }

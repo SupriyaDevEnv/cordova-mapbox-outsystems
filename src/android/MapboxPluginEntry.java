@@ -106,7 +106,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
     protected void cancelPendingLocationActions() { }
 
     private void runForSession(Runnable action) {
-        final long generation = sessionGeneration;
+        runForGeneration(sessionGeneration, action);
+    }
+
+    private void runForGeneration(long generation, Runnable action) {
         cordova.getActivity().runOnUiThread(() -> {
             if (generation == sessionGeneration) action.run();
         });
@@ -413,10 +416,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     .zoom(zoom)
                     .build());
 
+                final long styleGeneration = sessionGeneration;
                 mapView.getMapboxMap().loadStyle(
                     styleUrl,
                     style -> {
-                        runForSession(() -> {
+                        runForGeneration(styleGeneration, () -> {
                             Log.d(
                                 "MapboxPlugin",
                                 "Map style loaded"
@@ -1465,12 +1469,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
         activeStylePackDownload = activeOfflineManager.loadStylePack(
             styleUrl,
             stylePackOptions,
-            progress -> {
-                if (downloadGeneration == sessionGeneration) {
-                    sendOfflineProgress("style", progress.getCompletedResourceCount(), progress.getRequiredResourceCount());
-                }
-            },
-            expectedStylePack -> expectedStylePack.fold(
+            progress -> runForGeneration(downloadGeneration, () -> sendOfflineProgress("style", progress.getCompletedResourceCount(), progress.getRequiredResourceCount())),
+            expectedStylePack -> runForGeneration(downloadGeneration, () -> expectedStylePack.fold(
                 error -> {
                     if (downloadGeneration != sessionGeneration) return null;
                     isOfflineDownloading = false;
@@ -1495,7 +1495,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     );
                     return null;
                 }
-            )
+            ))
         );
     }
 
@@ -1535,12 +1535,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 activeTileRegionDownload = activeOfflineTileStore.loadTileRegion(
                     regionId,
                     tileRegionOptions,
-                    progress -> {
-                        if (downloadGeneration == sessionGeneration) {
-                            sendOfflineProgress("tiles", progress.getCompletedResourceCount(), progress.getRequiredResourceCount());
-                        }
-                    },
-                    expectedTileRegion -> expectedTileRegion.fold(
+                    progress -> runForGeneration(downloadGeneration, () -> sendOfflineProgress("tiles", progress.getCompletedResourceCount(), progress.getRequiredResourceCount())),
+                    expectedTileRegion -> runForGeneration(downloadGeneration, () -> expectedTileRegion.fold(
                         error -> {
                             if (downloadGeneration != sessionGeneration) return null;
                             isOfflineDownloading = false;
@@ -1562,7 +1558,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                             }
                             return null;
                         }
-                    )
+                    ))
                 );
             } catch (Throwable e) {
                 isOfflineDownloading = false;
@@ -2816,10 +2812,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 return;
             }
 
+            final long styleGeneration = sessionGeneration;
             mapView.getMapboxMap().loadStyle(
                 styleUrl,
                 style -> {
-                    runForSession(() -> {
+                    runForGeneration(styleGeneration, () -> {
                         JSONObject result = new JSONObject();
                         try {
                             result.put("status", "styleChanged");

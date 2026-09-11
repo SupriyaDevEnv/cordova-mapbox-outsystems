@@ -30,5 +30,7 @@ jobs:
           "$RUNNER_TEMP/security-tests"
       - name: Regress empty-path native crash
         run: python3 tests/test-empty-path.py
+      - name: Regress stale session callbacks on both platforms
+        run: python3 tests/test-session-guards.py
       - name: Parse all iOS plugin sources
         run: swiftc -frontend -parse src/ios/*.swift
