@@ -1295,7 +1295,19 @@ if (gestures != null) {
                         if (applyZoom) {
                             cameraBuilder.zoom(zoom);
                         }
-                        mapView.getMapboxMap().setCamera(cameraBuilder.build());
+                        CameraAnimationsPlugin cameraAnimations =
+                            mapView.getPlugin(Plugin.MAPBOX_CAMERA_PLUGIN_ID);
+                        if (cameraAnimations != null) {
+                            cameraAnimations.easeTo(
+                                cameraBuilder.build(),
+                                new MapAnimationOptions.Builder()
+                                    .duration(700L)
+                                    .build(),
+                                null
+                            );
+                        } else {
+                            mapView.getMapboxMap().setCamera(cameraBuilder.build());
+                        }
                     }
 
                     JSONObject result = new JSONObject();
