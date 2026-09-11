@@ -181,6 +181,7 @@ private static final double LOCATION_SMOOTHING_FACTOR = 0.35;
     private CallbackContext locationAccuracyCallback;
     private long lastLocationAccuracyUpdateMs = 0L;
     private static final long LOCATION_ACCURACY_CALLBACK_INTERVAL_MS = 500L;
+    private boolean isCameraFollowingUser = true;
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) {
@@ -387,6 +388,53 @@ private static final double LOCATION_SMOOTHING_FACTOR = 0.35;
                 rootView.addView(mapView);
                 mapView.onStart();
                 installMapClickListener();
+                GesturesPlugin gestures =
+    mapView.getPlugin(Plugin.MAPBOX_GESTURES_PLUGIN_ID);
+
+if (gestures != null) {
+
+    gestures.addOnMoveListener(
+        new com.mapbox.maps.plugin.gestures.OnMoveListener() {
+            @Override
+            public void onMoveBegin(
+                    com.mapbox.maps.plugin.gestures.MoveGestureDetector detector) {
+                isCameraFollowingUser = false;
+            }
+
+            @Override
+            public boolean onMove(
+                    com.mapbox.maps.plugin.gestures.MoveGestureDetector detector) {
+                return false;
+            }
+
+            @Override
+            public void onMoveEnd(
+                    com.mapbox.maps.plugin.gestures.MoveGestureDetector detector) {
+            }
+        }
+    );
+
+        gestures.addOnScaleListener(
+            new com.mapbox.maps.plugin.gestures.OnScaleListener() {
+                @Override
+                public void onScaleBegin(
+                        com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
+                    isCameraFollowingUser = false;
+                }
+        
+                @Override
+                public boolean onScale(
+                        com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
+                    return false;
+                }
+        
+                @Override
+                public void onScaleEnd(
+                        com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
+                }
+            }
+        );
+}    
 
                 if (!options.optBoolean("inline", false)) {
                     Button closeButton = new Button(cordova.getActivity());
@@ -885,6 +933,7 @@ private static final double LOCATION_SMOOTHING_FACTOR = 0.35;
 
         // Stop previous tracking and reset filter state
         stopUserTracking();
+        isCameraFollowingUser = true;
 
         locationManager = (LocationManager) cordova
             .getActivity()
@@ -947,6 +996,21 @@ private static final double LOCATION_SMOOTHING_FACTOR = 0.35;
                         latitude,
                         longitude
                     );
+                    // Reject likely GPS drift:
+                    // If the reported movement is still inside the GPS uncertainty
+                    // and the new reading is significantly less accurate, ignore it.
+                    float previousAccuracy =
+                        lastAcceptedTrackingLocation.getAccuracy();
+                    
+                    float newAccuracy = location.getAccuracy();
+                    
+                    float uncertaintyRadius =
+                        Math.max(previousAccuracy, newAccuracy);
+                    
+                    if (distance < uncertaintyRadius
+                            && newAccuracy > previousAccuracy * 1.5f) {
+                        return;
+                    }
 
                     long timeDifference =
                         location.getTime()
@@ -1040,30 +1104,31 @@ private static final double LOCATION_SMOOTHING_FACTOR = 0.35;
                             location
                         );
                     }
-
-                    CameraAnimationsPlugin cameraAnimations =
-                        mapView.getPlugin(
-                            Plugin.MAPBOX_CAMERA_PLUGIN_ID
-                        );
-                    CameraOptions cameraOptions =
-                        new CameraOptions.Builder()
-                            .center(cameraPoint)
-                            .build();
-
-                    if (cameraAnimations != null) {
-                        cameraAnimations.easeTo(
-                            cameraOptions,
-                            new MapAnimationOptions.Builder()
-                                .duration(250L)
-                                .build(),
-                            null
-                        );
-                    } else {
-                        mapView.getMapboxMap()
-                            .setCamera(cameraOptions);
-                    }
-                });
-
+            
+                                if (isCameraFollowingUser) {
+                CameraAnimationsPlugin cameraAnimations =
+                    mapView.getPlugin(
+                        Plugin.MAPBOX_CAMERA_PLUGIN_ID
+                    );
+            
+                CameraOptions cameraOptions =
+                    new CameraOptions.Builder()
+                        .center(cameraPoint)
+                        .build();
+            
+                if (cameraAnimations != null) {
+                    cameraAnimations.easeTo(
+                        cameraOptions,
+                        new MapAnimationOptions.Builder()
+                            .duration(250L)
+                            .build(),
+                        null
+                    );
+                } else {
+                    mapView.getMapboxMap()
+                        .setCamera(cameraOptions);
+                }
+            }
                 // Collect path point if path tracking is active
                 if (isPathTrackingActive) {
                     if (pathPoints.size() >= MapboxSecurity.MAX_POINTS) {
@@ -1156,6 +1221,7 @@ private static final double LOCATION_SMOOTHING_FACTOR = 0.35;
     }
 
     private void moveToCurrentLocation(JSONObject options, CallbackContext callback) {
+        isCameraFollowingUser = true;    
         runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized.");
