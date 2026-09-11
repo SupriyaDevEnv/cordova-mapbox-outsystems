@@ -96,8 +96,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
-    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
-    private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
+    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 400L;
+private static final double LOCATION_SMOOTHING_FACTOR = 0.35;
     private static final float MIN_MOVING_SPEED_MPS = 0.15f;
 
     private volatile long sessionGeneration = 0;
@@ -913,11 +913,16 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 long now = System.currentTimeMillis();
 
                 // 1. Reject readings without accuracy data or poor accuracy
-                if (!location.hasAccuracy()
-                        || location.getAccuracy()
-                        > MAX_ACCEPTABLE_ACCURACY_METERS) {
-                    return;
-                }
+               if (!location.hasAccuracy()) {
+                        return;
+                    }
+                    
+                    // Allow the first valid fix immediately so the Mapbox puck appears quickly.
+                    // After the first fix, reject poor-accuracy updates.
+                    if (lastAcceptedTrackingLocation != null
+                            && location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) {
+                        return;
+                    }
 
                 // 2. Rate limit camera updates
                 if (now - lastUserTrackingUpdateMs
@@ -948,16 +953,12 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         - lastAcceptedTrackingLocation.getTime();
 
                     // Reject unrealistic jumps and GPS drift while stationary
-                    if (location.hasSpeed()) {
-                        if (location.getSpeed()
-                                > MAX_REASONABLE_SPEED_MPS) {
-                            return;
-                        }
-                        if (location.getSpeed()
-                                < MIN_MOVING_SPEED_MPS) {
-                            return;
-                        }
-                    } else if (Math.abs(timeDifference) > 0) {
+                        if (location.hasSpeed()) {
+                            if (location.getSpeed()
+                                    > MAX_REASONABLE_SPEED_MPS) {
+                                return;
+                            }
+                        } else if (Math.abs(timeDifference) > 0) {
                         float fallbackSpeed = (float) (distance
                             / (Math.abs(timeDifference) / 1000.0));
                         if (fallbackSpeed
@@ -1036,7 +1037,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
                     if (smoothedLocationProvider != null) {
                         smoothedLocationProvider.updateLocation(
-                            filteredLocation
+                            location
                         );
                     }
 
@@ -1053,7 +1054,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         cameraAnimations.easeTo(
                             cameraOptions,
                             new MapAnimationOptions.Builder()
-                                .duration(500L)
+                                .duration(250L)
                                 .build(),
                             null
                         );
@@ -1109,7 +1110,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
                     1000L,
-                    2.0f,
+                    0.0f,
                     userTrackingListener
                 );
             // Use Network only when GPS is unavailable
@@ -1117,7 +1118,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 locationManager.requestLocationUpdates(
                     LocationManager.NETWORK_PROVIDER,
                     1000L,
-                    3.0f,
+                    0.0f,
                     userTrackingListener
                 );
             }
