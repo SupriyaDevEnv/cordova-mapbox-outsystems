@@ -1143,7 +1143,7 @@ if (gestures != null) {
                     });
                 }
             });
-
+            }
             @Override
             public void onStatusChanged(
                     String provider,
