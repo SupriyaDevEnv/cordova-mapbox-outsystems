@@ -97,7 +97,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 15.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
     private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 400L;
-private static final double LOCATION_SMOOTHING_FACTOR = 0.35;
+private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
     private static final float MIN_MOVING_SPEED_MPS = 0.15f;
 
     private volatile long sessionGeneration = 0;
@@ -1105,7 +1105,7 @@ if (gestures != null) {
 
                     if (smoothedLocationProvider != null) {
                         smoothedLocationProvider.updateLocation(
-                            location
+                            filteredLocation
                         );
                     }
             
@@ -1179,7 +1179,7 @@ if (gestures != null) {
                 locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
                     1000L,
-                    0.0f,
+                    2.0f,
                     userTrackingListener
                 );
             // Use Network only when GPS is unavailable
@@ -1187,7 +1187,7 @@ if (gestures != null) {
                 locationManager.requestLocationUpdates(
                     LocationManager.NETWORK_PROVIDER,
                     1000L,
-                    0.0f,
+                    3.0f,
                     userTrackingListener
                 );
             }
