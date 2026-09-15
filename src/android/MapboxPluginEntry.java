@@ -1004,10 +1004,6 @@ if (gestures != null) {
                                 > MAX_REASONABLE_SPEED_MPS) {
                             return;
                         }
-                        if (location.getSpeed()
-                                < MIN_MOVING_SPEED_MPS) {
-                            return;
-                        }
                     } else if (Math.abs(timeDifference) > 0) {
                         float fallbackSpeed = (float) (distance
                             / (Math.abs(timeDifference) / 1000.0));
