@@ -2136,39 +2136,59 @@ if (gestures != null) {
         });
     }
 
-    private boolean addMarkerInternal(String id, double latitude, double longitude Bitmap customBitmap) {
-        if (!ensurePointAnnotationManager()) {
-            return false;
-        }
+private boolean addMarkerInternal(
+        String id,
+        double latitude,
+        double longitude) {
 
-        if (id == null || id.isEmpty() || id.length() > 256
-                || (!markerAnnotationsByRecordId.containsKey(id)
-                    && markerAnnotationsByRecordId.size() >= MAX_MARKERS)) return false;
-        removeMarkerInternal(id);
+    return addMarkerInternal(
+        id,
+        latitude,
+        longitude,
+        null
+    );
+}
 
-        PointAnnotationOptions markerOptions = new PointAnnotationOptions()
-            .withPoint(Point.fromLngLat(longitude, latitude))
-           .withIconImage(
-    customBitmap != null
-        ? customBitmap
-        : createWaypointMarkerBitmap()
-)
-            .withIconAnchor(IconAnchor.BOTTOM)
-            .withIconSize(1.0);
+private boolean addMarkerInternal(
+        String id,
+        double latitude,
+        double longitude,
+        Bitmap customBitmap) {
 
-        PointAnnotation annotation = pointAnnotationManager.create(markerOptions);
-        markerRecordIds.put(annotation.getId(), id);
-        markerAnnotationsByRecordId.put(id, annotation);
-        markerPointsByRecordId.put(id, Point.fromLngLat(longitude, latitude));
-        return true;
+    if (!ensurePointAnnotationManager()) {
+        return false;
     }
 
-    private void removeMarker(JSONObject options, CallbackContext callback) {
-        runForSession(() -> {
-            removeMarkerInternal(options.optString("id", ""));
-            callback.success();
-        });
+    if (id == null || id.isEmpty() || id.length() > 256
+            || (!markerAnnotationsByRecordId.containsKey(id)
+                && markerAnnotationsByRecordId.size() >= MAX_MARKERS)) {
+        return false;
     }
+
+    removeMarkerInternal(id);
+
+    PointAnnotationOptions markerOptions = new PointAnnotationOptions()
+        .withPoint(Point.fromLngLat(longitude, latitude))
+        .withIconImage(
+            customBitmap != null
+                ? customBitmap
+                : createWaypointMarkerBitmap()
+        )
+        .withIconAnchor(IconAnchor.BOTTOM)
+        .withIconSize(1.0);
+
+    PointAnnotation annotation =
+        pointAnnotationManager.create(markerOptions);
+
+    markerRecordIds.put(annotation.getId(), id);
+    markerAnnotationsByRecordId.put(id, annotation);
+    markerPointsByRecordId.put(
+        id,
+        Point.fromLngLat(longitude, latitude)
+    );
+
+    return true;
+}
 
     private void removeMarkerInternal(String id) {
         if (pointAnnotationManager == null || id == null || id.isEmpty()) {
