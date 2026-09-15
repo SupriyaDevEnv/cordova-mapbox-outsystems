@@ -94,9 +94,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final float MODERATE_METERS = 30f;
     private static final float LOW_METERS = 100f;
 
-    private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 15.0f;
+    private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
-    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 400L;
+    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
 private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
     private static final float MIN_MOVING_SPEED_MPS = 0.15f;
 
@@ -962,14 +962,8 @@ if (gestures != null) {
                 long now = System.currentTimeMillis();
 
                 // 1. Reject readings without accuracy data or poor accuracy
-               if (!location.hasAccuracy()) {
-                        return;
-                    }
-                    
-                    // Allow the first valid fix immediately so the Mapbox puck appears quickly.
-                    // After the first fix, reject poor-accuracy updates.
-                    if (lastAcceptedTrackingLocation != null
-                            && location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) {
+                    if (!location.hasAccuracy()
+                            || location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) {
                         return;
                     }
 
@@ -999,18 +993,6 @@ if (gestures != null) {
                     // Reject likely GPS drift:
                     // If the reported movement is still inside the GPS uncertainty
                     // and the new reading is significantly less accurate, ignore it.
-                    float previousAccuracy =
-                        lastAcceptedTrackingLocation.getAccuracy();
-                    
-                    float newAccuracy = location.getAccuracy();
-                    
-                    float uncertaintyRadius =
-                        Math.max(previousAccuracy, newAccuracy);
-                    
-                    if (distance < uncertaintyRadius
-                            && newAccuracy > previousAccuracy * 1.5f) {
-                        return;
-                    }
 
                     long timeDifference =
                         location.getTime()
@@ -1124,7 +1106,7 @@ if (gestures != null) {
                     cameraAnimations.easeTo(
                         cameraOptions,
                         new MapAnimationOptions.Builder()
-                            .duration(250L)
+                            .duration(500L)
                             .build(),
                         null
                     );
