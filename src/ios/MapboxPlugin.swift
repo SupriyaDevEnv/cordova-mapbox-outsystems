@@ -29,11 +29,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var pathAnnotation: PolylineAnnotation?
     private var pathPoints: [CLLocationCoordinate2D] = []
     private var isPathTrackingActive = false
+    private var isPathTrackingPaused = false
     private var pathTrackingStartTime: TimeInterval = 0
     private var isPathVisible = true
     private var pathLineColor: String = "#FF0000"
     private var pathLineWidth: Double = 3.0
     private var pathLineOpacity: Double = 1.0
+    private var pathSegments: [[CLLocationCoordinate2D]] = []
+    private var currentSegment: [CLLocationCoordinate2D] = []
     private var waypointSelectedCallbackId: String?
     private var markerClickCallbackId: String?
     private var offlineDownloadProgressCallbackId: String?
@@ -528,12 +531,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         runForSession {
             self.mapView?.mapboxMap.setCamera(to: CameraOptions(center: coordinate))
 
-            if self.isPathTrackingActive {
+            if self.isPathTrackingActive && !self.isPathTrackingPaused {
                 guard self.pathPoints.count < MapboxSecurity.maxPoints else {
                     self.stopUserTracking()
                     return // Keep the recording available to stopPathTracking().
                 }
                 self.pathPoints.append(coordinate)
+                self.currentSegment.append(coordinate)
                 self.updatePathAnnotation()
             }
         }
@@ -749,10 +753,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
             self.isPathTrackingActive = true
+            self.isPathTrackingPaused = false
             self.isPathVisible = true
             self.pathTrackingStartTime = Date().timeIntervalSince1970
             self.pathPoints.removeAll()
             self.pathAnnotation = nil
+            self.pathSegments.removeAll()
+            self.currentSegment.removeAll()
 
             self.pathLineColor = options["lineColor"] as? String ?? "#FF0000"
             self.pathLineWidth = options["lineWidth"] as? Double ?? 3.0
@@ -776,7 +783,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             self.isPathTrackingActive = false
+            self.isPathTrackingPaused = false
             let duration = Date().timeIntervalSince1970 - self.pathTrackingStartTime
+
+            // Finish current segment if it has points
+            if !self.currentSegment.isEmpty {
+                self.pathSegments.append(self.currentSegment)
+                self.currentSegment.removeAll()
+            }
 
             var totalDistance: Double = 0
             for (previous, current) in zip(self.pathPoints, self.pathPoints.dropFirst()) {
@@ -786,10 +800,75 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             let pointsArray: [[String: Double]] = self.pathPoints.map { ["lat": $0.latitude, "lon": $0.longitude] }
+
+            // Build segment boundaries
+            var segmentsArray: [[String: Int]] = []
+            var startIndex = 0
+            for segment in self.pathSegments {
+                segmentsArray.append([
+                    "startIndex": startIndex,
+                    "endIndex": startIndex + segment.count - 1
+                ])
+                startIndex += segment.count
+            }
+
             self.sendSuccess([
                 "points": pointsArray,
                 "distance": (totalDistance * 100).rounded() / 100,
-                "duration": (duration * 1000).rounded()
+                "duration": (duration * 1000).rounded(),
+                "segments": segmentsArray,
+                "segmentCount": self.pathSegments.count
+            ], command)
+        }
+    }
+
+    @objc(pausePathTracking:)
+    func pausePathTracking(command: CDVInvokedUrlCommand) {
+        runForSession {
+            guard self.isPathTrackingActive else {
+                self.sendError("Path tracking is not active.", command)
+                return
+            }
+
+            guard !self.isPathTrackingPaused else {
+                self.sendError("Path tracking is already paused.", command)
+                return
+            }
+
+            self.isPathTrackingPaused = true
+
+            // Finish current segment
+            if !self.currentSegment.isEmpty {
+                self.pathSegments.append(self.currentSegment)
+                self.currentSegment.removeAll()
+            }
+
+            self.sendSuccess([
+                "status": "paused",
+                "segmentCount": self.pathSegments.count
+            ], command)
+        }
+    }
+
+    @objc(continuePathTracking:)
+    func continuePathTracking(command: CDVInvokedUrlCommand) {
+        runForSession {
+            guard self.isPathTrackingActive else {
+                self.sendError("Path tracking is not active.", command)
+                return
+            }
+
+            guard self.isPathTrackingPaused else {
+                self.sendError("Path tracking is not paused. Call pausePathTracking first.", command)
+                return
+            }
+
+            self.isPathTrackingPaused = false
+            self.currentSegment.removeAll()
+
+            self.sendSuccess([
+                "status": "continued",
+                "segmentCount": self.pathSegments.count + 1
             ], command)
         }
     }
@@ -1584,11 +1663,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         pathAnnotation = nil
         pathPoints.removeAll()
         isPathTrackingActive = false
+        isPathTrackingPaused = false
         pathTrackingStartTime = 0
         isPathVisible = true
         pathLineColor = "#FF0000"
         pathLineWidth = 3.0
         pathLineOpacity = 1.0
+        pathSegments.removeAll()
+        currentSegment.removeAll()
         waypointSelectedCallbackId = nil
         markerClickCallbackId = nil
         offlineDownloadProgressCallbackId = nil

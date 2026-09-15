@@ -44,6 +44,8 @@ It supports inline maps, behind-WebView maps, markers, current-location movement
 - `clearBoundaries()`
 - `startPathTracking(options)`
 - `stopPathTracking()`
+- `pausePathTracking()`
+- `continuePathTracking()`
 - `loadPath(pathData, options)`
 - `clearPaths()`
 - `setPathVisibility(options)`
@@ -269,10 +271,61 @@ window.MapboxPlugin.stopPathTracking()
     // result.points = [{lat: 17.680, lon: 83.249}, ...]
     // result.distance = 1234.5  (meters)
     // result.duration = 45000   (milliseconds)
+    // result.segments = [{startIndex: 0, endIndex: 50}, {startIndex: 51, endIndex: 100}]
+    // result.segmentCount = 2
 
     // Save to your OutSystems database here
   })
   .catch($reject);
+```
+
+### Pause Path Tracking
+
+Temporarily pauses GPS collection and line drawing. The tracking session stays active but no points are collected or drawn while paused.
+
+```javascript
+window.MapboxPlugin.pausePathTracking()
+  .then(function (result) {
+    // result.status = "paused"
+    // result.segmentCount = 1 (segments completed so far)
+  })
+  .catch($reject);
+```
+
+### Continue Path Tracking
+
+Resumes GPS collection after a pause. Starts a new line segment from the current position (visual gap between paused sections).
+
+```javascript
+window.MapboxPlugin.continuePathTracking()
+  .then(function (result) {
+    // result.status = "continued"
+    // result.segmentCount = 2 (total segments including the new one)
+  })
+  .catch($reject);
+```
+
+**Pause/Continue Flow:**
+```
+Start → line segment A drawn
+  Pause → line stops, no GPS collected
+  Continue → new line segment B starts from current position
+  Pause → line stops again
+  Continue → new line segment C starts
+Stop → returns all points + segment boundaries
+```
+
+The `segments` array in the stop result tells you where each segment starts/ends in the flat points array:
+```json
+{
+  "points": [{"lat": 1, "lon": 2}, ..., {"lat": 5, "lon": 6}],
+  "segments": [
+    {"startIndex": 0, "endIndex": 50},
+    {"startIndex": 51, "endIndex": 100},
+    {"startIndex": 101, "endIndex": 150}
+  ],
+  "segmentCount": 3
+}
 ```
 
 ### Load a Pre-recorded Path
@@ -323,12 +376,22 @@ window.MapboxPlugin.setPathVisibility({
 window.MapboxPlugin.startPathTracking({ lineColor: "#FF0000" })
 ```
 
+**Pause hunt (e.g., user takes a break):**
+```javascript
+window.MapboxPlugin.pausePathTracking()
+```
+
+**Continue hunt (resume after break):**
+```javascript
+window.MapboxPlugin.continuePathTracking()
+```
+
 **Stop hunt and save:**
 ```javascript
 window.MapboxPlugin.stopPathTracking()
   .then(function (result) {
     // In a Client Action, call a Server Action to save:
-    //   SaveHuntTrack(result.points, result.distance, result.duration)
+    //   SaveHuntTrack(result.points, result.distance, result.duration, result.segments)
     // The Server Action stores to your Entity/Database
   })
 ```

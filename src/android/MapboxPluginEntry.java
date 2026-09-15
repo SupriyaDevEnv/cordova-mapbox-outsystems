@@ -153,6 +153,9 @@ private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
     private String pathLineColor = "#FF0000";
     private float pathLineWidth = 3.0f;
     private float pathLineOpacity = 1.0f;
+    private boolean isPathTrackingPaused = false;
+    private final List<List<Point>> pathSegments = new ArrayList<>();
+    private List<Point> currentSegment = null;
     private CallbackContext waypointSelectedCallback;
     private CallbackContext markerClickCallback;
     private CallbackContext offlineDownloadProgressCallback;
@@ -324,6 +327,12 @@ private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
                 return true;
             case "stopPathTracking":
                 stopPathTracking(callbackContext);
+                return true;
+            case "pausePathTracking":
+                pausePathTracking(callbackContext);
+                return true;
+            case "continuePathTracking":
+                continuePathTracking(callbackContext);
                 return true;
             case "loadPath":
                 loadPath(options, callbackContext);
@@ -1111,13 +1120,16 @@ if (gestures != null) {
                         .setCamera(cameraOptions);
                 }
             }
-                // Collect path point if path tracking is active
-                if (isPathTrackingActive) {
+                // Collect path point if path tracking is active and not paused
+                if (isPathTrackingActive && !isPathTrackingPaused) {
                     if (pathPoints.size() >= MapboxSecurity.MAX_POINTS) {
                         stopUserTracking();
                         return; // Keep the recording available to stopPathTracking().
                     }
                     pathPoints.add(cameraPoint);
+                    if (currentSegment != null) {
+                        currentSegment.add(cameraPoint);
+                    }
                     runForSession(() -> {
                         if (mapView != null) {
                             updatePathAnnotation();
@@ -2527,10 +2539,13 @@ private boolean addMarkerInternal(
             }
 
             isPathTrackingActive = true;
+            isPathTrackingPaused = false;
             isPathVisible = true;
             pathTrackingStartTimeMs = System.currentTimeMillis();
             pathPoints.clear();
             pathAnnotation = null;
+            pathSegments.clear();
+            currentSegment = new ArrayList<>();
 
             pathLineColor = options.optString("lineColor", "#FF0000");
             pathLineWidth = (float) options.optDouble("lineWidth", 3.0);
@@ -2559,7 +2574,14 @@ private boolean addMarkerInternal(
             }
 
             isPathTrackingActive = false;
+            isPathTrackingPaused = false;
             long durationMs = System.currentTimeMillis() - pathTrackingStartTimeMs;
+
+            // Finish current segment if it has points
+            if (currentSegment != null && !currentSegment.isEmpty()) {
+                pathSegments.add(currentSegment);
+                currentSegment = null;
+            }
 
             double totalDistance = 0.0;
             for (int i = 1; i < pathPoints.size(); i++) {
@@ -2586,6 +2608,77 @@ private boolean addMarkerInternal(
                 result.put("points", pointsArray);
                 result.put("distance", Math.round(totalDistance * 100.0) / 100.0);
                 result.put("duration", durationMs);
+
+                // Return segment boundaries
+                JSONArray segmentsArray = new JSONArray();
+                int startIndex = 0;
+                for (List<Point> segment : pathSegments) {
+                    JSONObject segmentObj = new JSONObject();
+                    segmentObj.put("startIndex", startIndex);
+                    segmentObj.put("endIndex", startIndex + segment.size() - 1);
+                    segmentsArray.put(segmentObj);
+                    startIndex += segment.size();
+                }
+                result.put("segments", segmentsArray);
+                result.put("segmentCount", pathSegments.size());
+
+                callback.success(result);
+            } catch (Exception e) {
+                callback.error(sanitizeError("An internal error occurred.", e));
+            }
+        });
+    }
+
+    private void pausePathTracking(CallbackContext callback) {
+        runForSession(() -> {
+            if (!isPathTrackingActive) {
+                callback.error("Path tracking is not active.");
+                return;
+            }
+
+            if (isPathTrackingPaused) {
+                callback.error("Path tracking is already paused.");
+                return;
+            }
+
+            isPathTrackingPaused = true;
+
+            // Finish current segment
+            if (currentSegment != null && !currentSegment.isEmpty()) {
+                pathSegments.add(currentSegment);
+                currentSegment = null;
+            }
+
+            try {
+                JSONObject result = new JSONObject();
+                result.put("status", "paused");
+                result.put("segmentCount", pathSegments.size());
+                callback.success(result);
+            } catch (Exception e) {
+                callback.error(sanitizeError("An internal error occurred.", e));
+            }
+        });
+    }
+
+    private void continuePathTracking(CallbackContext callback) {
+        runForSession(() -> {
+            if (!isPathTrackingActive) {
+                callback.error("Path tracking is not active.");
+                return;
+            }
+
+            if (!isPathTrackingPaused) {
+                callback.error("Path tracking is not paused. Call pausePathTracking first.");
+                return;
+            }
+
+            isPathTrackingPaused = false;
+            currentSegment = new ArrayList<>();
+
+            try {
+                JSONObject result = new JSONObject();
+                result.put("status", "continued");
+                result.put("segmentCount", pathSegments.size() + 1);
                 callback.success(result);
             } catch (Exception e) {
                 callback.error(sanitizeError("An internal error occurred.", e));
@@ -2970,11 +3063,14 @@ private boolean addMarkerInternal(
         pathAnnotation = null;
         pathPoints.clear();
         isPathTrackingActive = false;
+        isPathTrackingPaused = false;
         pathTrackingStartTimeMs = 0L;
         isPathVisible = true;
         pathLineColor = "#FF0000";
         pathLineWidth = 3.0f;
         pathLineOpacity = 1.0f;
+        pathSegments.clear();
+        currentSegment = null;
         markerRecordIds.clear();
         markerAnnotationsByRecordId.clear();
         markerPointsByRecordId.clear();

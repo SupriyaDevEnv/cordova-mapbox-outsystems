@@ -239,6 +239,14 @@ var api = {
     return call('stopPathTracking', []);
   },
 
+  pausePathTracking: function () {
+    return call('pausePathTracking', []);
+  },
+
+  continuePathTracking: function () {
+    return call('continuePathTracking', []);
+  },
+
   loadPath: function (pathData, options) {
     options = options || {};
     if (typeof pathData === 'string') {
