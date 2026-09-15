@@ -962,14 +962,8 @@ if (gestures != null) {
                 long now = System.currentTimeMillis();
 
                 // 1. Reject readings without accuracy data or poor accuracy
-               if (!location.hasAccuracy()) {
-                        return;
-                    }
-                    
-                    // Allow the first valid fix immediately so the Mapbox puck appears quickly.
-                    // After the first fix, reject poor-accuracy updates.
-                    if (lastAcceptedTrackingLocation != null
-                            && location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) {
+                    if (!location.hasAccuracy()
+                            || location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) {
                         return;
                     }
 
@@ -999,18 +993,6 @@ if (gestures != null) {
                     // Reject likely GPS drift:
                     // If the reported movement is still inside the GPS uncertainty
                     // and the new reading is significantly less accurate, ignore it.
-                    float previousAccuracy =
-                        lastAcceptedTrackingLocation.getAccuracy();
-                    
-                    float newAccuracy = location.getAccuracy();
-                    
-                    float uncertaintyRadius =
-                        Math.max(previousAccuracy, newAccuracy);
-                    
-                    if (distance < uncertaintyRadius
-                            && newAccuracy > previousAccuracy * 1.5f) {
-                        return;
-                    }
 
                     long timeDifference =
                         location.getTime()
@@ -1020,10 +1002,6 @@ if (gestures != null) {
                     if (location.hasSpeed()) {
                         if (location.getSpeed()
                                 > MAX_REASONABLE_SPEED_MPS) {
-                            return;
-                        }
-                        if (location.getSpeed()
-                                < MIN_MOVING_SPEED_MPS) {
                             return;
                         }
                     } else if (Math.abs(timeDifference) > 0) {
@@ -2154,35 +2132,66 @@ if (gestures != null) {
         });
     }
 
-    private boolean addMarkerInternal(String id, double latitude, double longitude) {
-        if (!ensurePointAnnotationManager()) {
-            return false;
-        }
+private boolean addMarkerInternal(
+        String id,
+        double latitude,
+        double longitude) {
 
-        if (id == null || id.isEmpty() || id.length() > 256
-                || (!markerAnnotationsByRecordId.containsKey(id)
-                    && markerAnnotationsByRecordId.size() >= MAX_MARKERS)) return false;
-        removeMarkerInternal(id);
+    return addMarkerInternal(
+        id,
+        latitude,
+        longitude,
+        null
+    );
+}
 
-        PointAnnotationOptions markerOptions = new PointAnnotationOptions()
-            .withPoint(Point.fromLngLat(longitude, latitude))
-            .withIconImage(createWaypointMarkerBitmap())
-            .withIconAnchor(IconAnchor.BOTTOM)
-            .withIconSize(1.0);
+private boolean addMarkerInternal(
+        String id,
+        double latitude,
+        double longitude,
+        Bitmap customBitmap) {
 
-        PointAnnotation annotation = pointAnnotationManager.create(markerOptions);
-        markerRecordIds.put(annotation.getId(), id);
-        markerAnnotationsByRecordId.put(id, annotation);
-        markerPointsByRecordId.put(id, Point.fromLngLat(longitude, latitude));
-        return true;
+    if (!ensurePointAnnotationManager()) {
+        return false;
     }
+
+    if (id == null || id.isEmpty() || id.length() > 256
+            || (!markerAnnotationsByRecordId.containsKey(id)
+                && markerAnnotationsByRecordId.size() >= MAX_MARKERS)) {
+        return false;
+    }
+
+    removeMarkerInternal(id);
+
+    PointAnnotationOptions markerOptions = new PointAnnotationOptions()
+        .withPoint(Point.fromLngLat(longitude, latitude))
+        .withIconImage(
+            customBitmap != null
+                ? customBitmap
+                : createWaypointMarkerBitmap()
+        )
+        .withIconAnchor(IconAnchor.BOTTOM)
+        .withIconSize(1.0);
+
+    PointAnnotation annotation =
+        pointAnnotationManager.create(markerOptions);
+
+    markerRecordIds.put(annotation.getId(), id);
+    markerAnnotationsByRecordId.put(id, annotation);
+    markerPointsByRecordId.put(
+        id,
+        Point.fromLngLat(longitude, latitude)
+    );
+
+    return true;
+}
 
     private void removeMarker(JSONObject options, CallbackContext callback) {
-        runForSession(() -> {
-            removeMarkerInternal(options.optString("id", ""));
-            callback.success();
-        });
-    }
+    runForSession(() -> {
+        removeMarkerInternal(options.optString("id", ""));
+        callback.success();
+    });
+}
 
     private void removeMarkerInternal(String id) {
         if (pointAnnotationManager == null || id == null || id.isEmpty()) {
