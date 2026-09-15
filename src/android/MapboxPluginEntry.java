@@ -2186,6 +2186,13 @@ private boolean addMarkerInternal(
     return true;
 }
 
+    private void removeMarker(JSONObject options, CallbackContext callback) {
+    runForSession(() -> {
+        removeMarkerInternal(options.optString("id", ""));
+        callback.success();
+    });
+}
+
     private void removeMarkerInternal(String id) {
         if (pointAnnotationManager == null || id == null || id.isEmpty()) {
             return;
