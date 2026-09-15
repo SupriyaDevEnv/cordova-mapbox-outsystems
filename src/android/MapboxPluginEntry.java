@@ -94,9 +94,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final float MODERATE_METERS = 30f;
     private static final float LOW_METERS = 100f;
 
-    private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 15.0f;
+    private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
-    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 400L;
+    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
 private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
     private static final float MIN_MOVING_SPEED_MPS = 0.15f;
 
@@ -1124,7 +1124,7 @@ if (gestures != null) {
                     cameraAnimations.easeTo(
                         cameraOptions,
                         new MapAnimationOptions.Builder()
-                            .duration(250L)
+                            .duration(500L)
                             .build(),
                         null
                     );
