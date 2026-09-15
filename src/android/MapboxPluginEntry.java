@@ -2136,7 +2136,7 @@ if (gestures != null) {
         });
     }
 
-    private boolean addMarkerInternal(String id, double latitude, double longitude) {
+    private boolean addMarkerInternal(String id, double latitude, double longitude Bitmap customBitmap) {
         if (!ensurePointAnnotationManager()) {
             return false;
         }
@@ -2148,7 +2148,11 @@ if (gestures != null) {
 
         PointAnnotationOptions markerOptions = new PointAnnotationOptions()
             .withPoint(Point.fromLngLat(longitude, latitude))
-            .withIconImage(createWaypointMarkerBitmap())
+           .withIconImage(
+    customBitmap != null
+        ? customBitmap
+        : createWaypointMarkerBitmap()
+)
             .withIconAnchor(IconAnchor.BOTTOM)
             .withIconSize(1.0);
 
