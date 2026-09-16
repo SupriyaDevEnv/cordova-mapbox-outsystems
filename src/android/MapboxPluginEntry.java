@@ -730,7 +730,11 @@ if (gestures != null) {
                         );
                     }
                     if (lastKnown != null) {
-                        smoothedLocationProvider.updateLocation(lastKnown);
+                        long age = System.currentTimeMillis()
+                            - lastKnown.getTime();
+                        if (age <= MAX_LOCATION_AGE_MS) {
+                            smoothedLocationProvider.updateLocation(lastKnown);
+                        }
                     }
                 } catch (SecurityException ignored) {
                 }
@@ -992,6 +996,7 @@ if (gestures != null) {
                 }
 
                 // 4. Reject GPS drift and unrealistic jumps
+                double trackingFallbackSpeed = -1;
                 if (lastAcceptedTrackingLocation != null) {
                     double distance = calculateDistanceMeters(
                         lastAcceptedTrackingLocation.getLatitude(),
@@ -1020,6 +1025,7 @@ if (gestures != null) {
                     } else if (Math.abs(timeDifference) > 0) {
                         float fallbackSpeed = (float) (distance
                             / (Math.abs(timeDifference) / 1000.0));
+                        trackingFallbackSpeed = fallbackSpeed;
                         if (fallbackSpeed
                                 > MAX_REASONABLE_SPEED_MPS) {
                             return;
@@ -1035,6 +1041,18 @@ if (gestures != null) {
                 Point rawPoint =
                     Point.fromLngLat(longitude, latitude);
 
+                // Adaptive smoothing: use a higher factor while moving so the
+                // puck tracks travel closely, and the base factor while
+                // stationary so jitter stays dampened.
+                double smoothingFactor = LOCATION_SMOOTHING_FACTOR;
+                if (location.hasSpeed()) {
+                    if (location.getSpeed() > 1.0) {
+                        smoothingFactor = 0.45;
+                    }
+                } else if (trackingFallbackSpeed > 1.0) {
+                    smoothingFactor = 0.45;
+                }
+
                 if (smoothedTrackingPoint == null) {
                     smoothedTrackingPoint = rawPoint;
                 } else {
@@ -1043,13 +1061,13 @@ if (gestures != null) {
                         + (
                             rawPoint.longitude()
                             - smoothedTrackingPoint.longitude()
-                        ) * LOCATION_SMOOTHING_FACTOR;
+                        ) * smoothingFactor;
                     double smoothedLatitude =
                         smoothedTrackingPoint.latitude()
                         + (
                             rawPoint.latitude()
                             - smoothedTrackingPoint.latitude()
-                        ) * LOCATION_SMOOTHING_FACTOR;
+                        ) * smoothingFactor;
                     smoothedTrackingPoint =
                         Point.fromLngLat(
                             smoothedLongitude,
