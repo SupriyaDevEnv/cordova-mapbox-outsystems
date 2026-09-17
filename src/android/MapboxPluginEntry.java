@@ -1044,14 +1044,16 @@ if (gestures != null) {
                 // Adaptive smoothing: use a higher factor while moving so the
                 // puck tracks travel closely, and the base factor while
                 // stationary so jitter stays dampened.
+                
                 double smoothingFactor = LOCATION_SMOOTHING_FACTOR;
-                if (location.hasSpeed()) {
-                    if (location.getSpeed() > 1.0) {
-                        smoothingFactor = 0.45;
-                    }
-                } else if (trackingFallbackSpeed > 1.0) {
-                    smoothingFactor = 0.45;
-                }
+                if (location.hasSpeed()) { 
+                    if (location.getSpeed() > MIN_MOVING_SPEED_MPS) { 
+                        smoothingFactor = 0.75; 
+                    } 
+                }                    
+                else if (trackingFallbackSpeed > MIN_MOVING_SPEED_MPS) { 
+                smoothingFactor = 0.75; 
+                } 
 
                 if (smoothedTrackingPoint == null) {
                     smoothedTrackingPoint = rawPoint;
