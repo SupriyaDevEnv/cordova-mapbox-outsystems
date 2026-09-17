@@ -619,6 +619,7 @@ if (gestures != null) {
                 continue;
             }
 
+            // Rectangles are WebView-local native pixels (CSS viewport coordinates * DPR).
             touchableRects.add(
                 new TouchRect(x, y, width, height)
             );
@@ -3213,15 +3214,24 @@ private boolean addMarkerInternal(
     }
 
     private void installTouchRouter(View webViewView) {
+        final int[] webViewLocation = new int[2];
+        final int[] mapViewLocation = new int[2];
         webViewView.setOnTouchListener((view, event) -> {
+            // MotionEvent coordinates are already WebView-local native pixels, like the rects.
             if (mapView == null || isInsideTouchableRect(event.getX(), event.getY())) {
                 return false;
             }
 
-            handleRawTouchForTap(event);
-
+            view.getLocationInWindow(webViewLocation);
+            mapView.getLocationInWindow(mapViewLocation);
             MotionEvent mapEvent = MotionEvent.obtain(event);
             try {
+                // Convert only the copy to MapView-local pixels, including current view offsets.
+                mapEvent.offsetLocation(
+                    webViewLocation[0] - mapViewLocation[0],
+                    webViewLocation[1] - mapViewLocation[1]
+                );
+                handleRawTouchForTap(mapEvent);
                 mapView.dispatchTouchEvent(mapEvent);
             } finally {
                 mapEvent.recycle();
