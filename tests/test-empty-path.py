@@ -5,7 +5,7 @@ import tempfile
 
 source = Path('src/ios/MapboxPlugin.swift').read_text()
 start = source.index('    func stopPathTracking(')
-end = source.index('    @objc(loadPath:)', start)
+end = source.index('    @objc(pausePathTracking:)', start)
 method = source[start:end]
 host = '''
 import Foundation
@@ -13,8 +13,13 @@ import CoreLocation
 class CDVInvokedUrlCommand {}
 class TestPlugin {
     var isPathTrackingActive = true
+    var isPathTrackingPaused = false
     var pathTrackingStartTime = Date().timeIntervalSince1970
     var pathPoints: [CLLocationCoordinate2D] = []
+    var pathSegments: [[CLLocationCoordinate2D]] = []
+    var currentSegment: [CLLocationCoordinate2D] = []
+    var pathAnnotations: [Any] = []
+    var currentSegmentAnnotation: Any? = nil
     var result: [String: Any] = [:]
     func runForSession(_ work: () -> Void) { work() }
     func sendError(_ error: String, _ command: CDVInvokedUrlCommand) { fatalError(error) }
