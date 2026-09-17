@@ -26,7 +26,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var boundaryAnnotationManager: PolygonAnnotationManager?
     private var boundaryAnnotations: [PolygonAnnotation] = []
     private var lineAnnotationManager: PolylineAnnotationManager?
-    private var pathAnnotation: PolylineAnnotation?
+    private var pathAnnotations: [PolylineAnnotation] = []
+    private var currentSegmentAnnotation: PolylineAnnotation?
     private var pathPoints: [CLLocationCoordinate2D] = []
     private var isPathTrackingActive = false
     private var isPathTrackingPaused = false
@@ -720,20 +721,21 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func updatePathAnnotation() {
-        guard pathPoints.count >= 2, ensureLineAnnotationManager() else { return }
+        guard currentSegment.count >= 2, ensureLineAnnotationManager() else { return }
 
-        if pathAnnotation != nil {
-            lineAnnotationManager?.annotations.removeAll()
-            pathAnnotation = nil
+        // Delete old annotation for current segment
+        if let old = currentSegmentAnnotation {
+            lineAnnotationManager?.annotations.removeAll { $0 === old }
+            currentSegmentAnnotation = nil
         }
 
         guard isPathVisible else { return }
 
-        var annotation = PolylineAnnotation(lineCoordinates: pathPoints)
+        var annotation = PolylineAnnotation(lineCoordinates: currentSegment)
         annotation.lineColor = StyleColor(colorOption(pathLineColor, defaultColor: .red))
         annotation.lineWidth = pathLineWidth
         annotation.lineOpacity = pathLineOpacity
-        pathAnnotation = annotation
+        currentSegmentAnnotation = annotation
         lineAnnotationManager?.annotations.append(annotation)
     }
 
@@ -757,7 +759,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.isPathVisible = true
             self.pathTrackingStartTime = Date().timeIntervalSince1970
             self.pathPoints.removeAll()
-            self.pathAnnotation = nil
+            self.pathAnnotations.removeAll()
+            self.currentSegmentAnnotation = nil
             self.pathSegments.removeAll()
             self.currentSegment.removeAll()
 
@@ -785,6 +788,12 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.isPathTrackingActive = false
             self.isPathTrackingPaused = false
             let duration = Date().timeIntervalSince1970 - self.pathTrackingStartTime
+
+            // Freeze current segment annotation into the permanent list
+            if let ann = self.currentSegmentAnnotation {
+                self.pathAnnotations.append(ann)
+                self.currentSegmentAnnotation = nil
+            }
 
             // Finish current segment if it has points
             if !self.currentSegment.isEmpty {
@@ -836,6 +845,12 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             self.isPathTrackingPaused = true
+
+            // Freeze current segment annotation into the permanent list
+            if let ann = self.currentSegmentAnnotation {
+                self.pathAnnotations.append(ann)
+                self.currentSegmentAnnotation = nil
+            }
 
             // Finish current segment
             if !self.currentSegment.isEmpty {
@@ -920,16 +935,17 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
-            if self.pathAnnotation != nil {
-                self.lineAnnotationManager?.annotations.removeAll()
-                self.pathAnnotation = nil
-            }
+            // Clear any existing path annotations
+            self.lineAnnotationManager?.annotations.removeAll()
+            self.pathAnnotations.removeAll()
+            self.currentSegmentAnnotation = nil
 
             var annotation = PolylineAnnotation(lineCoordinates: self.pathPoints)
             annotation.lineColor = StyleColor(self.colorOption(self.pathLineColor, defaultColor: .red))
             annotation.lineWidth = self.pathLineWidth
             annotation.lineOpacity = self.pathLineOpacity
-            self.pathAnnotation = annotation
+            self.pathAnnotations.removeAll()
+            self.pathAnnotations.append(annotation)
             self.lineAnnotationManager?.annotations.append(annotation)
 
             self.sendSuccess([
@@ -942,10 +958,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     @objc(clearPaths:)
     func clearPaths(command: CDVInvokedUrlCommand) {
         runForSession {
-            if self.pathAnnotation != nil {
-                self.lineAnnotationManager?.annotations.removeAll()
-                self.pathAnnotation = nil
-            }
+            self.lineAnnotationManager?.annotations.removeAll()
+            self.pathAnnotations.removeAll()
+            self.currentSegmentAnnotation = nil
             self.pathPoints.removeAll()
             self.sendSuccess(command)
         }
@@ -970,15 +985,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             self.isPathVisible = visible
 
-            if visible {
-                if self.pathAnnotation == nil {
-                    self.updatePathAnnotation()
-                }
+            if !visible {
+                // Hide: remove all annotations from map
+                self.lineAnnotationManager?.annotations.removeAll()
+                self.pathAnnotations.removeAll()
+                self.currentSegmentAnnotation = nil
             } else {
-                if self.pathAnnotation != nil {
-                    self.lineAnnotationManager?.annotations.removeAll()
-                    self.pathAnnotation = nil
-                }
+                // Show: redraw current segment
+                self.updatePathAnnotation()
             }
 
             self.sendSuccess(command)
@@ -1660,7 +1674,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         boundaryAnnotationManager = nil
         lineAnnotationManager?.annotations.removeAll()
         lineAnnotationManager = nil
-        pathAnnotation = nil
+        pathAnnotations.removeAll()
+        currentSegmentAnnotation = nil
         pathPoints.removeAll()
         isPathTrackingActive = false
         isPathTrackingPaused = false
