@@ -145,7 +145,8 @@ private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
     private final Map<String, Point> markerPointsByRecordId = new HashMap<>();
 
     private PolylineAnnotationManager lineAnnotationManager;
-    private PolylineAnnotation pathAnnotation;
+    private final List<PolylineAnnotation> pathAnnotations = new ArrayList<>();
+    private PolylineAnnotation currentSegmentAnnotation = null;
     private final List<Point> pathPoints = new ArrayList<>();
     private boolean isPathTrackingActive = false;
     private long pathTrackingStartTimeMs = 0L;
@@ -2523,7 +2524,7 @@ private boolean addMarkerInternal(
     }
 
     private void updatePathAnnotation() {
-        if (pathPoints.size() < 2) {
+        if (currentSegment == null || currentSegment.size() < 2) {
             return;
         }
 
@@ -2531,23 +2532,24 @@ private boolean addMarkerInternal(
             return;
         }
 
-        if (pathAnnotation != null) {
-            lineAnnotationManager.delete(pathAnnotation);
-            pathAnnotation = null;
+        // Delete the old annotation for the current segment
+        if (currentSegmentAnnotation != null) {
+            lineAnnotationManager.delete(currentSegmentAnnotation);
+            currentSegmentAnnotation = null;
         }
 
         if (!isPathVisible) {
             return;
         }
 
-        LineString lineString = LineString.fromLngLats(pathPoints);
+        LineString lineString = LineString.fromLngLats(currentSegment);
         PolylineAnnotationOptions options = new PolylineAnnotationOptions()
             .withGeometry(lineString)
             .withLineColor(pathLineColor)
             .withLineWidth(pathLineWidth)
             .withLineOpacity(pathLineOpacity);
 
-        pathAnnotation = lineAnnotationManager.create(options);
+        currentSegmentAnnotation = lineAnnotationManager.create(options);
     }
 
     private void startPathTracking(JSONObject options, CallbackContext callback) {
@@ -2567,7 +2569,8 @@ private boolean addMarkerInternal(
             isPathVisible = true;
             pathTrackingStartTimeMs = System.currentTimeMillis();
             pathPoints.clear();
-            pathAnnotation = null;
+            pathAnnotations.clear();
+            currentSegmentAnnotation = null;
             pathSegments.clear();
             currentSegment = new ArrayList<>();
 
@@ -2600,6 +2603,12 @@ private boolean addMarkerInternal(
             isPathTrackingActive = false;
             isPathTrackingPaused = false;
             long durationMs = System.currentTimeMillis() - pathTrackingStartTimeMs;
+
+            // Freeze current segment annotation into the permanent list
+            if (currentSegmentAnnotation != null) {
+                pathAnnotations.add(currentSegmentAnnotation);
+                currentSegmentAnnotation = null;
+            }
 
             // Finish current segment if it has points
             if (currentSegment != null && !currentSegment.isEmpty()) {
@@ -2666,6 +2675,12 @@ private boolean addMarkerInternal(
             }
 
             isPathTrackingPaused = true;
+
+            // Freeze current segment annotation into the permanent list
+            if (currentSegmentAnnotation != null) {
+                pathAnnotations.add(currentSegmentAnnotation);
+                currentSegmentAnnotation = null;
+            }
 
             // Finish current segment
             if (currentSegment != null && !currentSegment.isEmpty()) {
@@ -2759,10 +2774,11 @@ private boolean addMarkerInternal(
                 return;
             }
 
-            if (pathAnnotation != null) {
-                lineAnnotationManager.delete(pathAnnotation);
-                pathAnnotation = null;
+            // Clear any existing path annotations
+            for (PolylineAnnotation ann : pathAnnotations) {
+                lineAnnotationManager.delete(ann);
             }
+            pathAnnotations.clear();
 
             LineString lineString = LineString.fromLngLats(pathPoints);
             PolylineAnnotationOptions annOptions = new PolylineAnnotationOptions()
@@ -2771,7 +2787,8 @@ private boolean addMarkerInternal(
                 .withLineWidth((float) lineWidth)
                 .withLineOpacity((float) lineOpacity);
 
-            pathAnnotation = lineAnnotationManager.create(annOptions);
+            PolylineAnnotation ann = lineAnnotationManager.create(annOptions);
+            pathAnnotations.add(ann);
 
             try {
                 JSONObject result = new JSONObject();
@@ -2786,10 +2803,16 @@ private boolean addMarkerInternal(
 
     private void clearPaths(CallbackContext callback) {
         runForSession(() -> {
-            if (lineAnnotationManager != null && pathAnnotation != null) {
-                lineAnnotationManager.delete(pathAnnotation);
-                pathAnnotation = null;
+            if (lineAnnotationManager != null) {
+                for (PolylineAnnotation ann : pathAnnotations) {
+                    lineAnnotationManager.delete(ann);
+                }
+                if (currentSegmentAnnotation != null) {
+                    lineAnnotationManager.delete(currentSegmentAnnotation);
+                    currentSegmentAnnotation = null;
+                }
             }
+            pathAnnotations.clear();
             pathPoints.clear();
             callback.success();
         });
@@ -2804,22 +2827,23 @@ private boolean addMarkerInternal(
 
             boolean visible = options.optBoolean("visible", true);
 
-            if (pathPoints.isEmpty()) {
-                callback.error("No path is loaded. Use loadPath or startPathTracking first.");
-                return;
-            }
-
             isPathVisible = visible;
 
-            if (visible) {
-                if (pathAnnotation == null) {
-                    updatePathAnnotation();
+            if (!visible) {
+                // Hide: delete all annotations from map
+                if (lineAnnotationManager != null) {
+                    for (PolylineAnnotation ann : pathAnnotations) {
+                        lineAnnotationManager.delete(ann);
+                    }
+                    if (currentSegmentAnnotation != null) {
+                        lineAnnotationManager.delete(currentSegmentAnnotation);
+                        currentSegmentAnnotation = null;
+                    }
                 }
+                pathAnnotations.clear();
             } else {
-                if (pathAnnotation != null) {
-                    lineAnnotationManager.delete(pathAnnotation);
-                    pathAnnotation = null;
-                }
+                // Show: redraw current segment
+                updatePathAnnotation();
             }
 
             callback.success();
@@ -3084,7 +3108,8 @@ private boolean addMarkerInternal(
         boundaryAnnotations.clear();
         boundaryVisible = true;
         lineAnnotationManager = null;
-        pathAnnotation = null;
+        pathAnnotations.clear();
+        currentSegmentAnnotation = null;
         pathPoints.clear();
         isPathTrackingActive = false;
         isPathTrackingPaused = false;
