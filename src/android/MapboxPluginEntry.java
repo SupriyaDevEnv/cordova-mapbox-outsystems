@@ -120,6 +120,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
 
     private FrameLayout rootView;
     private final List<TouchRect> touchableRects = new ArrayList<>();
+    private boolean currentGestureTargetsWebView = false;
     private SensorManager sensorManager;
     private SensorEventListener headingSensorListener;
     private final float[] headingRotationMatrix = new float[9];
@@ -3194,6 +3195,7 @@ private boolean addMarkerInternal(
         isDeviceHeadingEnabled = false;
         isHeadingFollowModeEnabled = false;
         mapClickListener = null;
+        currentGestureTargetsWebView = false;
         touchableRects.clear();
     }
 
@@ -3217,8 +3219,20 @@ private boolean addMarkerInternal(
         final int[] webViewLocation = new int[2];
         final int[] mapViewLocation = new int[2];
         webViewView.setOnTouchListener((view, event) -> {
-            // MotionEvent coordinates are already WebView-local native pixels, like the rects.
-            if (mapView == null || isInsideTouchableRect(event.getX(), event.getY())) {
+            int action = event.getActionMasked();
+
+            // Choose one target on ACTION_DOWN and keep the entire gesture with it.
+            // Re-testing every MOVE can steal a bottom-sheet drag when the pointer
+            // leaves its original rectangle or the sheet moves under the pointer.
+            if (action == MotionEvent.ACTION_DOWN) {
+                currentGestureTargetsWebView =
+                    mapView == null || isInsideTouchableRect(event.getX(), event.getY());
+            }
+
+            if (currentGestureTargetsWebView || mapView == null) {
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    currentGestureTargetsWebView = false;
+                }
                 return false;
             }
 
@@ -3235,6 +3249,10 @@ private boolean addMarkerInternal(
                 mapView.dispatchTouchEvent(mapEvent);
             } finally {
                 mapEvent.recycle();
+            }
+
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                currentGestureTargetsWebView = false;
             }
             return true;
         });
