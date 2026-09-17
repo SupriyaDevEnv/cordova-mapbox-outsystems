@@ -16,8 +16,9 @@ import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Build;
-import android.util.Log;
 import android.os.Bundle;
+import android.os.Looper;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -94,11 +95,13 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final float MODERATE_METERS = 30f;
     private static final float LOW_METERS = 100f;
 
-    private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
+private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
     private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
-private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
+    private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
     private static final float MIN_MOVING_SPEED_MPS = 0.15f;
+    private static final float MIN_SLOW_MOVEMENT_DISTANCE_METERS = 1.5f;
+    private static final float MOVING_SPEED_MPS = 1.0f;
 
     private volatile long sessionGeneration = 0;
     private MapView mapView;
@@ -125,6 +128,7 @@ private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
     private long lastHeadingUpdateMs = 0L;
     private LocationManager locationManager;
     private LocationListener userTrackingListener;
+    private LocationListener freshFixListener;
     private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
     private Point smoothedTrackingPoint = null;
@@ -722,6 +726,11 @@ if (gestures != null) {
                 .getSystemService(Context.LOCATION_SERVICE);
             if (lm != null) {
                 try {
+                    if (freshFixListener != null) {
+                        lm.removeUpdates(freshFixListener);
+                        freshFixListener = null;
+                    }
+
                     Location lastKnown = lm.getLastKnownLocation(
                         LocationManager.GPS_PROVIDER
                     );
@@ -730,13 +739,50 @@ if (gestures != null) {
                             LocationManager.NETWORK_PROVIDER
                         );
                     }
-                    if (lastKnown != null) {
+                    if (lastKnown != null
+                            && lastKnown.hasAccuracy()) {
                         long age = System.currentTimeMillis()
                             - lastKnown.getTime();
-                        if (age <= MAX_LOCATION_AGE_MS) {
+                        if (age <= MAX_LOCATION_AGE_MS
+                                && lastKnown.getAccuracy()
+                                <= MAX_ACCEPTABLE_ACCURACY_METERS) {
                             smoothedLocationProvider.updateLocation(lastKnown);
                         }
                     }
+
+                    // Request one fresh authoritative fix so the dot appears
+                    // quickly even while stationary (faster than waiting for a
+                    // 2m movement to trigger the continuous tracking request).
+                    freshFixListener = new LocationListener() {
+                        @Override
+                        public void onLocationChanged(Location fix) {
+                            if (fix != null
+                                    && fix.hasAccuracy()
+                                    && fix.getAccuracy()
+                                    <= MAX_ACCEPTABLE_ACCURACY_METERS
+                                    && isUserLocationEnabled
+                                    && smoothedLocationProvider != null) {
+                                smoothedLocationProvider.updateLocation(fix);
+                            }
+                        }
+
+                        @Override
+                        public void onStatusChanged(String provider, int status, Bundle extras) {
+                        }
+
+                        @Override
+                        public void onProviderEnabled(String provider) {
+                        }
+
+                        @Override
+                        public void onProviderDisabled(String provider) {
+                        }
+                    };
+                    lm.requestSingleUpdate(
+                        LocationManager.GPS_PROVIDER,
+                        freshFixListener,
+                        Looper.getMainLooper()
+                    );
                 } catch (SecurityException ignored) {
                 }
             }
@@ -1020,7 +1066,8 @@ if (gestures != null) {
                             return;
                         }
                         if (location.getSpeed()
-                                < MIN_MOVING_SPEED_MPS) {
+                                < MIN_MOVING_SPEED_MPS
+                                && distance < MIN_SLOW_MOVEMENT_DISTANCE_METERS) {
                             return;
                         }
                     } else if (Math.abs(timeDifference) > 0) {
@@ -1048,11 +1095,11 @@ if (gestures != null) {
                 
                 double smoothingFactor = LOCATION_SMOOTHING_FACTOR;
                 if (location.hasSpeed()) { 
-                    if (location.getSpeed() > MIN_MOVING_SPEED_MPS) { 
+                    if (location.getSpeed() > MOVING_SPEED_MPS) { 
                         smoothingFactor = 0.75; 
                     } 
                 }                    
-                else if (trackingFallbackSpeed > MIN_MOVING_SPEED_MPS) { 
+                else if (trackingFallbackSpeed > MOVING_SPEED_MPS) { 
                 smoothingFactor = 0.75; 
                 } 
 
@@ -1229,6 +1276,14 @@ if (gestures != null) {
                 locationManager.removeUpdates(userTrackingListener);
             } catch (SecurityException ignored) {
             }
+        }
+
+        if (locationManager != null && freshFixListener != null) {
+            try {
+                locationManager.removeUpdates(freshFixListener);
+            } catch (SecurityException ignored) {
+            }
+            freshFixListener = null;
         }
 
         userTrackingListener = null;
