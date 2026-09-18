@@ -118,6 +118,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
 
     private FrameLayout rootView;
     private final List<TouchRect> touchableRects = new ArrayList<>();
+    private boolean currentGestureTargetsWebView = false;
     private SensorManager sensorManager;
     private SensorEventListener headingSensorListener;
     private final float[] headingRotationMatrix = new float[9];
@@ -3189,6 +3190,7 @@ private boolean addMarkerInternal(
         isUserTrackingEnabled = false;
         isDeviceHeadingEnabled = false;
         isHeadingFollowModeEnabled = false;
+        currentGestureTargetsWebView = false;
         mapClickListener = null;
         touchableRects.clear();
     }
