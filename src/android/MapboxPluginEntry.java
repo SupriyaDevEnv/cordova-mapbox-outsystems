@@ -97,11 +97,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
 private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
-    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
+    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 500L;
     private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
-    private static final float MIN_MOVING_SPEED_MPS = 0.15f;
-    private static final float MIN_SLOW_MOVEMENT_DISTANCE_METERS = 1.5f;
-    private static final float MOVING_SPEED_MPS = 1.0f;
+    private static final double PUCK_DEAD_ZONE_METERS = 3.0;
 
     private volatile long sessionGeneration = 0;
     private MapView mapView;
@@ -120,7 +118,6 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
 
     private FrameLayout rootView;
     private final List<TouchRect> touchableRects = new ArrayList<>();
-    private boolean currentGestureTargetsWebView = false;
     private SensorManager sensorManager;
     private SensorEventListener headingSensorListener;
     private final float[] headingRotationMatrix = new float[9];
@@ -619,7 +616,7 @@ if (gestures != null) {
             if (width <= 0 || height <= 0) {
                 continue;
             }
-
+            
             // Rectangles are WebView-local native pixels (CSS viewport coordinates * DPR).
             touchableRects.add(
                 new TouchRect(x, y, width, height)
@@ -1061,15 +1058,11 @@ if (gestures != null) {
                         location.getTime()
                         - lastAcceptedTrackingLocation.getTime();
 
-                    // Reject unrealistic jumps and GPS drift while stationary
+                    // Reject unrealistic jumps while any slow-movement low-speed
+                    // readings are accepted so the puck can follow slow motion.
                     if (location.hasSpeed()) {
                         if (location.getSpeed()
                                 > MAX_REASONABLE_SPEED_MPS) {
-                            return;
-                        }
-                        if (location.getSpeed()
-                                < MIN_MOVING_SPEED_MPS
-                                && distance < MIN_SLOW_MOVEMENT_DISTANCE_METERS) {
                             return;
                         }
                     } else if (Math.abs(timeDifference) > 0) {
@@ -1091,40 +1084,42 @@ if (gestures != null) {
                 Point rawPoint =
                     Point.fromLngLat(longitude, latitude);
 
-                // Adaptive smoothing: use a higher factor while moving so the
-                // puck tracks travel closely, and the base factor while
-                // stationary so jitter stays dampened.
-                
+                // Apply dead zone and adaptive smoothing.
+                // Small movements are treated as GPS jitter and do not move the puck.
+                // Larger movements are smoothed lightly so the puck remains responsive.
                 double smoothingFactor = LOCATION_SMOOTHING_FACTOR;
-                if (location.hasSpeed()) { 
-                    if (location.getSpeed() > MOVING_SPEED_MPS) { 
-                        smoothingFactor = 0.75; 
-                    } 
-                }                    
-                else if (trackingFallbackSpeed > MOVING_SPEED_MPS) { 
-                smoothingFactor = 0.75; 
-                } 
 
                 if (smoothedTrackingPoint == null) {
                     smoothedTrackingPoint = rawPoint;
                 } else {
-                    double smoothedLongitude =
-                        smoothedTrackingPoint.longitude()
-                        + (
-                            rawPoint.longitude()
-                            - smoothedTrackingPoint.longitude()
-                        ) * smoothingFactor;
-                    double smoothedLatitude =
-                        smoothedTrackingPoint.latitude()
-                        + (
-                            rawPoint.latitude()
-                            - smoothedTrackingPoint.latitude()
-                        ) * smoothingFactor;
-                    smoothedTrackingPoint =
-                        Point.fromLngLat(
-                            smoothedLongitude,
-                            smoothedLatitude
-                        );
+                    double rawDistance = calculateDistanceMeters(
+                        smoothedTrackingPoint.latitude(),
+                        smoothedTrackingPoint.longitude(),
+                        latitude,
+                        longitude
+                    );
+
+                    if (rawDistance >= PUCK_DEAD_ZONE_METERS) {
+                        smoothingFactor = 0.85;
+
+                        double smoothedLongitude =
+                            smoothedTrackingPoint.longitude()
+                            + (
+                                rawPoint.longitude()
+                                - smoothedTrackingPoint.longitude()
+                            ) * smoothingFactor;
+                        double smoothedLatitude =
+                            smoothedTrackingPoint.latitude()
+                            + (
+                                rawPoint.latitude()
+                                - smoothedTrackingPoint.latitude()
+                            ) * smoothingFactor;
+                        smoothedTrackingPoint =
+                            Point.fromLngLat(
+                                smoothedLongitude,
+                                smoothedLatitude
+                            );
+                    }
                 }
 
                 final Point cameraPoint = smoothedTrackingPoint;
@@ -1243,7 +1238,7 @@ if (gestures != null) {
                 locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
                     1000L,
-                    2.0f,
+                    1.0f,
                     userTrackingListener
                 );
             // Use Network only when GPS is unavailable
@@ -3195,7 +3190,6 @@ private boolean addMarkerInternal(
         isDeviceHeadingEnabled = false;
         isHeadingFollowModeEnabled = false;
         mapClickListener = null;
-        currentGestureTargetsWebView = false;
         touchableRects.clear();
     }
 
