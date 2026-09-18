@@ -97,14 +97,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
 private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
     private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 500L;
-    private static final double PUCK_DEAD_ZONE_METERS = 3.0;
-    private static final float WALKING_DEAD_ZONE_METERS = 0.5f;
-    private static final double WALKING_SMOOTHING_FACTOR = 0.95;
-    private static final double STATIONARY_SMOOTHING_FACTOR = 0.85;
-    private static final float STATIONARY_BLIP_METERS = 8.0f;
-    private static final int STATIONARY_RELOCATE_CONFIRMATIONS = 3;
-    private static final float STATIONARY_SPEED_RESUME_MPS = 0.9f;
-    private static final float STATIONARY_SPEED_EXIT_MPS = 1.5f;
+    private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
+    private static final float MIN_MOVING_SPEED_MPS = 0.15f;
 
     private volatile long sessionGeneration = 0;
     private MapView mapView;
@@ -137,8 +131,6 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private Location lastAcceptedTrackingLocation = null;
     private Point smoothedTrackingPoint = null;
     private SmoothedLocationProvider smoothedLocationProvider;
-    private boolean isMovingState = false;
-    private int stationaryOvershootCount = 0;
     private CallbackContext moveToCurrentLocationCallback = null;
     private LocationListener moveToCurrentLocationListener = null;
     private LocationManager moveToCurrentLocationManager = null;
@@ -1064,7 +1056,7 @@ if (gestures != null) {
                     return;
                 }
 
-                // 4. Reject GPS drift, unrealistic jumps, and stationary blips
+                // 4. Reject GPS drift and unrealistic jumps
                 double trackingFallbackSpeed = -1;
                 if (lastAcceptedTrackingLocation != null) {
                     double distance = calculateDistanceMeters(
@@ -1077,35 +1069,6 @@ if (gestures != null) {
                     long timeDifference =
                         location.getTime()
                         - lastAcceptedTrackingLocation.getTime();
-
-                    // Motion state: classify as walking only after sustained
-                    // speed, and drop back to stationary below a lower threshold.
-                    double stateSpeed = -1;
-                    if (Math.abs(timeDifference) > 500) {
-                        stateSpeed = distance
-                            / (Math.abs(timeDifference) / 1000.0);
-                    }
-                    if (location.hasSpeed()) {
-                        stateSpeed = Math.max(
-                            stateSpeed,
-                            location.getSpeed()
-                        );
-                    }
-
-                    if (!isMovingState
-                            && stateSpeed >= STATIONARY_SPEED_EXIT_MPS) {
-                        isMovingState = true;
-                    } else if (isMovingState
-                            && stateSpeed < STATIONARY_SPEED_RESUME_MPS) {
-                        isMovingState = false;
-                    }
-
-                    // Reject a large jump while classified as stationary;
-                    // a stationary device cannot move 8m in a single fix.
-                    if (!isMovingState
-                            && distance > STATIONARY_BLIP_METERS) {
-                        return;
-                    }
 
                     // Reject unrealistic jumps.
                     if (location.hasSpeed()) {
@@ -1128,71 +1091,44 @@ if (gestures != null) {
                 lastAcceptedTrackingLocation = new Location(location);
                 lastUserTrackingUpdateMs = now;
 
-                // 5. Apply dead-zone hold and adaptive smoothing
+                // 5. Apply weighted location smoothing
                 Point rawPoint =
                     Point.fromLngLat(longitude, latitude);
+
+                // Adaptive smoothing: use a higher factor while moving so the
+                // puck tracks travel closely, and the base factor while
+                // stationary so jitter stays dampened.
+                double smoothingFactor = LOCATION_SMOOTHING_FACTOR;
+                if (location.hasSpeed()) {
+                    if (location.getSpeed()
+                            > MIN_MOVING_SPEED_MPS) {
+                        smoothingFactor = 0.95;
+                    }
+                } else if (trackingFallbackSpeed
+                        > MIN_MOVING_SPEED_MPS) {
+                    smoothingFactor = 0.95;
+                }
 
                 if (smoothedTrackingPoint == null) {
                     smoothedTrackingPoint = rawPoint;
                 } else {
-                    double rawDistance = calculateDistanceMeters(
-                        smoothedTrackingPoint.latitude(),
-                        smoothedTrackingPoint.longitude(),
-                        latitude,
-                        longitude
-                    );
-
-                    if (isMovingState) {
-                        // Walking: keep tightly attached with light smoothing.
-                        stationaryOvershootCount = 0;
-                        if (rawDistance >= WALKING_DEAD_ZONE_METERS) {
-                            double smoothedLongitude =
-                                smoothedTrackingPoint.longitude()
-                                + (
-                                    rawPoint.longitude()
-                                    - smoothedTrackingPoint.longitude()
-                                ) * WALKING_SMOOTHING_FACTOR;
-                            double smoothedLatitude =
-                                smoothedTrackingPoint.latitude()
-                                + (
-                                    rawPoint.latitude()
-                                    - smoothedTrackingPoint.latitude()
-                                ) * WALKING_SMOOTHING_FACTOR;
-                            smoothedTrackingPoint =
-                                Point.fromLngLat(
-                                    smoothedLongitude,
-                                    smoothedLatitude
-                                );
-                        }
-                    } else {
-                        // Stationary: hold inside the dead zone and require
-                        // persistent overrun before relocating the puck.
-                        if (rawDistance > PUCK_DEAD_ZONE_METERS) {
-                            stationaryOvershootCount++;
-                            if (stationaryOvershootCount
-                                    >= STATIONARY_RELOCATE_CONFIRMATIONS) {
-                                double smoothedLongitude =
-                                    smoothedTrackingPoint.longitude()
-                                    + (
-                                        rawPoint.longitude()
-                                        - smoothedTrackingPoint.longitude()
-                                    ) * STATIONARY_SMOOTHING_FACTOR;
-                                double smoothedLatitude =
-                                    smoothedTrackingPoint.latitude()
-                                    + (
-                                        rawPoint.latitude()
-                                        - smoothedTrackingPoint.latitude()
-                                    ) * STATIONARY_SMOOTHING_FACTOR;
-                                smoothedTrackingPoint =
-                                    Point.fromLngLat(
-                                        smoothedLongitude,
-                                        smoothedLatitude
-                                    );
-                            }
-                        } else {
-                            stationaryOvershootCount = 0;
-                        }
-                    }
+                    double smoothedLongitude =
+                        smoothedTrackingPoint.longitude()
+                        + (
+                            rawPoint.longitude()
+                            - smoothedTrackingPoint.longitude()
+                        ) * smoothingFactor;
+                    double smoothedLatitude =
+                        smoothedTrackingPoint.latitude()
+                        + (
+                            rawPoint.latitude()
+                            - smoothedTrackingPoint.latitude()
+                        ) * smoothingFactor;
+                    smoothedTrackingPoint =
+                        Point.fromLngLat(
+                            smoothedLongitude,
+                            smoothedLatitude
+                        );
                 }
 
                 final Point cameraPoint = smoothedTrackingPoint;
