@@ -17,7 +17,6 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -750,9 +749,9 @@ if (gestures != null) {
                         }
                     }
 
-                    // Request one fresh authoritative fix so the dot appears
-                    // quickly even while stationary (faster than waiting for a
-                    // 2m movement to trigger the continuous tracking request).
+                    // Request fresh location updates until an acceptable
+                    // fix is received. This helps the blue dot appear
+                    // quickly even while stationary.
                     freshFixListener = new LocationListener() {
                         @Override
                         public void onLocationChanged(Location fix) {
@@ -763,6 +762,11 @@ if (gestures != null) {
                                     && isUserLocationEnabled
                                     && smoothedLocationProvider != null) {
                                 smoothedLocationProvider.updateLocation(fix);
+
+                                if (freshFixListener == this) {
+                                    lm.removeUpdates(freshFixListener);
+                                    freshFixListener = null;
+                                }
                             }
                         }
 
@@ -778,11 +782,21 @@ if (gestures != null) {
                         public void onProviderDisabled(String provider) {
                         }
                     };
-                    lm.requestSingleUpdate(
-                        LocationManager.GPS_PROVIDER,
-                        freshFixListener,
-                        Looper.getMainLooper()
-                    );
+                    if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                        lm.requestLocationUpdates(
+                            LocationManager.GPS_PROVIDER,
+                            1000L,
+                            0.0f,
+                            freshFixListener
+                        );
+                    } else if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                        lm.requestLocationUpdates(
+                            LocationManager.NETWORK_PROVIDER,
+                            1000L,
+                            0.0f,
+                            freshFixListener
+                        );
+                    }
                 } catch (SecurityException ignored) {
                 }
             }
