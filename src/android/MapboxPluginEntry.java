@@ -16,14 +16,22 @@ import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Build;
-import android.util.Log;
 import android.os.Bundle;
+import android.os.Looper;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.FrameLayout;
+
+import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationCallback;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationResult;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.location.Priority;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -104,6 +112,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private Location lastAcceptedTrackingLocation = null;
     private Point smoothedTrackingPoint = null;
     private SmoothedLocationProvider smoothedLocationProvider;
+    private FusedLocationProviderClient fusedLocationClient;
+    private LocationCallback fusedLocationCallback;
     private CallbackContext moveToCurrentLocationCallback = null;
     private LocationListener moveToCurrentLocationListener = null;
     private LocationManager moveToCurrentLocationManager = null;
@@ -742,172 +752,173 @@ public class MapboxPluginEntry extends CordovaPlugin {
             return;
         }
 
-        userTrackingListener = new LocationListener() {
+        fusedLocationClient =
+            LocationServices.getFusedLocationProviderClient(
+                cordova.getActivity()
+            );
+
+        fusedLocationCallback = new LocationCallback() {
             @Override
-            public void onLocationChanged(Location location) {
-                if (mapView == null || location == null) {
+            public void onLocationResult(LocationResult locationResult) {
+                if (locationResult == null
+                        || locationResult.getLocations() == null
+                        || locationResult.getLocations().isEmpty()) {
                     return;
                 }
 
-                long now = System.currentTimeMillis();
-
-                // 1. Reject readings without accuracy data or poor accuracy
-                if (!location.hasAccuracy()
-                        || location.getAccuracy()
-                        > MAX_ACCEPTABLE_ACCURACY_METERS) {
-                    return;
-                }
-
-                // 2. Rate limit camera updates
-                if (now - lastUserTrackingUpdateMs
-                        < MIN_TRACKING_CAMERA_INTERVAL_MS) {
-                    return;
-                }
-
-                double latitude = location.getLatitude();
-                double longitude = location.getLongitude();
-
-                // 3. Validate coordinates
-                if (!isValidLatitude(latitude)
-                        || !isValidLongitude(longitude)) {
-                    return;
-                }
-
-                // 4. Reject GPS drift and unrealistic jumps
-                if (lastAcceptedTrackingLocation != null) {
-                    double distance = calculateDistanceMeters(
-                        lastAcceptedTrackingLocation.getLatitude(),
-                        lastAcceptedTrackingLocation.getLongitude(),
-                        latitude,
-                        longitude
-                    );
-
-                    long timeDifference =
-                        location.getTime()
-                        - lastAcceptedTrackingLocation.getTime();
-
-                    // Ignore tiny movements while stationary
-                    if (distance < MAX_STATIONARY_JITTER_METERS) {
-                        return;
+                for (Location location : locationResult.getLocations()) {
+                    if (mapView == null || location == null) {
+                        continue;
                     }
 
-                    // Reject unrealistic jumps
-                    if (Math.abs(timeDifference) > 0) {
-                        float speed = (float) (distance
-                            / (Math.abs(timeDifference) / 1000.0));
-                        if (speed > MAX_REASONABLE_SPEED_MPS) {
-                            return;
+                    long now = System.currentTimeMillis();
+
+                    // 1. Reject readings without accuracy data or poor accuracy
+                    if (!location.hasAccuracy()
+                            || location.getAccuracy()
+                            > MAX_ACCEPTABLE_ACCURACY_METERS) {
+                        continue;
+                    }
+
+                    // 2. Rate limit camera updates
+                    if (now - lastUserTrackingUpdateMs
+                            < MIN_TRACKING_CAMERA_INTERVAL_MS) {
+                        continue;
+                    }
+
+                    double latitude = location.getLatitude();
+                    double longitude = location.getLongitude();
+
+                    // 3. Validate coordinates
+                    if (!isValidLatitude(latitude)
+                            || !isValidLongitude(longitude)) {
+                        continue;
+                    }
+
+                    // 4. Reject GPS drift and unrealistic jumps
+                    if (lastAcceptedTrackingLocation != null) {
+                        double distance = calculateDistanceMeters(
+                            lastAcceptedTrackingLocation.getLatitude(),
+                            lastAcceptedTrackingLocation.getLongitude(),
+                            latitude,
+                            longitude
+                        );
+
+                        long timeDifference =
+                            location.getTime()
+                            - lastAcceptedTrackingLocation.getTime();
+
+                        // Ignore tiny movements while stationary
+                        if (distance < MAX_STATIONARY_JITTER_METERS) {
+                            continue;
+                        }
+
+                        // Reject unrealistic jumps
+                        if (Math.abs(timeDifference) > 0) {
+                            float speed = (float) (distance
+                                / (Math.abs(timeDifference) / 1000.0));
+                            if (speed > MAX_REASONABLE_SPEED_MPS) {
+                                continue;
+                            }
                         }
                     }
-                }
 
-                // Accept this location
-                lastAcceptedTrackingLocation = new Location(location);
-                lastUserTrackingUpdateMs = now;
+                    // Accept this location
+                    lastAcceptedTrackingLocation = new Location(location);
+                    lastUserTrackingUpdateMs = now;
 
-                // 5. Apply weighted location smoothing
-                Point rawPoint =
-                    Point.fromLngLat(longitude, latitude);
+                    // 5. Apply weighted location smoothing
+                    Point rawPoint =
+                        Point.fromLngLat(longitude, latitude);
 
-                if (smoothedTrackingPoint == null) {
-                    smoothedTrackingPoint = rawPoint;
-                } else {
-                    double smoothedLongitude =
-                        smoothedTrackingPoint.longitude()
-                        + (
-                            rawPoint.longitude()
-                            - smoothedTrackingPoint.longitude()
-                        ) * LOCATION_SMOOTHING_FACTOR;
-                    double smoothedLatitude =
-                        smoothedTrackingPoint.latitude()
-                        + (
-                            rawPoint.latitude()
-                            - smoothedTrackingPoint.latitude()
-                        ) * LOCATION_SMOOTHING_FACTOR;
-                    smoothedTrackingPoint =
-                        Point.fromLngLat(
-                            smoothedLongitude,
-                            smoothedLatitude
-                        );
-                }
-
-                final Point cameraPoint = smoothedTrackingPoint;
-
-                // 6. Create filtered location for Mapbox puck
-                final Location filteredLocation =
-                    new Location(location);
-                filteredLocation.setLatitude(
-                    cameraPoint.latitude()
-                );
-                filteredLocation.setLongitude(
-                    cameraPoint.longitude()
-                );
-                filteredLocation.setTime(location.getTime());
-                if (location.hasAccuracy()) {
-                    filteredLocation.setAccuracy(
-                        location.getAccuracy()
-                    );
-                }
-                if (location.hasAltitude()) {
-                    filteredLocation.setAltitude(
-                        location.getAltitude()
-                    );
-                }
-                if (location.hasBearing()) {
-                    filteredLocation.setBearing(
-                        location.getBearing()
-                    );
-                }
-                if (location.hasSpeed()) {
-                    filteredLocation.setSpeed(location.getSpeed());
-                }
-
-                // 7. Update Mapbox puck and camera
-                cordova.getActivity().runOnUiThread(() -> {
-                    if (mapView == null) {
-                        return;
-                    }
-
-                    if (smoothedLocationProvider != null) {
-                        smoothedLocationProvider.updateLocation(
-                            filteredLocation
-                        );
-                    }
-
-                    CameraAnimationsPlugin cameraAnimations =
-                        mapView.getPlugin(
-                            Plugin.MAPBOX_CAMERA_PLUGIN_ID
-                        );
-                    CameraOptions cameraOptions =
-                        new CameraOptions.Builder()
-                            .center(cameraPoint)
-                            .build();
-
-                    if (cameraAnimations != null) {
-                        cameraAnimations.easeTo(
-                            cameraOptions,
-                            new MapAnimationOptions.Builder()
-                                .duration(500L)
-                                .build(),
-                            null
-                        );
+                    if (smoothedTrackingPoint == null) {
+                        smoothedTrackingPoint = rawPoint;
                     } else {
-                        mapView.getMapboxMap()
-                            .setCamera(cameraOptions);
+                        double smoothedLongitude =
+                            smoothedTrackingPoint.longitude()
+                            + (
+                                rawPoint.longitude()
+                                - smoothedTrackingPoint.longitude()
+                            ) * LOCATION_SMOOTHING_FACTOR;
+                        double smoothedLatitude =
+                            smoothedTrackingPoint.latitude()
+                            + (
+                                rawPoint.latitude()
+                                - smoothedTrackingPoint.latitude()
+                            ) * LOCATION_SMOOTHING_FACTOR;
+                        smoothedTrackingPoint =
+                            Point.fromLngLat(
+                                smoothedLongitude,
+                                smoothedLatitude
+                            );
                     }
-                });
-            }
 
-            @Override
-            public void onStatusChanged(String provider, int status, Bundle extras) {
-            }
+                    final Point cameraPoint = smoothedTrackingPoint;
 
-            @Override
-            public void onProviderEnabled(String provider) {
-            }
+                    // 6. Create filtered location for Mapbox puck
+                    final Location filteredLocation =
+                        new Location(location);
+                    filteredLocation.setLatitude(
+                        cameraPoint.latitude()
+                    );
+                    filteredLocation.setLongitude(
+                        cameraPoint.longitude()
+                    );
+                    filteredLocation.setTime(location.getTime());
+                    if (location.hasAccuracy()) {
+                        filteredLocation.setAccuracy(
+                            location.getAccuracy()
+                        );
+                    }
+                    if (location.hasAltitude()) {
+                        filteredLocation.setAltitude(
+                            location.getAltitude()
+                        );
+                    }
+                    if (location.hasBearing()) {
+                        filteredLocation.setBearing(
+                            location.getBearing()
+                        );
+                    }
+                    if (location.hasSpeed()) {
+                        filteredLocation.setSpeed(location.getSpeed());
+                    }
 
-            @Override
-            public void onProviderDisabled(String provider) {
+                    // 7. Update Mapbox puck and camera
+                    cordova.getActivity().runOnUiThread(() -> {
+                        if (mapView == null) {
+                            return;
+                        }
+
+                        if (smoothedLocationProvider != null) {
+                            smoothedLocationProvider.updateLocation(
+                                filteredLocation
+                            );
+                        }
+
+                        CameraAnimationsPlugin cameraAnimations =
+                            mapView.getPlugin(
+                                Plugin.MAPBOX_CAMERA_PLUGIN_ID
+                            );
+                        CameraOptions cameraOptions =
+                            new CameraOptions.Builder()
+                                .center(cameraPoint)
+                                .build();
+
+                        if (cameraAnimations != null) {
+                            cameraAnimations.easeTo(
+                                cameraOptions,
+                                new MapAnimationOptions.Builder()
+                                    .duration(500L)
+                                    .build(),
+                                null
+                            );
+                        } else {
+                            mapView.getMapboxMap()
+                                .setCamera(cameraOptions);
+                        }
+                    });
+                }
             }
         };
 
@@ -915,29 +926,26 @@ public class MapboxPluginEntry extends CordovaPlugin {
             boolean gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER);
             boolean networkEnabled = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
 
-            // Prefer GPS for better tracking accuracy
-            if (gpsEnabled) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    1000L,
-                    2.0f,
-                    userTrackingListener
-                );
-            // Use Network only when GPS is unavailable
-            } else if (networkEnabled) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER,
-                    1000L,
-                    3.0f,
-                    userTrackingListener
-                );
-            }
-
             if (!gpsEnabled && !networkEnabled) {
                 stopUserTracking();
                 callback.error("Location provider is not enabled.");
                 return;
             }
+
+            LocationRequest locationRequest =
+                new LocationRequest.Builder(
+                    Priority.PRIORITY_HIGH_ACCURACY,
+                    1000L
+                )
+                .setMinUpdateIntervalMillis(500L)
+                .setMinUpdateDistanceMeters(1.0f)
+                .build();
+
+            fusedLocationClient.requestLocationUpdates(
+                locationRequest,
+                fusedLocationCallback,
+                Looper.getMainLooper()
+            );
 
             isUserTrackingEnabled = true;
             fireTrackingStatusChanged();
@@ -950,6 +958,16 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void stopUserTracking() {
+        if (fusedLocationClient != null
+                && fusedLocationCallback != null) {
+            try {
+                fusedLocationClient.removeLocationUpdates(
+                    fusedLocationCallback
+                );
+            } catch (SecurityException ignored) {
+            }
+        }
+
         if (locationManager != null && userTrackingListener != null) {
             try {
                 locationManager.removeUpdates(userTrackingListener);
@@ -957,6 +975,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             }
         }
 
+        fusedLocationCallback = null;
         userTrackingListener = null;
         lastUserTrackingUpdateMs = 0L;
         lastAcceptedTrackingLocation = null;
