@@ -106,6 +106,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final long MOVEMENT_HISTORY_MAX_AGE_MS = 15000L;
     private static final int MOVEMENT_STATE_PERSIST_FIXES = 3;
 
+    private static final float MOVEMENT_SPEED_CONSISTENCY_MPS = 1.5f;
+    private static final float MOVEMENT_ACCURACY_SUSPECT_METERS = 12.0f;
+
     private static final double SMOOTHING_ALPHA_STATIONARY = 0.15;
     private static final double SMOOTHING_ALPHA_SLOW = 0.5;
     private static final double SMOOTHING_ALPHA_WALKING = 0.95;
@@ -813,13 +816,50 @@ public class MapboxPluginEntry extends CordovaPlugin {
         }
     }
 
-    private int classifyMovementState(Location location) {
+    private int classifyMovementState(
+        Location location,
+        double displacementMeters,
+        long fixTimeDiffMs
+    ) {
+        boolean hasReportedSpeed = location.hasSpeed();
         float reportedSpeed =
-            location.hasSpeed() ? location.getSpeed() : 0.0f;
-        float displacementRate =
-            computeWindowDisplacementRateMps();
-        float effectiveMotion =
-            Math.max(reportedSpeed, displacementRate);
+            hasReportedSpeed ? location.getSpeed() : 0.0f;
+
+        float calculatedSpeed = 0.0f;
+        if (lastAcceptedTrackingLocation != null && fixTimeDiffMs > 0) {
+            calculatedSpeed = (float) (displacementMeters
+                / (fixTimeDiffMs / 1000.0));
+        }
+
+        float effectiveMotion;
+        if (lastAcceptedTrackingLocation == null) {
+            effectiveMotion = hasReportedSpeed
+                ? reportedSpeed
+                : computeWindowDisplacementRateMps();
+        } else if (hasReportedSpeed) {
+            if (Math.abs(calculatedSpeed - reportedSpeed)
+                    > MOVEMENT_SPEED_CONSISTENCY_MPS) {
+                // Signals disagree: trust doppler-based reported speed
+                effectiveMotion = reportedSpeed;
+            } else {
+                effectiveMotion = Math.max(
+                    reportedSpeed,
+                    calculatedSpeed
+                );
+            }
+        } else if (fixTimeDiffMs > 0) {
+            effectiveMotion = calculatedSpeed;
+        } else {
+            effectiveMotion = computeWindowDisplacementRateMps();
+        }
+
+        // Poor accuracy: do not let position-derived speed reach WALKING
+        if (location.hasAccuracy()
+                && location.getAccuracy()
+                    > MOVEMENT_ACCURACY_SUSPECT_METERS
+                && effectiveMotion >= MOVEMENT_V_SLOW_MPS) {
+            effectiveMotion = MOVEMENT_V_SLOW_MPS;
+        }
 
         if (effectiveMotion < MOVEMENT_V_STATIONARY_MPS
                 && computeClusterRadiusMeters()
@@ -832,8 +872,17 @@ public class MapboxPluginEntry extends CordovaPlugin {
         return MOVEMENT_STATE_WALKING;
     }
 
-    private void updateMovementState(Location location) {
-        int candidate = classifyMovementState(location);
+    private void updateMovementState(
+        Location location,
+        double displacementMeters,
+        long fixTimeDiffMs
+    ) {
+        int candidate =
+            classifyMovementState(
+                location,
+                displacementMeters,
+                fixTimeDiffMs
+            );
         if (candidate == movementState) {
             movementStateAgreement = 0;
             return;
@@ -848,6 +897,12 @@ public class MapboxPluginEntry extends CordovaPlugin {
         movementState = candidate;
         movementStateAgreement = 0;
 
+        float calculatedSpeed = 0.0f;
+        if (lastAcceptedTrackingLocation != null && fixTimeDiffMs > 0) {
+            calculatedSpeed = (float) (displacementMeters
+                / (fixTimeDiffMs / 1000.0));
+        }
+
         Log.d(
             "MapboxPlugin",
             "movement state " + movementStateName(previousState)
@@ -858,11 +913,22 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     location.hasSpeed()
                         ? location.getSpeed()
                         : 0.0f
-                ) + " m/s, dispRate=" + String.format(
+                ) + " m/s, calc=" + String.format(
                     java.util.Locale.US,
                     "%.2f",
-                    computeWindowDisplacementRateMps()
-                ) + " m/s, cluster=" + String.format(
+                    calculatedSpeed
+                ) + " m/s, dt=" + fixTimeDiffMs
+                + " ms, disp=" + String.format(
+                    java.util.Locale.US,
+                    "%.2f",
+                    displacementMeters
+                ) + " m, acc=" + String.format(
+                    java.util.Locale.US,
+                    "%.2f",
+                    location.hasAccuracy()
+                        ? location.getAccuracy()
+                        : -1.0f
+                ) + " m, cluster=" + String.format(
                     java.util.Locale.US,
                     "%.2f",
                     computeClusterRadiusMeters()
@@ -969,29 +1035,37 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
                     // 4. Update movement state and reject GPS drift
                     updateMovementHistory(location);
-                    updateMovementState(location);
 
+                    double displacementMeters = 0.0;
+                    long fixTimeDiffMs = 0L;
                     if (lastAcceptedTrackingLocation != null) {
-                        double distance = calculateDistanceMeters(
+                        displacementMeters = calculateDistanceMeters(
                             lastAcceptedTrackingLocation.getLatitude(),
                             lastAcceptedTrackingLocation.getLongitude(),
                             latitude,
                             longitude
                         );
-
-                        long timeDifference =
+                        fixTimeDiffMs =
                             location.getTime()
                             - lastAcceptedTrackingLocation.getTime();
+                    }
 
+                    updateMovementState(
+                        location,
+                        displacementMeters,
+                        fixTimeDiffMs
+                    );
+
+                    if (lastAcceptedTrackingLocation != null) {
                         // Hold the dot for small displacements in the current movement state
-                        if (distance < movementHoldMeters()) {
+                        if (displacementMeters < movementHoldMeters()) {
                             continue;
                         }
 
-                        // Reject unrealistic jumps
-                        if (Math.abs(timeDifference) > 0) {
-                            float speed = (float) (distance
-                                / (Math.abs(timeDifference) / 1000.0));
+                        // Reject unrealistic jumps independently of classification
+                        if (Math.abs(fixTimeDiffMs) > 0) {
+                            float speed = (float) (displacementMeters
+                                / (Math.abs(fixTimeDiffMs) / 1000.0));
                             if (speed > MAX_REASONABLE_SPEED_MPS) {
                                 continue;
                             }
