@@ -92,10 +92,27 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final double MAX_OFFLINE_ZOOM = 18.0;
 
     private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
-    private static final float MAX_STATIONARY_JITTER_METERS = 5.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
     private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
-    private static final double LOCATION_SMOOTHING_FACTOR = 0.25;
+
+    private static final int MOVEMENT_STATE_STATIONARY = 0;
+    private static final int MOVEMENT_STATE_SLOW = 1;
+    private static final int MOVEMENT_STATE_WALKING = 2;
+
+    private static final float MOVEMENT_V_STATIONARY_MPS = 0.35f;
+    private static final float MOVEMENT_V_SLOW_MPS = 1.2f;
+    private static final float MOVEMENT_CLUSTER_RADIUS_STATIONARY_METERS = 3.0f;
+    private static final int MOVEMENT_HISTORY_SIZE = 8;
+    private static final long MOVEMENT_HISTORY_MAX_AGE_MS = 15000L;
+    private static final int MOVEMENT_STATE_PERSIST_FIXES = 3;
+
+    private static final double SMOOTHING_ALPHA_STATIONARY = 0.15;
+    private static final double SMOOTHING_ALPHA_SLOW = 0.5;
+    private static final double SMOOTHING_ALPHA_WALKING = 0.95;
+
+    private static final float MOVEMENT_HOLD_STATIONARY_METERS = 2.0f;
+    private static final float MOVEMENT_HOLD_SLOW_METERS = 0.8f;
+    private static final float MOVEMENT_HOLD_WALKING_METERS = 0.0f;
 
     private MapView mapView;
     private FrameLayout rootView;
@@ -111,6 +128,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
     private Point smoothedTrackingPoint = null;
+    private int movementState = MOVEMENT_STATE_STATIONARY;
+    private int movementStateAgreement = 0;
+    private final List<Location> movementHistory = new ArrayList<>();
     private SmoothedLocationProvider smoothedLocationProvider;
     private FusedLocationProviderClient fusedLocationClient;
     private LocationCallback fusedLocationCallback;
@@ -720,6 +740,158 @@ public class MapboxPluginEntry extends CordovaPlugin {
         return results[0];
     }
 
+    private void updateMovementHistory(Location location) {
+        movementHistory.add(new Location(location));
+        while (movementHistory.size() > MOVEMENT_HISTORY_SIZE) {
+            movementHistory.remove(0);
+        }
+        long newestTime =
+            movementHistory.get(movementHistory.size() - 1).getTime();
+        while (movementHistory.size() > 1
+                && newestTime - movementHistory.get(0).getTime()
+                    > MOVEMENT_HISTORY_MAX_AGE_MS) {
+            movementHistory.remove(0);
+        }
+    }
+
+    private float computeWindowDisplacementRateMps() {
+        if (movementHistory.size() < 2) {
+            return 0.0f;
+        }
+        Location oldest = movementHistory.get(0);
+        Location newest =
+            movementHistory.get(movementHistory.size() - 1);
+        double distance = calculateDistanceMeters(
+            oldest.getLatitude(),
+            oldest.getLongitude(),
+            newest.getLatitude(),
+            newest.getLongitude()
+        );
+        long elapsedMs = newest.getTime() - oldest.getTime();
+        if (elapsedMs <= 0) {
+            return 0.0f;
+        }
+        return (float) (distance / (elapsedMs / 1000.0));
+    }
+
+    private float computeClusterRadiusMeters() {
+        if (movementHistory.isEmpty()) {
+            return 0.0f;
+        }
+        double meanLat = 0.0;
+        double meanLon = 0.0;
+        for (Location fix : movementHistory) {
+            meanLat += fix.getLatitude();
+            meanLon += fix.getLongitude();
+        }
+        meanLat /= movementHistory.size();
+        meanLon /= movementHistory.size();
+
+        float maxRadius = 0.0f;
+        for (Location fix : movementHistory) {
+            float radius = (float) calculateDistanceMeters(
+                meanLat,
+                meanLon,
+                fix.getLatitude(),
+                fix.getLongitude()
+            );
+            if (radius > maxRadius) {
+                maxRadius = radius;
+            }
+        }
+        return maxRadius;
+    }
+
+    private String movementStateName(int state) {
+        switch (state) {
+            case MOVEMENT_STATE_SLOW:
+                return "SLOW";
+            case MOVEMENT_STATE_WALKING:
+                return "WALKING";
+            default:
+                return "STATIONARY";
+        }
+    }
+
+    private int classifyMovementState(Location location) {
+        float reportedSpeed =
+            location.hasSpeed() ? location.getSpeed() : 0.0f;
+        float displacementRate =
+            computeWindowDisplacementRateMps();
+        float effectiveMotion =
+            Math.max(reportedSpeed, displacementRate);
+
+        if (effectiveMotion < MOVEMENT_V_STATIONARY_MPS
+                && computeClusterRadiusMeters()
+                    < MOVEMENT_CLUSTER_RADIUS_STATIONARY_METERS) {
+            return MOVEMENT_STATE_STATIONARY;
+        }
+        if (effectiveMotion < MOVEMENT_V_SLOW_MPS) {
+            return MOVEMENT_STATE_SLOW;
+        }
+        return MOVEMENT_STATE_WALKING;
+    }
+
+    private void updateMovementState(Location location) {
+        int candidate = classifyMovementState(location);
+        if (candidate == movementState) {
+            movementStateAgreement = 0;
+            return;
+        }
+
+        movementStateAgreement++;
+        if (movementStateAgreement < MOVEMENT_STATE_PERSIST_FIXES) {
+            return;
+        }
+
+        int previousState = movementState;
+        movementState = candidate;
+        movementStateAgreement = 0;
+
+        Log.d(
+            "MapboxPlugin",
+            "movement state " + movementStateName(previousState)
+                + " -> " + movementStateName(movementState)
+                + " (speed=" + String.format(
+                    java.util.Locale.US,
+                    "%.2f",
+                    location.hasSpeed()
+                        ? location.getSpeed()
+                        : 0.0f
+                ) + " m/s, dispRate=" + String.format(
+                    java.util.Locale.US,
+                    "%.2f",
+                    computeWindowDisplacementRateMps()
+                ) + " m/s, cluster=" + String.format(
+                    java.util.Locale.US,
+                    "%.2f",
+                    computeClusterRadiusMeters()
+                ) + " m)"
+        );
+    }
+
+    private double smoothingAlphaForState() {
+        switch (movementState) {
+            case MOVEMENT_STATE_SLOW:
+                return SMOOTHING_ALPHA_SLOW;
+            case MOVEMENT_STATE_WALKING:
+                return SMOOTHING_ALPHA_WALKING;
+            default:
+                return SMOOTHING_ALPHA_STATIONARY;
+        }
+    }
+
+    private float movementHoldMeters() {
+        switch (movementState) {
+            case MOVEMENT_STATE_STATIONARY:
+                return MOVEMENT_HOLD_STATIONARY_METERS;
+            case MOVEMENT_STATE_SLOW:
+                return MOVEMENT_HOLD_SLOW_METERS;
+            default:
+                return MOVEMENT_HOLD_WALKING_METERS;
+        }
+    }
+
     private void setUserTrackingEnabled(JSONObject options, CallbackContext callback) {
         cordova.getActivity().runOnUiThread(() -> {
             if (mapView == null) {
@@ -795,7 +967,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         continue;
                     }
 
-                    // 4. Reject GPS drift and unrealistic jumps
+                    // 4. Update movement state and reject GPS drift
+                    updateMovementHistory(location);
+                    updateMovementState(location);
+
                     if (lastAcceptedTrackingLocation != null) {
                         double distance = calculateDistanceMeters(
                             lastAcceptedTrackingLocation.getLatitude(),
@@ -808,8 +983,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
                             location.getTime()
                             - lastAcceptedTrackingLocation.getTime();
 
-                        // Ignore tiny movements while stationary
-                        if (distance < MAX_STATIONARY_JITTER_METERS) {
+                        // Hold the dot for small displacements in the current movement state
+                        if (distance < movementHoldMeters()) {
                             continue;
                         }
 
@@ -834,18 +1009,20 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     if (smoothedTrackingPoint == null) {
                         smoothedTrackingPoint = rawPoint;
                     } else {
+                        double smoothingFactor =
+                            smoothingAlphaForState();
                         double smoothedLongitude =
                             smoothedTrackingPoint.longitude()
                             + (
                                 rawPoint.longitude()
                                 - smoothedTrackingPoint.longitude()
-                            ) * LOCATION_SMOOTHING_FACTOR;
+                            ) * smoothingFactor;
                         double smoothedLatitude =
                             smoothedTrackingPoint.latitude()
                             + (
                                 rawPoint.latitude()
                                 - smoothedTrackingPoint.latitude()
-                            ) * LOCATION_SMOOTHING_FACTOR;
+                            ) * smoothingFactor;
                         smoothedTrackingPoint =
                             Point.fromLngLat(
                                 smoothedLongitude,
@@ -980,6 +1157,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
         lastUserTrackingUpdateMs = 0L;
         lastAcceptedTrackingLocation = null;
         smoothedTrackingPoint = null;
+        movementHistory.clear();
+        movementState = MOVEMENT_STATE_STATIONARY;
+        movementStateAgreement = 0;
         isUserTrackingEnabled = false;
         fireTrackingStatusChanged();
     }
