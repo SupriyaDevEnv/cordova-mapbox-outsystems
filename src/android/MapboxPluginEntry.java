@@ -878,7 +878,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
         return MOVEMENT_STATE_WALKING;
     }
 
-    private void updateMovementState(
+    private boolean updateMovementState(
         Location location,
         double displacementMeters,
         long fixTimeDiffMs
@@ -891,7 +891,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             );
         if (candidate == movementState) {
             movementStateAgreement = 0;
-            return;
+            return false;
         }
 
         if (candidate == MOVEMENT_STATE_STATIONARY
@@ -900,20 +900,24 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     displacementMeters
                 )) {
             movementStateAgreement = 0;
-            return;
+            return false;
         }
 
         int requiredFixes = confirmationFixesFor(candidate);
 
         movementStateAgreement++;
         if (movementStateAgreement < requiredFixes) {
-            return;
+            return false;
         }
 
         int previousState = movementState;
         movementState = candidate;
         int usedFixes = movementStateAgreement;
         movementStateAgreement = 0;
+
+        boolean releasedFromHold =
+            previousState == MOVEMENT_STATE_STATIONARY
+            && candidate != MOVEMENT_STATE_STATIONARY;
 
         float calculatedSpeed = 0.0f;
         if (lastAcceptedTrackingLocation != null && fixTimeDiffMs > 0) {
@@ -927,6 +931,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                 + " -> " + movementStateName(movementState)
                 + " (confirm=" + requiredFixes
                 + " fixes=" + usedFixes
+                + " release=" + releasedFromHold
                 + " speed=" + String.format(
                     java.util.Locale.US,
                     "%.2f",
@@ -954,6 +959,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     computeClusterRadiusMeters()
                 ) + " m)"
         );
+
+        return releasedFromHold;
     }
 
     private int confirmationFixesFor(int candidate) {
@@ -1096,15 +1103,22 @@ public class MapboxPluginEntry extends CordovaPlugin {
                             - lastAcceptedTrackingLocation.getTime();
                     }
 
-                    updateMovementState(
-                        location,
-                        displacementMeters,
-                        fixTimeDiffMs
-                    );
+                    boolean releasedFromHold =
+                        updateMovementState(
+                            location,
+                            displacementMeters,
+                            fixTimeDiffMs
+                        );
+
+                    if (releasedFromHold) {
+                        movementHistory.clear();
+                        movementHistory.add(new Location(location));
+                    }
 
                     if (lastAcceptedTrackingLocation != null) {
                         // Hold the dot for small displacements in the current movement state
-                        if (displacementMeters < movementHoldMeters()) {
+                        if (!releasedFromHold
+                                && displacementMeters < movementHoldMeters()) {
                             continue;
                         }
 
@@ -1126,7 +1140,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     Point rawPoint =
                         Point.fromLngLat(longitude, latitude);
 
-                    if (smoothedTrackingPoint == null) {
+                    if (releasedFromHold) {
+                        smoothedTrackingPoint = rawPoint;
+                    } else if (smoothedTrackingPoint == null) {
                         smoothedTrackingPoint = rawPoint;
                     } else {
                         double smoothingFactor =
