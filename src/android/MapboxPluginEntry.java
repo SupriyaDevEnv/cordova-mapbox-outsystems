@@ -109,6 +109,12 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final float MOVEMENT_SPEED_CONSISTENCY_MPS = 1.5f;
     private static final float MOVEMENT_ACCURACY_SUSPECT_METERS = 12.0f;
 
+    private static final int MOVEMENT_STATIONARY_ENTER_FIXES = 4;
+    private static final float MOVEMENT_STATIONARY_ENTER_ACCURACY_METERS = 10.0f;
+    private static final float MOVEMENT_STATIONARY_ENTER_DISPLACEMENT_METERS = 1.5f;
+    private static final int MOVEMENT_STATIONARY_EXIT_FIXES_SLOW = 2;
+    private static final int MOVEMENT_STATIONARY_EXIT_FIXES_WALKING = 1;
+
     private static final double SMOOTHING_ALPHA_STATIONARY = 0.15;
     private static final double SMOOTHING_ALPHA_SLOW = 0.5;
     private static final double SMOOTHING_ALPHA_WALKING = 0.95;
@@ -888,13 +894,25 @@ public class MapboxPluginEntry extends CordovaPlugin {
             return;
         }
 
+        if (candidate == MOVEMENT_STATE_STATIONARY
+                && !meetsStationaryEntryPreconditions(
+                    location,
+                    displacementMeters
+                )) {
+            movementStateAgreement = 0;
+            return;
+        }
+
+        int requiredFixes = confirmationFixesFor(candidate);
+
         movementStateAgreement++;
-        if (movementStateAgreement < MOVEMENT_STATE_PERSIST_FIXES) {
+        if (movementStateAgreement < requiredFixes) {
             return;
         }
 
         int previousState = movementState;
         movementState = candidate;
+        int usedFixes = movementStateAgreement;
         movementStateAgreement = 0;
 
         float calculatedSpeed = 0.0f;
@@ -907,7 +925,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
             "MapboxPlugin",
             "movement state " + movementStateName(previousState)
                 + " -> " + movementStateName(movementState)
-                + " (speed=" + String.format(
+                + " (confirm=" + requiredFixes
+                + " fixes=" + usedFixes
+                + " speed=" + String.format(
                     java.util.Locale.US,
                     "%.2f",
                     location.hasSpeed()
@@ -934,6 +954,32 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     computeClusterRadiusMeters()
                 ) + " m)"
         );
+    }
+
+    private int confirmationFixesFor(int candidate) {
+        if (movementState == MOVEMENT_STATE_STATIONARY) {
+            return candidate == MOVEMENT_STATE_WALKING
+                ? MOVEMENT_STATIONARY_EXIT_FIXES_WALKING
+                : MOVEMENT_STATIONARY_EXIT_FIXES_SLOW;
+        }
+        if (candidate == MOVEMENT_STATE_STATIONARY) {
+            return MOVEMENT_STATIONARY_ENTER_FIXES;
+        }
+        return MOVEMENT_STATE_PERSIST_FIXES;
+    }
+
+    private boolean meetsStationaryEntryPreconditions(
+        Location location,
+        double displacementMeters
+    ) {
+        float accuracy =
+            location.hasAccuracy()
+                ? location.getAccuracy()
+                : Float.MAX_VALUE;
+        return accuracy
+                <= MOVEMENT_STATIONARY_ENTER_ACCURACY_METERS
+            && displacementMeters
+                <= MOVEMENT_STATIONARY_ENTER_DISPLACEMENT_METERS;
     }
 
     private double smoothingAlphaForState() {
