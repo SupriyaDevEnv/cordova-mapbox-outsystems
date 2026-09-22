@@ -92,7 +92,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final double MAX_OFFLINE_ZOOM = 18.0;
 
     private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
-    private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
+    private static final float MAX_REASONABLE_SPEED_MPS = 15.0f;
     private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
 
     private static final int MOVEMENT_STATE_STATIONARY = 0;
@@ -1090,6 +1090,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         if (Math.abs(fixTimeDiffMs) > 0) {
                             float speed = (float) (displacementMeters
                                 / (Math.abs(fixTimeDiffMs) / 1000.0));
+                            if (location.hasSpeed()
+                                    && location.getSpeed() > speed) {
+                                speed = location.getSpeed();
+                            }
                             if (speed > MAX_REASONABLE_SPEED_MPS) {
                                 continue;
                             }
