@@ -119,10 +119,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final double SMOOTHING_ALPHA_SLOW = 0.5;
     private static final double SMOOTHING_ALPHA_WALKING = 0.95;
 
-    private static final float MOVEMENT_HOLD_STATIONARY_METERS = 2.0f;
-    private static final float MOVEMENT_HOLD_SLOW_METERS = 0.8f;
-    private static final float MOVEMENT_HOLD_WALKING_METERS = 0.0f;
-
     private MapView mapView;
     private FrameLayout rootView;
     private final List<TouchRect> touchableRects = new ArrayList<>();
@@ -868,8 +864,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
         }
 
         if (effectiveMotion < MOVEMENT_V_STATIONARY_MPS
-                && computeClusterRadiusMeters()
-                    < MOVEMENT_CLUSTER_RADIUS_STATIONARY_METERS) {
+                && (location.hasSpeed()
+                    || computeClusterRadiusMeters()
+                        < MOVEMENT_CLUSTER_RADIUS_STATIONARY_METERS)) {
             return MOVEMENT_STATE_STATIONARY;
         }
         if (effectiveMotion < MOVEMENT_V_SLOW_MPS) {
@@ -1000,17 +997,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
         }
     }
 
-    private float movementHoldMeters() {
-        switch (movementState) {
-            case MOVEMENT_STATE_STATIONARY:
-                return MOVEMENT_HOLD_STATIONARY_METERS;
-            case MOVEMENT_STATE_SLOW:
-                return MOVEMENT_HOLD_SLOW_METERS;
-            default:
-                return MOVEMENT_HOLD_WALKING_METERS;
-        }
-    }
-
     private void setUserTrackingEnabled(JSONObject options, CallbackContext callback) {
         cordova.getActivity().runOnUiThread(() -> {
             if (mapView == null) {
@@ -1086,9 +1072,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         continue;
                     }
 
-                    // 4. Update movement state and reject GPS drift
-                    updateMovementHistory(location);
-
+                    // 4. Reject jumps, maintain history, classify movement
                     double displacementMeters = 0.0;
                     long fixTimeDiffMs = 0L;
                     if (lastAcceptedTrackingLocation != null) {
@@ -1101,7 +1085,18 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         fixTimeDiffMs =
                             location.getTime()
                             - lastAcceptedTrackingLocation.getTime();
+
+                        // Reject unrealistic jumps independently of classification
+                        if (Math.abs(fixTimeDiffMs) > 0) {
+                            float speed = (float) (displacementMeters
+                                / (Math.abs(fixTimeDiffMs) / 1000.0));
+                            if (speed > MAX_REASONABLE_SPEED_MPS) {
+                                continue;
+                            }
+                        }
                     }
+
+                    updateMovementHistory(location);
 
                     boolean releasedFromHold =
                         updateMovementState(
@@ -1115,21 +1110,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         movementHistory.add(new Location(location));
                     }
 
-                    if (lastAcceptedTrackingLocation != null) {
-                        // Hold the dot for small displacements in the current movement state
-                        if (!releasedFromHold
-                                && displacementMeters < movementHoldMeters()) {
-                            continue;
-                        }
-
-                        // Reject unrealistic jumps independently of classification
-                        if (Math.abs(fixTimeDiffMs) > 0) {
-                            float speed = (float) (displacementMeters
-                                / (Math.abs(fixTimeDiffMs) / 1000.0));
-                            if (speed > MAX_REASONABLE_SPEED_MPS) {
-                                continue;
-                            }
-                        }
+                    // Pin the puck while the classifier says stationary
+                    if (movementState == MOVEMENT_STATE_STATIONARY) {
+                        continue;
                     }
 
                     // Accept this location
