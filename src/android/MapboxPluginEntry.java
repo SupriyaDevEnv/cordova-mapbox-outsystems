@@ -1115,8 +1115,11 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         movementHistory.add(new Location(location));
                     }
 
-                    // Pin the puck while the classifier says stationary
-                    if (movementState == MOVEMENT_STATE_STATIONARY) {
+                    // Pin the puck while the classifier says stationary,
+                    // but always let the first fix through so the dot
+                    // renders immediately on tracking start
+                    if (movementState == MOVEMENT_STATE_STATIONARY
+                            && smoothedTrackingPoint != null) {
                         continue;
                     }
 
