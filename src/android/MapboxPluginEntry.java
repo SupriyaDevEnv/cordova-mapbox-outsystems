@@ -17,6 +17,7 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
@@ -93,7 +94,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
     private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private static final float MAX_REASONABLE_SPEED_MPS = 15.0f;
-    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 700L;
+
+    private static final long CAMERA_FOLLOW_INTERVAL_MS = 250L;
+    private static final long CAMERA_FOLLOW_DURATION_MS = 200L;
 
     private static final int MOVEMENT_STATE_STATIONARY = 0;
     private static final int MOVEMENT_STATE_SLOW = 1;
@@ -136,6 +139,10 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private int movementState = MOVEMENT_STATE_STATIONARY;
     private int movementStateAgreement = 0;
     private final List<Location> movementHistory = new ArrayList<>();
+    private final Handler cameraFollowHandler =
+        new Handler(Looper.getMainLooper());
+    private Runnable cameraFollowRunnable;
+    private Point lastCameraFollowTarget = null;
     private SmoothedLocationProvider smoothedLocationProvider;
     private FusedLocationProviderClient fusedLocationClient;
     private LocationCallback fusedLocationCallback;
@@ -1057,22 +1064,16 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         continue;
                     }
 
-                    // 2. Rate limit camera updates
-                    if (now - lastUserTrackingUpdateMs
-                            < MIN_TRACKING_CAMERA_INTERVAL_MS) {
-                        continue;
-                    }
-
                     double latitude = location.getLatitude();
                     double longitude = location.getLongitude();
 
-                    // 3. Validate coordinates
+                    // 2. Validate coordinates
                     if (!isValidLatitude(latitude)
                             || !isValidLongitude(longitude)) {
                         continue;
                     }
 
-                    // 4. Reject jumps, maintain history, classify movement
+                    // 3. Reject jumps, maintain history, classify movement
                     double displacementMeters = 0.0;
                     long fixTimeDiffMs = 0L;
                     if (lastAcceptedTrackingLocation != null) {
@@ -1123,7 +1124,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                     lastAcceptedTrackingLocation = new Location(location);
                     lastUserTrackingUpdateMs = now;
 
-                    // 5. Apply weighted location smoothing
+                    // 4. Apply weighted location smoothing
                     Point rawPoint =
                         Point.fromLngLat(longitude, latitude);
 
@@ -1155,7 +1156,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
 
                     final Point cameraPoint = smoothedTrackingPoint;
 
-                    // 6. Create filtered location for Mapbox puck
+                    // 5. Create filtered location for Mapbox puck
                     final Location filteredLocation =
                         new Location(location);
                     filteredLocation.setLatitude(
@@ -1184,7 +1185,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
                         filteredLocation.setSpeed(location.getSpeed());
                     }
 
-                    // 7. Update Mapbox puck and camera
+                    // 6. Update Mapbox puck
                     cordova.getActivity().runOnUiThread(() -> {
                         if (mapView == null) {
                             return;
@@ -1194,28 +1195,6 @@ public class MapboxPluginEntry extends CordovaPlugin {
                             smoothedLocationProvider.updateLocation(
                                 filteredLocation
                             );
-                        }
-
-                        CameraAnimationsPlugin cameraAnimations =
-                            mapView.getPlugin(
-                                Plugin.MAPBOX_CAMERA_PLUGIN_ID
-                            );
-                        CameraOptions cameraOptions =
-                            new CameraOptions.Builder()
-                                .center(cameraPoint)
-                                .build();
-
-                        if (cameraAnimations != null) {
-                            cameraAnimations.easeTo(
-                                cameraOptions,
-                                new MapAnimationOptions.Builder()
-                                    .duration(500L)
-                                    .build(),
-                                null
-                            );
-                        } else {
-                            mapView.getMapboxMap()
-                                .setCamera(cameraOptions);
                         }
                     });
                 }
@@ -1248,6 +1227,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
             );
 
             isUserTrackingEnabled = true;
+            startCameraFollow();
             fireTrackingStatusChanged();
 
             callback.success();
@@ -1258,6 +1238,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
     }
 
     private void stopUserTracking() {
+        stopCameraFollow();
         if (fusedLocationClient != null
                 && fusedLocationCallback != null) {
             try {
@@ -1285,6 +1266,62 @@ public class MapboxPluginEntry extends CordovaPlugin {
         movementStateAgreement = 0;
         isUserTrackingEnabled = false;
         fireTrackingStatusChanged();
+    }
+
+    private void startCameraFollow() {
+        cameraFollowHandler.removeCallbacks(cameraFollowRunnable);
+        cameraFollowRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (mapView != null
+                        && isUserTrackingEnabled
+                        && smoothedTrackingPoint != null) {
+                    Point target = smoothedTrackingPoint;
+                    boolean moved = lastCameraFollowTarget == null
+                        || Math.abs(
+                            target.latitude()
+                            - lastCameraFollowTarget.latitude()) > 1e-9
+                        || Math.abs(
+                            target.longitude()
+                            - lastCameraFollowTarget.longitude()) > 1e-9;
+                    if (moved) {
+                        CameraOptions cameraOptions =
+                            new CameraOptions.Builder()
+                                .center(target)
+                                .build();
+                        CameraAnimationsPlugin cameraAnimations =
+                            mapView.getPlugin(
+                                Plugin.MAPBOX_CAMERA_PLUGIN_ID
+                            );
+                        if (cameraAnimations != null) {
+                            cameraAnimations.easeTo(
+                                cameraOptions,
+                                new MapAnimationOptions.Builder()
+                                    .duration(CAMERA_FOLLOW_DURATION_MS)
+                                    .build(),
+                                null
+                            );
+                        } else {
+                            mapView.getMapboxMap()
+                                .setCamera(cameraOptions);
+                        }
+                        lastCameraFollowTarget = target;
+                    }
+                }
+                if (isUserTrackingEnabled) {
+                    cameraFollowHandler.postDelayed(
+                        this,
+                        CAMERA_FOLLOW_INTERVAL_MS
+                    );
+                }
+            }
+        };
+        cameraFollowHandler.postDelayed(cameraFollowRunnable, 0L);
+    }
+
+    private void stopCameraFollow() {
+        cameraFollowHandler.removeCallbacksAndMessages(null);
+        lastCameraFollowTarget = null;
     }
 
     private void moveToCurrentLocation(JSONObject options, CallbackContext callback) {
@@ -2429,6 +2466,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
         autoAddWaypointMarker = false;
         isUserLocationEnabled = false;
         isUserTrackingEnabled = false;
+        stopCameraFollow();
         isDeviceHeadingEnabled = false;
         isHeadingFollowModeEnabled = false;
         mapClickListener = null;
@@ -2581,6 +2619,9 @@ public class MapboxPluginEntry extends CordovaPlugin {
         if (mapView != null) {
             mapView.onStart();
         }
+        if (isUserTrackingEnabled) {
+            startCameraFollow();
+        }
     }
 
     @Override
@@ -2588,6 +2629,7 @@ public class MapboxPluginEntry extends CordovaPlugin {
         if (mapView != null) {
             mapView.onStop();
         }
+        stopCameraFollow();
         super.onPause(multitasking);
     }
 
