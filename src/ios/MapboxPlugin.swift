@@ -41,6 +41,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var waypointSelectedCallbackId: String?
     private var markerClickCallbackId: String?
     private var offlineDownloadProgressCallbackId: String?
+    private var compassCallbackId: String?
+    private var lastCompassBearing: Double = -1
+    private var lastCompassVisible = false
     private var activeStylePackDownload: Cancelable?
     private var activeTileRegionDownload: Cancelable?
     private var isOfflineDownloading = false
@@ -192,6 +195,22 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 zoom: zoom,
                 bearing: bearing,
                 pitch: pitch
+            ))
+
+            self.sendSuccess(command)
+        }
+    }
+
+    @objc(resetMapBearing:)
+    func resetMapBearing(command: CDVInvokedUrlCommand) {
+        runForSession {
+            guard let mapView = self.mapView else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            mapView.mapboxMap.setCamera(to: CameraOptions(
+                bearing: 0
             ))
 
             self.sendSuccess(command)
@@ -1363,6 +1382,69 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         fireTrackingStatusChanged()
     }
 
+    @objc(registerCompassCallback:)
+    func registerCompassCallback(command: CDVInvokedUrlCommand) {
+        compassCallbackId = command.callbackId
+        sendNoResultKeepCallback(command)
+
+        startCompassCameraListener()
+    }
+
+    private func startCompassCameraListener() {
+        guard let mapView = mapView else {
+            return
+        }
+
+        let cancellable = mapView.mapboxMap.onCameraChanged.observe { [weak self] _ in
+            guard let self = self else {
+                return
+            }
+
+            let bearing = mapView.cameraState.bearing
+
+            let normalizedBearing = ((bearing.truncatingRemainder(dividingBy: 360.0)) + 360.0)
+                .truncatingRemainder(dividingBy: 360.0)
+
+            let distanceFromNorth = min(
+                normalizedBearing,
+                360.0 - normalizedBearing
+            )
+
+            let visible = distanceFromNorth > 1.0
+
+            let bearingChanged: Bool
+
+            if self.lastCompassBearing < 0 {
+                bearingChanged = true
+            } else {
+                bearingChanged =
+                    abs(self.shortestBearingDelta(
+                        from: self.lastCompassBearing,
+                        to: normalizedBearing
+                    )) >= 0.5
+            }
+
+            let visibilityChanged = visible != self.lastCompassVisible
+
+            guard bearingChanged || visibilityChanged else {
+                return
+            }
+
+            self.lastCompassBearing = normalizedBearing
+            self.lastCompassVisible = visible
+
+            self.sendKeepCallback(
+                self.compassCallbackId,
+                payload: [
+                    "bearing": normalizedBearing,
+                    "visible": visible
+                ]
+            )
+        }
+
+        cancellable.store(in: &cancelables)
+    }
+
     private func fireTrackingStatusChanged() {
         sendKeepCallback(trackingStatusCallbackId, payload: [
             "userLocation": isUserLocationEnabled,
@@ -1689,6 +1771,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         waypointSelectedCallbackId = nil
         markerClickCallbackId = nil
         offlineDownloadProgressCallbackId = nil
+        compassCallbackId = nil
+        lastCompassBearing = -1
+        lastCompassVisible = false
         trackingStatusCallbackId = nil
         moveToCurrentLocationCallbackId = nil
         moveToCurrentLocationZoom = nil
