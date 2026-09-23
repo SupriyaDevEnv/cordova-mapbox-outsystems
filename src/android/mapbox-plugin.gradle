@@ -1,0 +1,58 @@
+def mapboxAndroidVersion = project.findProperty("MAPBOX_ANDROID_VERSION")
+        ?: System.getenv("MAPBOX_ANDROID_VERSION")
+        ?: "11.30.0"
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+        maven {
+            url = uri("https://api.mapbox.com/downloads/v2/releases/maven")
+        }
+    }
+}
+
+android {
+
+    def configuredAbis = (project.findProperty("MAPBOX_ANDROID_ABIS")
+            ?: System.getenv("MAPBOX_ANDROID_ABIS")
+            ?: "arm64-v8a,armeabi-v7a")
+            .split(",")
+            .collect { it.trim() }
+            .findAll { it }
+
+    defaultConfig {
+
+        // Expose the same Mapbox version as an Android string resource
+        resValue "string", "mapbox_version", mapboxAndroidVersion
+
+        ndk {
+            abiFilters(*configuredAbis)
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+        }
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+    maven {
+        url = uri("https://api.mapbox.com/downloads/v2/releases/maven")
+    }
+}
+
+dependencies {
+
+    implementation("com.mapbox.maps:android:${mapboxAndroidVersion}") {
+        exclude group: "com.google.android.gms", module: "play-services-cronet"
+    }
+
+    implementation "com.google.android.gms:play-services-location:21.0.1"
+
+}
