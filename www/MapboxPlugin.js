@@ -66,6 +66,10 @@ var api = {
     return call('setCamera', [options || {}]);
   },
 
+  resetMapBearing: function () {
+    return call('resetMapBearing', []);
+  },
+
   flyTo: function (options) {
     return call('flyTo', [options || {}]);
   },
@@ -144,6 +148,16 @@ var api = {
       errorCallback || function () {},
       SERVICE,
       'registerLocationAccuracyCallback',
+      []
+    );
+  },
+
+  onCompassChanged: function (callback, errorCallback) {
+    exec(
+      callback,
+      errorCallback || function () {},
+      SERVICE,
+      'registerCompassCallback',
       []
     );
   },

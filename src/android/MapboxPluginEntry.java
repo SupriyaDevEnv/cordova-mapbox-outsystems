@@ -227,6 +227,11 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private boolean isHeadingFollowModeEnabled = false;
     private CallbackContext trackingStatusCallback;
     private CallbackContext locationAccuracyCallback;
+    private Cancelable compassCameraSubscription;
+    private CallbackContext compassCallback;
+
+    private double lastCompassBearing = Double.NaN;
+    private boolean lastCompassVisible = false;
     private long lastLocationAccuracyUpdateMs = 0L;
     private static final long LOCATION_ACCURACY_CALLBACK_INTERVAL_MS = 500L;
     private boolean isCameraFollowingUser = true;
@@ -333,6 +338,12 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
                 return true;
             case "registerLocationAccuracyCallback":
                 registerLocationAccuracyCallback(callbackContext);
+                return true;
+            case "registerCompassCallback":
+                registerCompassCallback(callbackContext);
+                return true;
+            case "resetMapBearing":
+                resetMapBearing(callbackContext);
                 return true;
             case "getCamera":
                 getCamera(callbackContext);
@@ -2233,6 +2244,106 @@ private void startUserTracking(CallbackContext callback) {
         PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
         result.setKeepCallback(true);
         callback.sendPluginResult(result);
+    }
+
+    private void registerCompassCallback(CallbackContext callback) {
+        compassCallback = callback;
+
+        PluginResult result =
+            new PluginResult(PluginResult.Status.NO_RESULT);
+
+        result.setKeepCallback(true);
+        callback.sendPluginResult(result);
+
+        startCompassCameraListener();
+    }
+
+    private void startCompassCameraListener() {
+        if (mapView == null) {
+            return;
+        }
+
+        if (compassCameraSubscription != null) {
+            compassCameraSubscription.cancel();
+            compassCameraSubscription = null;
+        }
+
+        lastCompassBearing = Double.NaN;
+        lastCompassVisible = false;
+
+        compassCameraSubscription =
+            mapView.getMapboxMap().subscribeCameraChanged(cameraChanged -> {
+
+                if (compassCallback == null || mapView == null) {
+                    return;
+                }
+
+                double bearing =
+                    mapView.getMapboxMap()
+                        .getCameraState()
+                        .getBearing();
+
+                bearing = ((bearing % 360.0) + 360.0) % 360.0;
+
+                double distanceFromNorth =
+                    Math.min(bearing, 360.0 - bearing);
+
+                boolean visible = distanceFromNorth > 1.0;
+
+                if (!Double.isNaN(lastCompassBearing)
+                        && Math.abs(bearing - lastCompassBearing) < 0.5
+                        && visible == lastCompassVisible) {
+                    return;
+                }
+
+                lastCompassBearing = bearing;
+                lastCompassVisible = visible;
+
+                try {
+                    JSONObject payload = new JSONObject();
+
+                    payload.put("bearing", bearing);
+                    payload.put("visible", visible);
+
+                    sendKeepCallback(compassCallback, payload);
+
+                } catch (Exception ignored) {
+                }
+            });
+    }
+
+    private void resetMapBearing(CallbackContext callback) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
+
+            CameraAnimationsPlugin cameraAnimations =
+                mapView.getPlugin(Plugin.MAPBOX_CAMERA_PLUGIN_ID);
+
+            if (cameraAnimations == null) {
+                callback.error("Camera animations plugin is not available.");
+                return;
+            }
+
+            CameraOptions cameraOptions = new CameraOptions.Builder()
+                .bearing(0.0)
+                .build();
+
+            MapAnimationOptions animationOptions =
+                new MapAnimationOptions.Builder()
+                    .duration(400L)
+                    .build();
+
+            cameraAnimations.easeTo(
+                cameraOptions,
+                animationOptions,
+                null
+            );
+
+            callback.success();
+        });
     }
 
     private void sendLocationAccuracyUpdate(Location location) {
