@@ -17,6 +17,8 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -24,6 +26,13 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.FrameLayout;
+
+import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationCallback;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationResult;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.location.Priority;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -95,10 +104,34 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final float LOW_METERS = 100f;
 
 private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
-    private static final float MAX_REASONABLE_SPEED_MPS = 50.0f;
-    private static final long MIN_TRACKING_CAMERA_INTERVAL_MS = 500L;
-    private static final double LOCATION_SMOOTHING_FACTOR = 0.15;
-    private static final float MIN_MOVING_SPEED_MPS = 0.15f;
+    private static final float MAX_REASONABLE_SPEED_MPS = 15.0f;
+
+    private static final long CAMERA_FOLLOW_INTERVAL_MS = 250L;
+    private static final long CAMERA_FOLLOW_DURATION_MS = 200L;
+
+    private static final int MOVEMENT_STATE_STATIONARY = 0;
+    private static final int MOVEMENT_STATE_SLOW = 1;
+    private static final int MOVEMENT_STATE_WALKING = 2;
+
+    private static final float MOVEMENT_V_STATIONARY_MPS = 0.35f;
+    private static final float MOVEMENT_V_SLOW_MPS = 1.2f;
+    private static final float MOVEMENT_CLUSTER_RADIUS_STATIONARY_METERS = 3.0f;
+    private static final int MOVEMENT_HISTORY_SIZE = 8;
+    private static final long MOVEMENT_HISTORY_MAX_AGE_MS = 15000L;
+    private static final int MOVEMENT_STATE_PERSIST_FIXES = 3;
+
+    private static final float MOVEMENT_SPEED_CONSISTENCY_MPS = 1.5f;
+    private static final float MOVEMENT_ACCURACY_SUSPECT_METERS = 12.0f;
+
+    private static final int MOVEMENT_STATIONARY_ENTER_FIXES = 4;
+    private static final float MOVEMENT_STATIONARY_ENTER_ACCURACY_METERS = 10.0f;
+    private static final float MOVEMENT_STATIONARY_ENTER_DISPLACEMENT_METERS = 1.5f;
+    private static final int MOVEMENT_STATIONARY_EXIT_FIXES_SLOW = 2;
+    private static final int MOVEMENT_STATIONARY_EXIT_FIXES_WALKING = 1;
+
+    private static final double SMOOTHING_ALPHA_STATIONARY = 0.15;
+    private static final double SMOOTHING_ALPHA_SLOW = 0.5;
+    private static final double SMOOTHING_ALPHA_WALKING = 0.95;
 
     private volatile long sessionGeneration = 0;
     private MapView mapView;
@@ -130,7 +163,16 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
     private Point smoothedTrackingPoint = null;
+    private int movementState = MOVEMENT_STATE_STATIONARY;
+    private int movementStateAgreement = 0;
+    private final List<Location> movementHistory = new ArrayList<>();
+    private final Handler cameraFollowHandler =
+        new Handler(Looper.getMainLooper());
+    private Runnable cameraFollowRunnable;
+    private Point lastCameraFollowTarget = null;
     private SmoothedLocationProvider smoothedLocationProvider;
+    private FusedLocationProviderClient fusedLocationClient;
+    private LocationCallback fusedLocationCallback;
     private CallbackContext moveToCurrentLocationCallback = null;
     private LocationListener moveToCurrentLocationListener = null;
     private LocationManager moveToCurrentLocationManager = null;
@@ -999,7 +1041,259 @@ if (gestures != null) {
         });
     }
 
-    private void startUserTracking(CallbackContext callback) {
+    private void updateMovementHistory(Location location) {
+        movementHistory.add(new Location(location));
+        while (movementHistory.size() > MOVEMENT_HISTORY_SIZE) {
+            movementHistory.remove(0);
+        }
+        long newestTime =
+            movementHistory.get(movementHistory.size() - 1).getTime();
+        while (movementHistory.size() > 1
+                && newestTime - movementHistory.get(0).getTime()
+                    > MOVEMENT_HISTORY_MAX_AGE_MS) {
+            movementHistory.remove(0);
+        }
+    }
+
+    private float computeWindowDisplacementRateMps() {
+        if (movementHistory.size() < 2) {
+            return 0.0f;
+        }
+        Location oldest = movementHistory.get(0);
+        Location newest =
+            movementHistory.get(movementHistory.size() - 1);
+        double distance = calculateDistanceMeters(
+            oldest.getLatitude(),
+            oldest.getLongitude(),
+            newest.getLatitude(),
+            newest.getLongitude()
+        );
+        long elapsedMs = newest.getTime() - oldest.getTime();
+        if (elapsedMs <= 0) {
+            return 0.0f;
+        }
+        return (float) (distance / (elapsedMs / 1000.0));
+    }
+
+    private float computeClusterRadiusMeters() {
+        if (movementHistory.isEmpty()) {
+            return 0.0f;
+        }
+        double meanLat = 0.0;
+        double meanLon = 0.0;
+        for (Location fix : movementHistory) {
+            meanLat += fix.getLatitude();
+            meanLon += fix.getLongitude();
+        }
+        meanLat /= movementHistory.size();
+        meanLon /= movementHistory.size();
+
+        float maxRadius = 0.0f;
+        for (Location fix : movementHistory) {
+            float radius = (float) calculateDistanceMeters(
+                meanLat,
+                meanLon,
+                fix.getLatitude(),
+                fix.getLongitude()
+            );
+            if (radius > maxRadius) {
+                maxRadius = radius;
+            }
+        }
+        return maxRadius;
+    }
+
+    private String movementStateName(int state) {
+        switch (state) {
+            case MOVEMENT_STATE_SLOW:
+                return "SLOW";
+            case MOVEMENT_STATE_WALKING:
+                return "WALKING";
+            default:
+                return "STATIONARY";
+        }
+    }
+
+    private int classifyMovementState(
+        Location location,
+        double displacementMeters,
+        long fixTimeDiffMs
+    ) {
+        boolean hasReportedSpeed = location.hasSpeed();
+        float reportedSpeed =
+            hasReportedSpeed ? location.getSpeed() : 0.0f;
+
+        float calculatedSpeed = 0.0f;
+        if (lastAcceptedTrackingLocation != null && fixTimeDiffMs > 0) {
+            calculatedSpeed = (float) (displacementMeters
+                / (fixTimeDiffMs / 1000.0));
+        }
+
+        float effectiveMotion;
+        if (lastAcceptedTrackingLocation == null) {
+            effectiveMotion = hasReportedSpeed
+                ? reportedSpeed
+                : computeWindowDisplacementRateMps();
+        } else if (hasReportedSpeed) {
+            if (Math.abs(calculatedSpeed - reportedSpeed)
+                    > MOVEMENT_SPEED_CONSISTENCY_MPS) {
+                // Signals disagree: trust doppler-based reported speed
+                effectiveMotion = reportedSpeed;
+            } else {
+                effectiveMotion = Math.max(
+                    reportedSpeed,
+                    calculatedSpeed
+                );
+            }
+        } else if (fixTimeDiffMs > 0) {
+            effectiveMotion = calculatedSpeed;
+        } else {
+            effectiveMotion = computeWindowDisplacementRateMps();
+        }
+
+        // Poor accuracy: do not let position-derived speed reach WALKING
+        if (location.hasAccuracy()
+                && location.getAccuracy()
+                    > MOVEMENT_ACCURACY_SUSPECT_METERS
+                && effectiveMotion >= MOVEMENT_V_SLOW_MPS) {
+            effectiveMotion = MOVEMENT_V_SLOW_MPS;
+        }
+
+        if (effectiveMotion < MOVEMENT_V_STATIONARY_MPS
+                && (location.hasSpeed()
+                    || computeClusterRadiusMeters()
+                        < MOVEMENT_CLUSTER_RADIUS_STATIONARY_METERS)) {
+            return MOVEMENT_STATE_STATIONARY;
+        }
+        if (effectiveMotion < MOVEMENT_V_SLOW_MPS) {
+            return MOVEMENT_STATE_SLOW;
+        }
+        return MOVEMENT_STATE_WALKING;
+    }
+
+    private boolean updateMovementState(
+        Location location,
+        double displacementMeters,
+        long fixTimeDiffMs
+    ) {
+        int candidate =
+            classifyMovementState(
+                location,
+                displacementMeters,
+                fixTimeDiffMs
+            );
+        if (candidate == movementState) {
+            movementStateAgreement = 0;
+            return false;
+        }
+
+        if (candidate == MOVEMENT_STATE_STATIONARY
+                && !meetsStationaryEntryPreconditions(
+                    location,
+                    displacementMeters
+                )) {
+            movementStateAgreement = 0;
+            return false;
+        }
+
+        int requiredFixes = confirmationFixesFor(candidate);
+
+        movementStateAgreement++;
+        if (movementStateAgreement < requiredFixes) {
+            return false;
+        }
+
+        int previousState = movementState;
+        movementState = candidate;
+        int usedFixes = movementStateAgreement;
+        movementStateAgreement = 0;
+
+        boolean releasedFromHold =
+            previousState == MOVEMENT_STATE_STATIONARY
+            && candidate != MOVEMENT_STATE_STATIONARY;
+
+        float calculatedSpeed = 0.0f;
+        if (lastAcceptedTrackingLocation != null && fixTimeDiffMs > 0) {
+            calculatedSpeed = (float) (displacementMeters
+                / (fixTimeDiffMs / 1000.0));
+        }
+
+        Log.d(
+            "MapboxPlugin",
+            "movement state " + movementStateName(previousState)
+                + " -> " + movementStateName(movementState)
+                + " (confirm=" + requiredFixes
+                + " fixes=" + usedFixes
+                + " release=" + releasedFromHold
+                + " speed=" + String.format(
+                    java.util.Locale.US,
+                    "%.2f",
+                    location.hasSpeed()
+                        ? location.getSpeed()
+                        : 0.0f
+                ) + " m/s, calc=" + String.format(
+                    java.util.Locale.US,
+                    "%.2f",
+                    calculatedSpeed
+                ) + " m/s, dt=" + fixTimeDiffMs
+                + " ms, disp=" + String.format(
+                    java.util.Locale.US,
+                    "%.2f",
+                    displacementMeters
+                ) + " m, acc=" + String.format(
+                    java.util.Locale.US,
+                    "%.2f",
+                    location.hasAccuracy()
+                        ? location.getAccuracy()
+                        : -1.0f
+                ) + " m, cluster=" + String.format(
+                    java.util.Locale.US,
+                    "%.2f",
+                    computeClusterRadiusMeters()
+                ) + " m)"
+        );
+
+        return releasedFromHold;
+    }
+
+    private int confirmationFixesFor(int candidate) {
+        if (movementState == MOVEMENT_STATE_STATIONARY) {
+            return candidate == MOVEMENT_STATE_WALKING
+                ? MOVEMENT_STATIONARY_EXIT_FIXES_WALKING
+                : MOVEMENT_STATIONARY_EXIT_FIXES_SLOW;
+        }
+        if (candidate == MOVEMENT_STATE_STATIONARY) {
+            return MOVEMENT_STATIONARY_ENTER_FIXES;
+        }
+        return MOVEMENT_STATE_PERSIST_FIXES;
+    }
+
+    private boolean meetsStationaryEntryPreconditions(
+        Location location,
+        double displacementMeters
+    ) {
+        float accuracy =
+            location.hasAccuracy()
+                ? location.getAccuracy()
+                : Float.MAX_VALUE;
+        return accuracy
+                <= MOVEMENT_STATIONARY_ENTER_ACCURACY_METERS
+            && displacementMeters
+                <= MOVEMENT_STATIONARY_ENTER_DISPLACEMENT_METERS;
+    }
+
+    private double smoothingAlphaForState() {
+        switch (movementState) {
+            case MOVEMENT_STATE_SLOW:
+                return SMOOTHING_ALPHA_SLOW;
+            case MOVEMENT_STATE_WALKING:
+                return SMOOTHING_ALPHA_WALKING;
+            default:
+                return SMOOTHING_ALPHA_STATIONARY;
+        }
+    }
+
+private void startUserTracking(CallbackContext callback) {
         if (!hasLocationPermission()) {
             callback.error("Location permission is not granted.");
             return;
@@ -1018,217 +1312,193 @@ if (gestures != null) {
             return;
         }
 
+        fusedLocationClient =
+            LocationServices.getFusedLocationProviderClient(
+                cordova.getActivity()
+            );
+
         final long trackingGeneration = sessionGeneration;
-        userTrackingListener = new LocationListener() {
+        fusedLocationCallback = new LocationCallback() {
             @Override
-            public void onLocationChanged(Location location) {
-                if (location == null) {
+            public void onLocationResult(LocationResult locationResult) {
+                if (locationResult == null
+                        || locationResult.getLocations() == null
+                        || locationResult.getLocations().isEmpty()) {
                     return;
                 }
 
                 if (trackingGeneration != sessionGeneration) return;
-                sendLocationAccuracyUpdate(location);
 
-                if (mapView == null) {
-                    return;
-                }
+                for (Location location : locationResult.getLocations()) {
+                    if (mapView == null || location == null) {
+                        continue;
+                    }
 
-                long now = System.currentTimeMillis();
+                    sendLocationAccuracyUpdate(location);
 
-                // 1. Reject readings without accuracy data or poor accuracy
+                    long now = System.currentTimeMillis();
+
+                    // 1. Reject readings without accuracy data or poor accuracy
                     if (!location.hasAccuracy()
-                            || location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) {
-                        return;
+                            || location.getAccuracy()
+                            > MAX_ACCEPTABLE_ACCURACY_METERS) {
+                        continue;
                     }
 
-                // 2. Rate limit camera updates
-                if (now - lastUserTrackingUpdateMs
-                        < MIN_TRACKING_CAMERA_INTERVAL_MS) {
-                    return;
-                }
+                    double latitude = location.getLatitude();
+                    double longitude = location.getLongitude();
 
-                double latitude = location.getLatitude();
-                double longitude = location.getLongitude();
+                    // 2. Validate coordinates
+                    if (!isValidLatitude(latitude)
+                            || !isValidLongitude(longitude)) {
+                        continue;
+                    }
 
-                // 3. Validate coordinates
-                if (!isValidLatitude(latitude)
-                        || !isValidLongitude(longitude)) {
-                    return;
-                }
+                    // 3. Reject jumps, maintain history, classify movement
+                    double displacementMeters = 0.0;
+                    long fixTimeDiffMs = 0L;
+                    if (lastAcceptedTrackingLocation != null) {
+                        displacementMeters = calculateDistanceMeters(
+                            lastAcceptedTrackingLocation.getLatitude(),
+                            lastAcceptedTrackingLocation.getLongitude(),
+                            latitude,
+                            longitude
+                        );
+                        fixTimeDiffMs =
+                            location.getTime()
+                            - lastAcceptedTrackingLocation.getTime();
 
-                // 4. Reject GPS drift and unrealistic jumps
-                double trackingFallbackSpeed = -1;
-                if (lastAcceptedTrackingLocation != null) {
-                    double distance = calculateDistanceMeters(
-                        lastAcceptedTrackingLocation.getLatitude(),
-                        lastAcceptedTrackingLocation.getLongitude(),
-                        latitude,
-                        longitude
+                        // Reject unrealistic jumps independently of classification
+                        if (Math.abs(fixTimeDiffMs) > 0) {
+                            float speed = (float) (displacementMeters
+                                / (Math.abs(fixTimeDiffMs) / 1000.0));
+                            if (location.hasSpeed()
+                                    && location.getSpeed() > speed) {
+                                speed = location.getSpeed();
+                            }
+                            if (speed > MAX_REASONABLE_SPEED_MPS) {
+                                continue;
+                            }
+                        }
+                    }
+
+                    updateMovementHistory(location);
+
+                    boolean releasedFromHold =
+                        updateMovementState(
+                            location,
+                            displacementMeters,
+                            fixTimeDiffMs
+                        );
+
+                    if (releasedFromHold) {
+                        movementHistory.clear();
+                        movementHistory.add(new Location(location));
+                    }
+
+                    // Pin the puck while the classifier says stationary,
+                    // but always let the first fix through so the dot
+                    // renders immediately on tracking start
+                    if (movementState == MOVEMENT_STATE_STATIONARY
+                            && smoothedTrackingPoint != null) {
+                        continue;
+                    }
+
+                    // Accept this location
+                    lastAcceptedTrackingLocation = new Location(location);
+                    lastUserTrackingUpdateMs = now;
+
+                    // 4. Apply weighted location smoothing
+                    Point rawPoint =
+                        Point.fromLngLat(longitude, latitude);
+
+                    if (releasedFromHold) {
+                        smoothedTrackingPoint = rawPoint;
+                    } else if (smoothedTrackingPoint == null) {
+                        smoothedTrackingPoint = rawPoint;
+                    } else {
+                        double smoothingFactor =
+                            smoothingAlphaForState();
+                        double smoothedLongitude =
+                            smoothedTrackingPoint.longitude()
+                            + (
+                                rawPoint.longitude()
+                                - smoothedTrackingPoint.longitude()
+                            ) * smoothingFactor;
+                        double smoothedLatitude =
+                            smoothedTrackingPoint.latitude()
+                            + (
+                                rawPoint.latitude()
+                                - smoothedTrackingPoint.latitude()
+                            ) * smoothingFactor;
+                        smoothedTrackingPoint =
+                            Point.fromLngLat(
+                                smoothedLongitude,
+                                smoothedLatitude
+                            );
+                    }
+
+                    final Point cameraPoint = smoothedTrackingPoint;
+
+                    // 5. Create filtered location for Mapbox puck
+                    final Location filteredLocation =
+                        new Location(location);
+                    filteredLocation.setLatitude(
+                        cameraPoint.latitude()
                     );
-
-                    long timeDifference =
-                        location.getTime()
-                        - lastAcceptedTrackingLocation.getTime();
-
-                    // Reject unrealistic jumps.
+                    filteredLocation.setLongitude(
+                        cameraPoint.longitude()
+                    );
+                    filteredLocation.setTime(location.getTime());
+                    if (location.hasAccuracy()) {
+                        filteredLocation.setAccuracy(
+                            location.getAccuracy()
+                        );
+                    }
+                    if (location.hasAltitude()) {
+                        filteredLocation.setAltitude(
+                            location.getAltitude()
+                        );
+                    }
+                    if (location.hasBearing()) {
+                        filteredLocation.setBearing(
+                            location.getBearing()
+                        );
+                    }
                     if (location.hasSpeed()) {
-                        if (location.getSpeed()
-                                > MAX_REASONABLE_SPEED_MPS) {
-                            return;
-                        }
-                    } else if (Math.abs(timeDifference) > 0) {
-                        float fallbackSpeed = (float) (distance
-                            / (Math.abs(timeDifference) / 1000.0));
-                        trackingFallbackSpeed = fallbackSpeed;
-                        if (fallbackSpeed
-                                > MAX_REASONABLE_SPEED_MPS) {
-                            return;
-                        }
-                    }
-                }
-
-                // Accept this location
-                lastAcceptedTrackingLocation = new Location(location);
-                lastUserTrackingUpdateMs = now;
-
-                // 5. Apply weighted location smoothing
-                Point rawPoint =
-                    Point.fromLngLat(longitude, latitude);
-
-                // Adaptive smoothing: use a higher factor while moving so the
-                // puck tracks travel closely, and the base factor while
-                // stationary so jitter stays dampened.
-                double smoothingFactor = LOCATION_SMOOTHING_FACTOR;
-                if (location.hasSpeed()) {
-                    if (location.getSpeed()
-                            > MIN_MOVING_SPEED_MPS) {
-                        smoothingFactor = 0.95;
-                    }
-                } else if (trackingFallbackSpeed
-                        > MIN_MOVING_SPEED_MPS) {
-                    smoothingFactor = 0.95;
-                }
-
-                if (smoothedTrackingPoint == null) {
-                    smoothedTrackingPoint = rawPoint;
-                } else {
-                    double smoothedLongitude =
-                        smoothedTrackingPoint.longitude()
-                        + (
-                            rawPoint.longitude()
-                            - smoothedTrackingPoint.longitude()
-                        ) * smoothingFactor;
-                    double smoothedLatitude =
-                        smoothedTrackingPoint.latitude()
-                        + (
-                            rawPoint.latitude()
-                            - smoothedTrackingPoint.latitude()
-                        ) * smoothingFactor;
-                    smoothedTrackingPoint =
-                        Point.fromLngLat(
-                            smoothedLongitude,
-                            smoothedLatitude
-                        );
-                }
-
-                final Point cameraPoint = smoothedTrackingPoint;
-
-                // 6. Create filtered location for Mapbox puck
-                final Location filteredLocation =
-                    new Location(location);
-                filteredLocation.setLatitude(
-                    cameraPoint.latitude()
-                );
-                filteredLocation.setLongitude(
-                    cameraPoint.longitude()
-                );
-                filteredLocation.setTime(location.getTime());
-                if (location.hasAccuracy()) {
-                    filteredLocation.setAccuracy(
-                        location.getAccuracy()
-                    );
-                }
-                if (location.hasAltitude()) {
-                    filteredLocation.setAltitude(
-                        location.getAltitude()
-                    );
-                }
-                if (location.hasBearing()) {
-                    filteredLocation.setBearing(
-                        location.getBearing()
-                    );
-                }
-                if (location.hasSpeed()) {
-                    filteredLocation.setSpeed(location.getSpeed());
-                }
-
-                // 7. Update Mapbox puck and camera
-                runForSession(() -> {
-                    if (mapView == null) {
-                        return;
+                        filteredLocation.setSpeed(location.getSpeed());
                     }
 
-                    if (smoothedLocationProvider != null) {
-                        smoothedLocationProvider.updateLocation(
-                            filteredLocation
-                        );
-                    }
-            
-                                if (isCameraFollowingUser) {
-                CameraAnimationsPlugin cameraAnimations =
-                    mapView.getPlugin(
-                        Plugin.MAPBOX_CAMERA_PLUGIN_ID
-                    );
-            
-                CameraOptions cameraOptions =
-                    new CameraOptions.Builder()
-                        .center(cameraPoint)
-                        .build();
-            
-                if (cameraAnimations != null) {
-                    cameraAnimations.easeTo(
-                        cameraOptions,
-                        new MapAnimationOptions.Builder()
-                            .duration(500L)
-                            .build(),
-                        null
-                    );
-                } else {
-                    mapView.getMapboxMap()
-                        .setCamera(cameraOptions);
-                }
-            }
-                // Collect path point if path tracking is active and not paused
-                if (isPathTrackingActive && !isPathTrackingPaused) {
-                    if (pathPoints.size() >= MapboxSecurity.MAX_POINTS) {
-                        stopUserTracking();
-                        return; // Keep the recording available to stopPathTracking().
-                    }
-                    pathPoints.add(cameraPoint);
-                    if (currentSegment != null) {
-                        currentSegment.add(cameraPoint);
-                    }
+                    // 6. Update Mapbox puck (camera is driven by the follow ticker)
                     runForSession(() -> {
-                        if (mapView != null) {
-                            updatePathAnnotation();
+                        if (mapView == null) {
+                            return;
+                        }
+
+                        if (smoothedLocationProvider != null) {
+                            smoothedLocationProvider.updateLocation(
+                                filteredLocation
+                            );
                         }
                     });
+
+                    // 7. Collect path point if path tracking is active and not paused
+                    if (isPathTrackingActive && !isPathTrackingPaused) {
+                        if (pathPoints.size() >= MapboxSecurity.MAX_POINTS) {
+                            stopUserTracking();
+                            continue; // Keep the recording available to stopPathTracking().
+                        }
+                        pathPoints.add(cameraPoint);
+                        if (currentSegment != null) {
+                            currentSegment.add(cameraPoint);
+                        }
+                        runForSession(() -> {
+                            if (mapView != null) {
+                                updatePathAnnotation();
+                            }
+                        });
+                    }
                 }
-            });
-            }
-            @Override
-            public void onStatusChanged(
-                    String provider,
-                    int status,
-                    Bundle extras) {
-            }
-
-            @Override
-            public void onProviderEnabled(String provider) {
-            }
-
-            @Override
-            public void onProviderDisabled(String provider) {
             }
         };
 
@@ -1242,41 +1512,49 @@ if (gestures != null) {
                     LocationManager.NETWORK_PROVIDER
                 );
 
-            // Prefer GPS for better tracking accuracy
-            if (gpsEnabled) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    1000L,
-                    1.0f,
-                    userTrackingListener
-                );
-            // Use Network only when GPS is unavailable
-            } else if (networkEnabled) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER,
-                    1000L,
-                    3.0f,
-                    userTrackingListener
-                );
-            }
-
-            // No location provider is available
             if (!gpsEnabled && !networkEnabled) {
                 stopUserTracking();
                 callback.error("Location provider is not enabled.");
                 return;
             }
 
+            LocationRequest locationRequest =
+                new LocationRequest.Builder(
+                    Priority.PRIORITY_HIGH_ACCURACY,
+                    1000L
+                )
+                .setMinUpdateIntervalMillis(500L)
+                .setMinUpdateDistanceMeters(1.0f)
+                .build();
+
+            fusedLocationClient.requestLocationUpdates(
+                locationRequest,
+                fusedLocationCallback,
+                Looper.getMainLooper()
+            );
+
             isUserTrackingEnabled = true;
+            startCameraFollow();
             fireTrackingStatusChanged();
+
             callback.success();
         } catch (SecurityException e) {
             stopUserTracking();
             callback.error("Location permission is not granted.");
         }
     }
-
     private void stopUserTracking() {
+        stopCameraFollow();
+        if (fusedLocationClient != null
+                && fusedLocationCallback != null) {
+            try {
+                fusedLocationClient.removeLocationUpdates(
+                    fusedLocationCallback
+                );
+            } catch (SecurityException ignored) {
+            }
+        }
+
         if (locationManager != null && userTrackingListener != null) {
             try {
                 locationManager.removeUpdates(userTrackingListener);
@@ -1292,12 +1570,72 @@ if (gestures != null) {
             freshFixListener = null;
         }
 
+        fusedLocationCallback = null;
         userTrackingListener = null;
         lastUserTrackingUpdateMs = 0L;
         lastAcceptedTrackingLocation = null;
         smoothedTrackingPoint = null;
+        movementHistory.clear();
+        movementState = MOVEMENT_STATE_STATIONARY;
+        movementStateAgreement = 0;
         isUserTrackingEnabled = false;
         fireTrackingStatusChanged();
+    }
+
+    private void startCameraFollow() {
+        cameraFollowHandler.removeCallbacks(cameraFollowRunnable);
+        cameraFollowRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (mapView != null
+                        && isUserTrackingEnabled
+                        && smoothedTrackingPoint != null) {
+                    Point target = smoothedTrackingPoint;
+                    boolean moved = lastCameraFollowTarget == null
+                        || Math.abs(
+                            target.latitude()
+                            - lastCameraFollowTarget.latitude()) > 1e-9
+                        || Math.abs(
+                            target.longitude()
+                            - lastCameraFollowTarget.longitude()) > 1e-9;
+                    if (moved) {
+                        CameraOptions cameraOptions =
+                            new CameraOptions.Builder()
+                                .center(target)
+                                .build();
+                        CameraAnimationsPlugin cameraAnimations =
+                            mapView.getPlugin(
+                                Plugin.MAPBOX_CAMERA_PLUGIN_ID
+                            );
+                        if (cameraAnimations != null) {
+                            cameraAnimations.easeTo(
+                                cameraOptions,
+                                new MapAnimationOptions.Builder()
+                                    .duration(CAMERA_FOLLOW_DURATION_MS)
+                                    .build(),
+                                null
+                            );
+                        } else {
+                            mapView.getMapboxMap()
+                                .setCamera(cameraOptions);
+                        }
+                        lastCameraFollowTarget = target;
+                    }
+                }
+                if (isUserTrackingEnabled) {
+                    cameraFollowHandler.postDelayed(
+                        this,
+                        CAMERA_FOLLOW_INTERVAL_MS
+                    );
+                }
+            }
+        };
+        cameraFollowHandler.postDelayed(cameraFollowRunnable, 0L);
+    }
+
+    private void stopCameraFollow() {
+        cameraFollowHandler.removeCallbacksAndMessages(null);
+        lastCameraFollowTarget = null;
     }
 
     private void moveToCurrentLocation(JSONObject options, CallbackContext callback) {
@@ -3196,6 +3534,7 @@ private boolean addMarkerInternal(
         autoAddWaypointMarker = false;
         isUserLocationEnabled = false;
         isUserTrackingEnabled = false;
+        stopCameraFollow();
         isDeviceHeadingEnabled = false;
         isHeadingFollowModeEnabled = false;
         currentGestureTargetsWebView = false;
@@ -3374,6 +3713,9 @@ private boolean addMarkerInternal(
         if (mapView != null) {
             mapView.onStart();
         }
+        if (isUserTrackingEnabled) {
+            startCameraFollow();
+        }
     }
 
     @Override
@@ -3381,6 +3723,7 @@ private boolean addMarkerInternal(
         if (mapView != null) {
             mapView.onStop();
         }
+        stopCameraFollow();
         super.onPause(multitasking);
     }
 
