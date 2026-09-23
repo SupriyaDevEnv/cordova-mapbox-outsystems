@@ -209,9 +209,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
-            mapView.mapboxMap.setCamera(to: CameraOptions(
-                bearing: 0
-            ))
+            mapView.camera.ease(
+                to: CameraOptions(bearing: 0),
+                duration: 0.4
+            )
 
             self.sendSuccess(command)
         }

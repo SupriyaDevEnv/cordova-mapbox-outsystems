@@ -1981,10 +1981,27 @@ if (gestures != null) {
                 return;
             }
 
-            mapView.getMapboxMap().setCamera(
-                new CameraOptions.Builder()
-                    .bearing(0.0)
-                    .build()
+            CameraAnimationsPlugin cameraAnimations =
+                mapView.getPlugin(Plugin.MAPBOX_CAMERA_PLUGIN_ID);
+
+            if (cameraAnimations == null) {
+                callback.error("Camera animations plugin is not available.");
+                return;
+            }
+
+            CameraOptions cameraOptions = new CameraOptions.Builder()
+                .bearing(0.0)
+                .build();
+
+            MapAnimationOptions animationOptions =
+                new MapAnimationOptions.Builder()
+                    .duration(400L)
+                    .build();
+
+            cameraAnimations.easeTo(
+                cameraOptions,
+                animationOptions,
+                null
             );
 
             callback.success();
