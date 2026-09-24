@@ -26,6 +26,7 @@
     <preference name="MAPBOX_ALLOWED_STYLE_HOSTS" default="api.mapbox.com" />
 
     <platform name="android">
+        <js-module name="AndroidTouchRegions" src="www/AndroidTouchRegions.js" />
         <hook type="after_prepare" src="hooks/android/verify-mapbox-feature.js" />
 
         <config-file parent="/*" target="res/xml/config.xml">

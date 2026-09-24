@@ -95,7 +95,7 @@ window.MapboxPlugin.close()
   .catch($reject);
 ```
 
-For iOS and Android behind-WebView maps, keep the WebView/page background transparent and call `setTouchableRects` for OutSystems controls that must remain clickable.
+For behind-WebView maps, keep the WebView/page background transparent. Android now discovers overlay touch regions automatically; iOS still requires your existing `setTouchableRects` integration. See Touch Routing below.
 
 ## Fly To
 
@@ -438,9 +438,29 @@ window.MapboxPlugin.onMarkerClick(function (event) {
 
 ## Touch Routing
 
-When the map is behind the WebView, touches are routed to the native map unless they fall inside configured clickable rectangles.
+On Android, a gesture starting in an overlay exclusion rectangle stays with the WebView. Otherwise it goes to native Mapbox only when it starts inside the laid-out map rectangle. Touches outside the map stay with the WebView. The chosen target keeps the entire gesture, including movement outside its original rectangle.
+
+### Automatic Android overlay regions
+
+`initialize({ behindWebView: true, ... })` starts plugin-owned DOM tracking by default on Android. No separate OutSystems touch script is needed. It tracks standard interactive HTML controls and roles, OutSystems bottom sheets, popups, modals and sidebars, `.map-touchable`, `.map-touch-region`, `[data-map-touch-region]`, and inline `cursor: pointer` tag controls inside `.tags-container`.
+
+- Keep your existing map initialization and `setViewport`/`resizeMap` calls. Automatic tracking discovers overlays only; it does not infer which DOM element is your map container.
+- Mark custom clickable or draggable containers with the `map-touch-region` class. Do not put this class on the map container or the whole screen unless all touches there should go to the WebView.
+- Rectangles are clipped to the viewport and scroll containers, converted from CSS coordinates to native pixels using device pixel ratio, and deduplicated. Hidden and `pointer-events: none` controls are excluded.
+- The plugin updates regions after DOM changes, scrolling, resizing, loads, and relevant CSS animations/transitions. It disconnects observers and listeners on `close()`, reinitialization, or page exit. Call `close()` when leaving the map screen in an OutSystems single-page navigation flow.
+- Updates are serialized and failed updates are retried. If more than 50 independent regions remain, the plugin temporarily routes the entire viewport to the WebView and warns in the console. Group related controls under `map-touch-region` to reduce the count and restore map gestures.
+- Normal WebView events handle clicks. The plugin does not simulate `.click()` or intercept DOM touch events. Controls must be reachable through normal DOM hit testing; check overlapping elements and `pointer-events` if a custom control still fails.
+
+After rebuilding the Android app with this version, disable/remove the old standalone touch script. Its `window.__mapboxTouchBridge.stop()` is also called at automatic initialization if present, but the old script must not run again afterward. Keep the old integration on iOS; automatic tracking is Android-only.
+
+Test map pan/pinch, tags, bottom-sheet drags, popup backdrops, scrolling, rotation, and repeated open/close on a physical Android device. DOM/bridge tests do not replace device testing.
+
+### Manual regions and compatibility
+
+Set `autoTouchRouting: false` in Android initialization to retain manual control. Calling `setTouchableRects` explicitly also stops automatic tracking until the next initialization, so manual and automatic writers do not overwrite each other. The existing method and native-pixel coordinate convention remain supported. iOS behavior is unchanged.
 
 ```javascript
+var dpr = window.devicePixelRatio || 1;
 window.MapboxPlugin.setTouchableRects([
   {
     x: 0,

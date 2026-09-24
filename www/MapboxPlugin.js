@@ -1,6 +1,14 @@
 var exec = require('cordova/exec');
 
 var SERVICE = 'MapboxPlugin';
+var touchRegions = null;
+var touchGeneration = 0;
+
+function stopTouchRegions() {
+  touchGeneration++;
+  if (touchRegions) touchRegions.stop();
+  touchRegions = null;
+}
 
 function call(action, args) {
   return new Promise(function (resolve, reject) {
@@ -51,7 +59,20 @@ var api = {
   initialize: function (options) {
     options = options || {};
     delete options.token;
-    return call('initialize', [options]);
+    stopTouchRegions();
+    var generation = touchGeneration;
+    var automatic = typeof window !== 'undefined' && window.cordova &&
+      window.cordova.platformId === 'android' && options.behindWebView === true &&
+      options.autoTouchRouting !== false;
+    if (automatic && window.__mapboxTouchBridge && window.__mapboxTouchBridge.stop) {
+      window.__mapboxTouchBridge.stop();
+    }
+    return call('initialize', [options]).then(function (result) {
+      if (!automatic || generation !== touchGeneration) return result;
+      var start = require('./AndroidTouchRegions');
+      touchRegions = start(window, function (rects) { return call('setTouchableRects', [rects]); });
+      return touchRegions.ready.then(function () { return result; });
+    });
   },
 
   ping: function () {
@@ -83,6 +104,8 @@ var api = {
   },
 
   setTouchableRects: function (rects) {
+    // An explicit caller takes ownership until the next initialize.
+    stopTouchRegions();
     return call('setTouchableRects', [rects || []]);
   },
 
@@ -238,6 +261,7 @@ var api = {
   },
 
   close: function () {
+    stopTouchRegions();
     return call('close', []);
   },
 
