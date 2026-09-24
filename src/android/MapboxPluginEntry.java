@@ -1617,6 +1617,7 @@ private void startUserTracking(CallbackContext callback) {
             public void run() {
                 if (mapView != null
                         && isUserTrackingEnabled
+                        && isCameraFollowingUser
                         && smoothedTrackingPoint != null) {
                     Point target = smoothedTrackingPoint;
                     boolean moved = lastCameraFollowTarget == null
