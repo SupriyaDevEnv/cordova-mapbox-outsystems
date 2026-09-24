@@ -134,6 +134,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 frame: isInline ? self.frameFromOptions(options) : self.webView.bounds,
                 mapInitOptions: initOptions
             )
+
+            mapView.ornaments.options.compass.visibility = .hidden
+            mapView.ornaments.options.scaleBar.visibility = .hidden
+
             mapView.autoresizingMask = isInline ? [] : [.flexibleWidth, .flexibleHeight]
 
             if behindWebView, let superview = self.webView.superview {

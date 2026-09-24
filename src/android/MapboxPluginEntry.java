@@ -71,9 +71,11 @@ import com.mapbox.maps.plugin.annotation.generated.PolylineAnnotationManagerKt;
 import com.mapbox.maps.plugin.annotation.generated.PolylineAnnotationOptions;
 import com.mapbox.maps.plugin.animation.CameraAnimationsPlugin;
 import com.mapbox.maps.plugin.animation.MapAnimationOptions;
+import com.mapbox.maps.plugin.compass.CompassPlugin;
 import com.mapbox.maps.plugin.gestures.GesturesPlugin;
 import com.mapbox.maps.plugin.gestures.OnMapClickListener;
 import com.mapbox.maps.plugin.locationcomponent.LocationComponentPlugin;
+import com.mapbox.maps.plugin.scalebar.ScaleBarPlugin;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
@@ -402,6 +404,21 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
                 rootView.setLayoutParams(layoutParamsFromOptions(options));
 
                 mapView = new MapView(cordova.getActivity());
+
+                CompassPlugin compassPlugin =
+                    mapView.getPlugin(Plugin.MAPBOX_COMPASS_PLUGIN_ID);
+
+                if (compassPlugin != null) {
+                    compassPlugin.setEnabled(false);
+                }
+
+                ScaleBarPlugin scaleBarPlugin =
+                    mapView.getPlugin(Plugin.MAPBOX_SCALEBAR_PLUGIN_ID);
+
+                if (scaleBarPlugin != null) {
+                    scaleBarPlugin.setEnabled(false);
+                }
+
                 mapView.setLayoutParams(new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT,
