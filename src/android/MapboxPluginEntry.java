@@ -3698,6 +3698,18 @@ private boolean addMarkerInternal(
             if (action == MotionEvent.ACTION_DOWN) {
                 currentGestureTargetsWebView =
                     mapView == null || isInsideTouchableRect(event.getX(), event.getY());
+                if (!currentGestureTargetsWebView) {
+                    view.getLocationInWindow(webViewLocation);
+                    mapView.getLocationInWindow(mapViewLocation);
+                    float mapX = event.getX() + webViewLocation[0] - mapViewLocation[0];
+                    float mapY = event.getY() + webViewLocation[1] - mapViewLocation[1];
+                    // The laid-out MapView reflects initialize/setViewport/resizeMap.
+                    // Only gestures starting inside it belong to native Mapbox;
+                    // OutSystems overlay exclusions above always retain priority.
+                    currentGestureTargetsWebView =
+                        mapX < 0 || mapY < 0
+                        || mapX >= mapView.getWidth() || mapY >= mapView.getHeight();
+                }
             }
 
             if (currentGestureTargetsWebView || mapView == null) {
