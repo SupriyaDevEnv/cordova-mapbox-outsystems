@@ -749,7 +749,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
         // Delete old annotation for current segment
         if let old = currentSegmentAnnotation {
-            lineAnnotationManager?.annotations.removeAll { $0 === old }
+            lineAnnotationManager?.annotations.removeAll { $0.id == old.id }
             currentSegmentAnnotation = nil
         }
 
