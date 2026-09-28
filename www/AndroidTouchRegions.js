@@ -3,6 +3,7 @@ var selector = [
   '.osui-bottom-sheet--is-open', '.osui-bottom-sheet-overlay',
   '.popup-dialog', '.popup-backdrop', '.osui-modal--is-open', '.osui-modal-overlay',
   '.osui-sidebar--is-open', '.osui-sidebar-overlay',
+  '.feedback-message',
   '[role="dialog"]', '[role="menu"]', '[role="listbox"]',
   '.map-touchable', '.map-touch-region', '[data-map-touch-region]',
   '[data-button]', 'button', 'a', 'input', 'select', 'textarea',

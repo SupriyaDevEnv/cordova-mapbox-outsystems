@@ -455,6 +455,19 @@ After rebuilding the Android app with this version, disable/remove the old stand
 
 Test map pan/pinch, tags, bottom-sheet drags, popup backdrops, scrolling, rotation, and repeated open/close on a physical Android device. DOM/bridge tests do not replace device testing.
 
+OutSystems feedback messages (`.feedback-message`, including error, warning, success and information variants) are also tracked automatically on Android. Their taps remain in the WebView so existing OutSystems click/dismiss handlers can run. The plugin does not add a dismissal action to messages that do not already have one.
+
+If your page disables pointer events on map overlays, enable them for feedback messages in the app stylesheet:
+
+```css
+.feedback-message,
+.feedback-message * {
+  pointer-events: auto !important;
+}
+```
+
+Rebuild the Android app after updating the plugin. Verify a message can receive taps while visible, and map gestures work in its former area after it disappears. No separate message touch script or additional class on generated feedback messages is required.
+
 ### Manual regions and compatibility
 
 Set `autoTouchRouting: false` in Android initialization to retain manual control. Calling `setTouchableRects` explicitly also stops automatic tracking until the next initialization, so manual and automatic writers do not overwrite each other. The existing method and native-pixel coordinate convention remain supported. iOS behavior is unchanged.
