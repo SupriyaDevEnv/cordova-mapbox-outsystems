@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const android = fs.readFileSync('src/android/MapboxPluginEntry.java', 'utf8');
+const androidPermissions = fs.readFileSync('src/android/MapboxPluginPermissionEntry.java', 'utf8');
 const ios = fs.readFileSync('src/ios/MapboxPlugin.swift', 'utf8');
 
 function javaMethod(name, nextName) {
@@ -62,4 +63,18 @@ test('iOS matches Android option coercion and idempotent path visibility', () =>
   assert.doesNotMatch(visibility, /No path is loaded/);
   assert.match(visibility, /self\.isPathVisible = visible/);
   assert.match(visibility, /self\.sendSuccess\(command\)/);
+});
+
+test('location accuracy subscriptions actively monitor and clean up on both platforms', () => {
+  const androidRegistration = javaMethod('registerLocationAccuracyCallback', 'stopLocationAccuracyMonitoring');
+  assert.match(androidRegistration, /requestLocationUpdates/);
+  assert.match(androidRegistration, /sendLocationAccuracyUpdate/);
+  assert.match(androidPermissions, /"registerLocationAccuracyCallback"\.equals\(action\)/);
+  assert.match(android, /stopLocationAccuracyMonitoring\(\);[\s\S]*locationAccuracyCallback = null/);
+
+  const iosParity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const iosRegistration = iosParity.split('func registerLocationAccuracyCallback(command:')[1]
+    .split('@objc(getCurrentLocationAccuracy:', 1)[0];
+  assert.match(iosRegistration, /startUpdatingLocation\(\)/);
+  assert.match(iosParity, /stopAccuracyMonitoring\(\)/);
 });

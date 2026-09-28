@@ -45,7 +45,8 @@ public class MapboxPluginPermissionEntry extends MapboxPluginEntry {
             || "setDeviceHeadingEnabled".equals(action)
             || "setUserTrackingEnabled".equals(action)
             || "startPathTracking".equals(action)
-            || "moveToCurrentLocation".equals(action);
+            || "moveToCurrentLocation".equals(action)
+            || "registerLocationAccuracyCallback".equals(action);
     }
 
     private boolean hasLocationPermission() {

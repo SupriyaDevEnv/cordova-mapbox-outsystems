@@ -229,6 +229,8 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private boolean isHeadingFollowModeEnabled = false;
     private CallbackContext trackingStatusCallback;
     private CallbackContext locationAccuracyCallback;
+    private FusedLocationProviderClient accuracyFusedLocationClient;
+    private LocationCallback accuracyFusedLocationCallback;
     private Cancelable compassCameraSubscription;
     private CallbackContext compassCallback;
 
@@ -2262,12 +2264,56 @@ private void startUserTracking(CallbackContext callback) {
     }
 
     private void registerLocationAccuracyCallback(CallbackContext callback) {
-        locationAccuracyCallback = callback;
-        lastLocationAccuracyUpdateMs = 0L;
+        runForSession(() -> {
+            if (!hasLocationPermission()) {
+                callback.error("Location permission is not granted.");
+                return;
+            }
 
-        PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
-        result.setKeepCallback(true);
-        callback.sendPluginResult(result);
+            stopLocationAccuracyMonitoring();
+            locationAccuracyCallback = callback;
+            lastLocationAccuracyUpdateMs = 0L;
+
+            PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
+            result.setKeepCallback(true);
+            callback.sendPluginResult(result);
+
+            accuracyFusedLocationClient = LocationServices
+                .getFusedLocationProviderClient(cordova.getActivity());
+            accuracyFusedLocationCallback = new LocationCallback() {
+                @Override
+                public void onLocationResult(LocationResult locationResult) {
+                    if (locationResult == null || locationResult.getLastLocation() == null) {
+                        return;
+                    }
+                    sendLocationAccuracyUpdate(locationResult.getLastLocation());
+                }
+            };
+
+            LocationRequest request = new LocationRequest.Builder(
+                Priority.PRIORITY_HIGH_ACCURACY,
+                1000L
+            ).setMinUpdateIntervalMillis(500L).build();
+
+            try {
+                accuracyFusedLocationClient.requestLocationUpdates(
+                    request,
+                    accuracyFusedLocationCallback,
+                    Looper.getMainLooper()
+                );
+            } catch (SecurityException e) {
+                stopLocationAccuracyMonitoring();
+                callback.error("Location permission is not granted.");
+            }
+        });
+    }
+
+    private void stopLocationAccuracyMonitoring() {
+        if (accuracyFusedLocationClient != null && accuracyFusedLocationCallback != null) {
+            accuracyFusedLocationClient.removeLocationUpdates(accuracyFusedLocationCallback);
+        }
+        accuracyFusedLocationClient = null;
+        accuracyFusedLocationCallback = null;
     }
 
     private void registerCompassCallback(CallbackContext callback) {
@@ -3616,6 +3662,7 @@ private boolean addMarkerInternal(
         cancelPendingLocationActions();
         // Clear callbacks before stopping services so cleanup emits no stale events.
         trackingStatusCallback = null;
+        stopLocationAccuracyMonitoring();
         locationAccuracyCallback = null;
         stopHeadingFollowMode();
         stopUserTracking();
