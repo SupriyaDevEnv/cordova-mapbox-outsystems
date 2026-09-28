@@ -15,6 +15,7 @@ overlay = source[source.index('private class MapTouchOverlayView:'):]
 overlay = overlay.replace('private class', 'class', 1)
 host = '''
 import Foundation
+import CoreGraphics
 class UIEvent {}
 class UIView {
     var frame: CGRect
