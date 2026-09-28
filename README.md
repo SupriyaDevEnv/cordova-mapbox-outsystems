@@ -95,6 +95,8 @@ window.MapboxPlugin.close()
   .catch($reject);
 ```
 
+`setCamera` and `flyTo` support partial camera updates: omitted latitude, longitude, zoom, bearing, or pitch values preserve the current camera value on both platforms. `initialize` applies its optional bearing and pitch on both platforms.
+
 For behind-WebView maps, keep the WebView/page background transparent. Android and iOS now discover overlay touch regions automatically. See Touch Routing below.
 
 ## Fly To

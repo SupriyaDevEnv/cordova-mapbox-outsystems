@@ -431,6 +431,8 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
                 double latitude = options.optDouble("latitude", 0.0);
                 double longitude = options.optDouble("longitude", 0.0);
                 double zoom = options.optDouble("zoom", 12.0);
+                double bearing = options.optDouble("bearing", 0.0);
+                double pitch = options.optDouble("pitch", 0.0);
 
                 if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
                     callback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
@@ -544,6 +546,8 @@ if (gestures != null) {
                 mapView.getMapboxMap().setCamera(new CameraOptions.Builder()
                     .center(Point.fromLngLat(longitude, latitude))
                     .zoom(zoom)
+                    .bearing(bearing)
+                    .pitch(pitch)
                     .build());
 
                 final long styleGeneration = sessionGeneration;
@@ -703,8 +707,9 @@ if (gestures != null) {
                 return;
             }
 
-            double setCamLat = options.optDouble("latitude", 0.0);
-            double setCamLng = options.optDouble("longitude", 0.0);
+            Point currentCenter = mapView.getMapboxMap().getCameraState().getCenter();
+            double setCamLat = options.optDouble("latitude", currentCenter.latitude());
+            double setCamLng = options.optDouble("longitude", currentCenter.longitude());
             if (!isValidLatitude(setCamLat) || !isValidLongitude(setCamLng)) {
                 callback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
                 return;
@@ -728,8 +733,9 @@ if (gestures != null) {
                 return;
             }
 
-            double flyLat = options.optDouble("latitude", 0.0);
-            double flyLng = options.optDouble("longitude", 0.0);
+            Point currentCenter = mapView.getMapboxMap().getCameraState().getCenter();
+            double flyLat = options.optDouble("latitude", currentCenter.latitude());
+            double flyLng = options.optDouble("longitude", currentCenter.longitude());
             if (!isValidLatitude(flyLat) || !isValidLongitude(flyLng)) {
                 callback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
                 return;
