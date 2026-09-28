@@ -285,9 +285,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
-            let mapFrame = self.mapView?.frame ?? .zero
             self.mapTouchOverlay?.touchableRects = rects.compactMap {
-                self.touchRectFromOptions($0, mapViewFrame: mapFrame)
+                self.touchRectFromOptions($0)
             }
             self.sendSuccess(command)
         }
@@ -1868,7 +1867,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         return CGRect(x: x, y: y, width: max(width, 1), height: max(height, 1))
     }
 
-    private func touchRectFromOptions(_ options: [String: Any], mapViewFrame: CGRect) -> CGRect {
+    private func touchRectFromOptions(_ options: [String: Any]) -> CGRect {
         var x = doubleOption(options["x"], defaultValue: 0)
         var y = doubleOption(options["y"], defaultValue: 0)
         var width = doubleOption(options["width"], defaultValue: 0)
@@ -1884,11 +1883,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
         let rect = CGRect(x: x, y: y, width: max(width, 0), height: max(height, 0))
         guard rect.width > 0, rect.height > 0 else { return .null }
-        return rect.intersection(mapViewFrame)
+        // Keep WebView-local points; convert the hit-test point at touch time.
+        // Pre-clipping to the map frame would leave stale exclusions after resize.
+        return rect
     }
 
     private func installMapTouchOverlay(in superview: UIView, frame: CGRect) {
         let overlay = MapTouchOverlayView(frame: frame)
+        overlay.coordinateView = self.webView
         overlay.backgroundColor = UIColor.clear
         overlay.autoresizingMask = []
 
@@ -2120,16 +2122,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
 private class MapTouchOverlayView: UIView {
     var touchableRects: [CGRect] = []
+    weak var coordinateView: UIView?
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        guard let superview = superview else {
-            return true
-        }
-
-        let superviewPoint = convert(point, to: superview)
+        guard super.point(inside: point, with: event) else { return false }
+        guard let coordinateView = coordinateView else { return false }
+        let webViewPoint = convert(point, to: coordinateView)
 
         for rect in touchableRects {
-            if rect.contains(superviewPoint) {
+            if rect.contains(webViewPoint) {
                 return false
             }
         }

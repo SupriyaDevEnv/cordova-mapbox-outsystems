@@ -18,7 +18,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - run: node --test tests/security.test.cjs
+      - run: npm test
       - name: Compile and run Android input policy
         run: |
           mkdir -p "$RUNNER_TEMP/mapbox-tests"
@@ -34,3 +34,5 @@ jobs:
         run: python3 tests/test-session-guards.py
       - name: Parse all iOS plugin sources
         run: swiftc -frontend -parse src/ios/*.swift
+      - name: Regress iOS touch coordinates and map boundaries
+        run: python3 tests/test-ios-touch-routing.py

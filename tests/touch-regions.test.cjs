@@ -158,8 +158,10 @@ function bridge(h, initializeNow = true) {
   return { api: context.module.exports, calls, finish() { finishInitialize({}); } };
 }
 
-test('Android automatically starts, stops legacy script, supports manual ownership and reinitialize', async () => {
+for (const platform of ['android', 'ios']) {
+test(platform + ' automatically starts, stops legacy script, supports manual ownership and reinitialize', async () => {
   const h = host([element(1, 1, 2, 2)]); let legacyStops = 0;
+  h.win.cordova.platformId = platform;
   h.win.__mapboxTouchBridge = { stop() { legacyStops++; } };
   const { api, calls } = bridge(h);
   await api.initialize({ behindWebView: true });
@@ -172,9 +174,11 @@ test('Android automatically starts, stops legacy script, supports manual ownersh
   assert.ok(h.win.listeners.size > 0);
   await api.close(); assert.equal(h.win.listeners.size, 0);
 });
+}
 
-test('iOS, foreground maps and explicit opt-out retain existing bridge behavior', async () => {
-  for (const [platform, options] of [['ios', { behindWebView: true }], ['android', {}],
+test('unsupported platforms, foreground maps and explicit opt-out retain existing bridge behavior', async () => {
+  for (const [platform, options] of [['browser', { behindWebView: true }], ['android', {}], ['ios', {}],
+    ['ios', { behindWebView: true, autoTouchRouting: false }],
     ['android', { behindWebView: true, autoTouchRouting: false }]]) {
     const h = host(); h.win.cordova.platformId = platform;
     const { api, calls } = bridge(h);
@@ -182,6 +186,24 @@ test('iOS, foreground maps and explicit opt-out retain existing bridge behavior'
     assert.deepEqual(calls.map(c => c.action), ['initialize']);
     assert.equal(h.observers.length, 0);
   }
+});
+
+test('iOS uses native pixels and its 20-region budget, then clears dismissed overlays', async () => {
+  const h = host(Array.from({ length: 20 }, (_, i) => element(i * 10, 10, 2, 2)));
+  h.win.cordova.platformId = 'ios';
+  h.win.devicePixelRatio = 3;
+  const b = bridge(h);
+  await b.api.initialize({ behindWebView: true });
+  let rects = b.calls.at(-1).args[0];
+  assert.equal(rects.length, 20);
+  assert.deepEqual(rects[1], { x: 30, y: 30, width: 6, height: 6 });
+  h.doc.elements.push(element(300, 10, 2, 2));
+  h.win.emit('resize'); await h.frame();
+  assert.deepEqual(b.calls.at(-1).args[0], [{ x: 0, y: 0, width: 3000, height: 2400 }]);
+  h.doc.elements = [];
+  h.win.emit('resize'); await h.frame();
+  assert.deepEqual(b.calls.at(-1).args[0], []);
+  await b.api.close();
 });
 
 test('a late initialization callback cannot start observers after close', async () => {

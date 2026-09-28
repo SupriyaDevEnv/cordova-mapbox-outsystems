@@ -62,7 +62,8 @@ var api = {
     stopTouchRegions();
     var generation = touchGeneration;
     var automatic = typeof window !== 'undefined' && window.cordova &&
-      window.cordova.platformId === 'android' && options.behindWebView === true &&
+      (window.cordova.platformId === 'android' || window.cordova.platformId === 'ios') &&
+      options.behindWebView === true &&
       options.autoTouchRouting !== false;
     if (automatic && window.__mapboxTouchBridge && window.__mapboxTouchBridge.stop) {
       window.__mapboxTouchBridge.stop();

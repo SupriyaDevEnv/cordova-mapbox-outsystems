@@ -1,4 +1,5 @@
-// DOM rectangles only: Android owns gesture routing; the WebView owns clicks.
+// Shared Android/iOS DOM tracking; keep the original Cordova module name.
+// Native code owns gesture routing; the WebView owns clicks.
 var selector = [
   '.osui-bottom-sheet--is-open', '.osui-bottom-sheet-overlay',
   '.popup-dialog', '.popup-backdrop', '.osui-modal--is-open', '.osui-modal-overlay',
@@ -21,6 +22,7 @@ function contains(outer, inner) {
 
 module.exports = function start(win, send) {
   var doc = win.document;
+  var maxRects = win.cordova && win.cordova.platformId === 'ios' ? 20 : 50;
   var stopped = false;
   var frame = null;
   var retry = null;
@@ -72,9 +74,9 @@ module.exports = function start(win, send) {
       rects = rects.filter(function (existing) { return !contains(rect, existing); });
       rects.push(rect);
     });
-    if (rects.length > 50) {
+    if (rects.length > maxRects) {
       // Never silently drop controls: temporarily keep the whole viewport in WebView.
-      if (!warned) win.console.warn('Mapbox: more than 50 overlay regions. Group controls with map-touch-region; map gestures are temporarily disabled.');
+      if (!warned) win.console.warn('Mapbox: more than ' + maxRects + ' overlay regions. Group controls with map-touch-region; map gestures are temporarily disabled.');
       warned = true;
       return [{ x: 0, y: 0, width: Math.ceil(win.innerWidth * dpr), height: Math.ceil(win.innerHeight * dpr) }];
     }
