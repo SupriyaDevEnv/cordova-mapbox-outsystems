@@ -652,7 +652,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             guard self.markers[id] != nil || self.markers.count < self.maxMarkers,
                   id.utf8.count <= 256 else { self.sendError("Marker/id limit exceeded.", command); return }
-            self.addMarkerInternal(id: id, latitude: latitude, longitude: longitude)
+            let isFind = options["isFind"] as? Bool ?? false
+            self.addMarkerInternal(id: id, latitude: latitude, longitude: longitude, isFind: isFind)
             self.sendSuccess(["id": id], command)
         }
     }
@@ -686,7 +687,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
                     continue
                 }
-                self.addMarkerInternal(id: id, latitude: latitude, longitude: longitude, publish: false)
+                let isFind = marker["isFind"] as? Bool ?? false
+                self.addMarkerInternal(id: id, latitude: latitude, longitude: longitude, isFind: isFind, publish: false)
             }
             self.annotations?.annotations = Array(self.markers.values)
 
@@ -1536,7 +1538,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }.store(in: &cancelables)
     }
 
-    private func addMarkerInternal(id: String, latitude: Double, longitude: Double, publish: Bool = true) {
+    private func addMarkerInternal(id: String, latitude: Double, longitude: Double, isFind: Bool = false, publish: Bool = true) {
         guard !id.isEmpty, id.utf8.count <= 256,
               markers[id] != nil || markers.count < maxMarkers else { return }
         guard var manager = annotations else {
@@ -1546,7 +1548,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         var marker = PointAnnotation(
             coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
         )
-        marker.image = .init(image: createWaypointMarkerImage(), name: "waypoint-marker")
+        marker.image = isFind
+            ? .init(image: createFindMarkerImage(), name: "find-marker")
+            : .init(image: createWaypointMarkerImage(), name: "waypoint-marker")
         marker.iconAnchor = .bottom
         marker.tapHandler = { [weak self, id] context in
             guard let self = self else { return true }
@@ -1663,6 +1667,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func createWaypointMarkerImage() -> UIImage {
+        createMarkerImage(pinColor: UIColor(red: 220 / 255, green: 38 / 255, blue: 38 / 255, alpha: 1))
+    }
+
+    private func createFindMarkerImage() -> UIImage {
+        createMarkerImage(pinColor: UIColor(red: 37 / 255, green: 99 / 255, blue: 235 / 255, alpha: 1))
+    }
+
+    private func createMarkerImage(pinColor: UIColor) -> UIImage {
         let size = CGSize(width: 72, height: 96)
         let renderer = UIGraphicsImageRenderer(size: size)
 
@@ -1694,7 +1706,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             )
             path.close()
 
-            UIColor(red: 220 / 255, green: 38 / 255, blue: 38 / 255, alpha: 1).setFill()
+            pinColor.setFill()
             path.fill()
             UIColor.white.setStroke()
             path.lineWidth = 3

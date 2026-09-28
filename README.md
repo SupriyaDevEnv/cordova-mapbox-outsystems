@@ -420,13 +420,18 @@ window.MapboxPlugin.loadPath({
 window.MapboxPlugin.addMarker({
   id: $parameters.Id,
   latitude: $parameters.Latitude,
-  longitude: $parameters.Longitude
+  longitude: $parameters.Longitude,
+  isFind: $parameters.IsFind
 })
   .then($resolve)
   .catch($reject);
 ```
 
+`isFind` is optional and defaults to `false`. Markers with `isFind: true` render as a blue pin; every other marker (including ones flagged `isWaypoint`) renders as the default red pin.
+
 ### Load Many Markers
+
+Each marker object may include `id`, `latitude`, `longitude`, and `isFind`:
 
 ```javascript
 window.MapboxPlugin.loadMarkers($parameters.Markers, {

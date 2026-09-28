@@ -2676,13 +2676,14 @@ private void startUserTracking(CallbackContext callback) {
             String id = options.optString("id", String.valueOf(System.currentTimeMillis()));
             double latitude = options.optDouble("latitude", 0.0);
             double longitude = options.optDouble("longitude", 0.0);
+            boolean isFind = options.optBoolean("isFind", false);
 
             if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
                 callback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
                 return;
             }
 
-            if (!addMarkerInternal(id, latitude, longitude)) {
+            if (!addMarkerInternal(id, latitude, longitude, isFind)) {
                 callback.error("Marker unavailable or marker/id limit exceeded.");
                 return;
             }
@@ -2741,7 +2742,8 @@ private void startUserTracking(CallbackContext callback) {
                 addMarkerInternal(
                     marker.optString("id", String.valueOf(i)),
                     markerLat,
-                    markerLng
+                    markerLng,
+                    marker.optBoolean("isFind", false)
                 );
             }
 
@@ -2758,6 +2760,7 @@ private boolean addMarkerInternal(
         id,
         latitude,
         longitude,
+        false,
         null
     );
 }
@@ -2766,6 +2769,22 @@ private boolean addMarkerInternal(
         String id,
         double latitude,
         double longitude,
+        boolean isFind) {
+
+    return addMarkerInternal(
+        id,
+        latitude,
+        longitude,
+        isFind,
+        null
+    );
+}
+
+private boolean addMarkerInternal(
+        String id,
+        double latitude,
+        double longitude,
+        boolean isFind,
         Bitmap customBitmap) {
 
     if (!ensurePointAnnotationManager()) {
@@ -2785,7 +2804,7 @@ private boolean addMarkerInternal(
         .withIconImage(
             customBitmap != null
                 ? customBitmap
-                : createWaypointMarkerBitmap()
+                : (isFind ? createFindMarkerBitmap() : createWaypointMarkerBitmap())
         )
         .withIconAnchor(IconAnchor.BOTTOM)
         .withIconSize(1.0);
@@ -3431,6 +3450,14 @@ private boolean addMarkerInternal(
     }
 
     private Bitmap createWaypointMarkerBitmap() {
+        return createMarkerBitmap(Color.rgb(220, 38, 38));
+    }
+
+    private Bitmap createFindMarkerBitmap() {
+        return createMarkerBitmap(Color.rgb(37, 99, 235));
+    }
+
+    private Bitmap createMarkerBitmap(int pinColor) {
         int width = 72;
         int height = 96;
         float centerX = width / 2.0f;
@@ -3452,7 +3479,7 @@ private boolean addMarkerInternal(
         pinPath.close();
 
         Paint pinPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        pinPaint.setColor(Color.rgb(220, 38, 38));
+        pinPaint.setColor(pinColor);
         canvas.drawPath(pinPath, pinPaint);
 
         Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
