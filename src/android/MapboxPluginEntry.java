@@ -13,10 +13,8 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.location.Location;
-import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Build;
-import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -27,12 +25,14 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.FrameLayout;
 
+import com.google.android.gms.location.CurrentLocationRequest;
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationCallback;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationResult;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.Priority;
+import com.google.android.gms.tasks.CancellationTokenSource;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -160,8 +160,6 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private double lastHeadingBearing = -1.0;
     private long lastHeadingUpdateMs = 0L;
     private LocationManager locationManager;
-    private LocationListener userTrackingListener;
-    private LocationListener freshFixListener;
     private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
     private Point smoothedTrackingPoint = null;
@@ -176,8 +174,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private FusedLocationProviderClient fusedLocationClient;
     private LocationCallback fusedLocationCallback;
     private CallbackContext moveToCurrentLocationCallback = null;
-    private LocationListener moveToCurrentLocationListener = null;
-    private LocationManager moveToCurrentLocationManager = null;
+    private CancellationTokenSource moveToCurrentLocationToken = null;
     private double moveToCurrentLocationZoom = 0.0;
     private boolean moveToCurrentLocationZoomSet = false;
     private float currentLocationAccuracy = -1f;
@@ -799,85 +796,35 @@ if (gestures != null) {
             location.setPuckBearingEnabled(true);
             location.setEnabled(true);
 
-            LocationManager lm = (LocationManager) cordova.getActivity()
-                .getSystemService(Context.LOCATION_SERVICE);
-            if (lm != null) {
-                try {
-                    if (freshFixListener != null) {
-                        lm.removeUpdates(freshFixListener);
-                        freshFixListener = null;
-                    }
-
-                    Location lastKnown = lm.getLastKnownLocation(
-                        LocationManager.GPS_PROVIDER
-                    );
-                    if (lastKnown == null) {
-                        lastKnown = lm.getLastKnownLocation(
-                            LocationManager.NETWORK_PROVIDER
-                        );
-                    }
-                    if (lastKnown != null
-                            && lastKnown.hasAccuracy()) {
-                        long age = System.currentTimeMillis()
-                            - lastKnown.getTime();
-                        if (age <= MAX_LOCATION_AGE_MS
-                                && lastKnown.getAccuracy()
-                                <= MAX_ACCEPTABLE_ACCURACY_METERS) {
-                            smoothedLocationProvider.updateLocation(lastKnown);
-                        }
-                    }
-
-                    // Request fresh location updates until an acceptable
-                    // fix is received. This helps the blue dot appear
-                    // quickly even while stationary.
-                    freshFixListener = new LocationListener() {
-                        @Override
-                        public void onLocationChanged(Location fix) {
-                            if (fix != null
-                                    && fix.hasAccuracy()
-                                    && fix.getAccuracy()
-                                    <= MAX_ACCEPTABLE_ACCURACY_METERS
-                                    && isUserLocationEnabled
-                                    && smoothedLocationProvider != null) {
-                                smoothedLocationProvider.updateLocation(fix);
-
-                                if (freshFixListener == this) {
-                                    lm.removeUpdates(freshFixListener);
-                                    freshFixListener = null;
-                                }
-                            }
-                        }
-
-                        @Override
-                        public void onStatusChanged(String provider, int status, Bundle extras) {
-                        }
-
-                        @Override
-                        public void onProviderEnabled(String provider) {
-                        }
-
-                        @Override
-                        public void onProviderDisabled(String provider) {
-                        }
-                    };
-                    if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                        lm.requestLocationUpdates(
-                            LocationManager.GPS_PROVIDER,
-                            1000L,
-                            0.0f,
-                            freshFixListener
-                        );
-                    } else if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                        lm.requestLocationUpdates(
-                            LocationManager.NETWORK_PROVIDER,
-                            1000L,
-                            0.0f,
-                            freshFixListener
-                        );
-                    }
-                } catch (SecurityException ignored) {
-                }
+            if (fusedLocationClient == null) {
+                fusedLocationClient = LocationServices
+                    .getFusedLocationProviderClient(cordova.getActivity());
             }
+
+            CurrentLocationRequest bootstrapRequest =
+                new CurrentLocationRequest.Builder()
+                    .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+                    .setDurationMillis(3000L)
+                    .setMaxUpdateAgeMillis(MAX_LOCATION_AGE_MS)
+                    .build();
+
+            CancellationTokenSource bootstrapToken =
+                new CancellationTokenSource();
+
+            fusedLocationClient
+                .getCurrentLocation(bootstrapRequest, bootstrapToken.getToken())
+                .addOnSuccessListener(fix -> {
+                    if (fix != null
+                            && fix.hasAccuracy()
+                            && fix.getAccuracy()
+                            <= MAX_ACCEPTABLE_ACCURACY_METERS
+                            && isUserLocationEnabled
+                            && smoothedLocationProvider != null) {
+                        smoothedLocationProvider.updateLocation(fix);
+                    }
+                })
+                .addOnFailureListener(ignored -> {
+                });
 
             isUserLocationEnabled = true;
             fireTrackingStatusChanged();
@@ -1591,23 +1538,7 @@ private void startUserTracking(CallbackContext callback) {
             }
         }
 
-        if (locationManager != null && userTrackingListener != null) {
-            try {
-                locationManager.removeUpdates(userTrackingListener);
-            } catch (SecurityException ignored) {
-            }
-        }
-
-        if (locationManager != null && freshFixListener != null) {
-            try {
-                locationManager.removeUpdates(freshFixListener);
-            } catch (SecurityException ignored) {
-            }
-            freshFixListener = null;
-        }
-
         fusedLocationCallback = null;
-        userTrackingListener = null;
         lastUserTrackingUpdateMs = 0L;
         lastAcceptedTrackingLocation = null;
         smoothedTrackingPoint = null;
@@ -1698,24 +1629,50 @@ private void startUserTracking(CallbackContext callback) {
     private void startMoveToCurrentLocation(CallbackContext callback) {
         unregisterMoveToCurrentLocation();
 
-        LocationManager manager = (LocationManager) cordova.getActivity().getSystemService(Context.LOCATION_SERVICE);
+        LocationManager manager = (LocationManager) cordova
+            .getActivity()
+            .getSystemService(Context.LOCATION_SERVICE);
         if (manager == null) {
+            cancelMoveToCurrentLocation();
             callback.error("Device location manager is not available.");
             return;
         }
 
-        moveToCurrentLocationManager = manager;
+        boolean gpsEnabled = manager.isProviderEnabled(LocationManager.GPS_PROVIDER);
+        boolean networkEnabled = manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+
+        if (!gpsEnabled && !networkEnabled) {
+            cancelMoveToCurrentLocation();
+            callback.error("Location provider is not enabled.");
+            return;
+        }
+
         moveToCurrentLocationCallback = callback;
 
-        moveToCurrentLocationListener = new LocationListener() {
-            @Override
-            public void onLocationChanged(Location location) {
+        if (fusedLocationClient == null) {
+            fusedLocationClient = LocationServices
+                .getFusedLocationProviderClient(cordova.getActivity());
+        }
+
+        CurrentLocationRequest request = new CurrentLocationRequest.Builder()
+            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+            .setDurationMillis(5000L)
+            .setMaxUpdateAgeMillis(0L)
+            .build();
+
+        moveToCurrentLocationToken = new CancellationTokenSource();
+
+        fusedLocationClient
+            .getCurrentLocation(request, moveToCurrentLocationToken.getToken())
+            .addOnSuccessListener(location -> {
                 if (location == null) {
                     return;
                 }
 
-                currentLocationAccuracy = location.hasAccuracy() ? location.getAccuracy() : -1f;
-                currentLocationAccuracyLabel = getAccuracyLabel(currentLocationAccuracy);
+                currentLocationAccuracy =
+                    location.hasAccuracy() ? location.getAccuracy() : -1f;
+                currentLocationAccuracyLabel =
+                    getAccuracyLabel(currentLocationAccuracy);
 
                 final double latitude = location.getLatitude();
                 final double longitude = location.getLongitude();
@@ -1726,6 +1683,7 @@ private void startUserTracking(CallbackContext callback) {
                             "Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180]."
                         );
                     }
+                    cancelMoveToCurrentLocation();
                     return;
                 }
 
@@ -1738,6 +1696,7 @@ private void startUserTracking(CallbackContext callback) {
                 final double zoom = moveToCurrentLocationZoom;
 
                 moveToCurrentLocationCallback = null;
+                cancelMoveToCurrentLocation();
 
                 runForSession(() -> {
                     if (mapView != null) {
@@ -1772,51 +1731,11 @@ private void startUserTracking(CallbackContext callback) {
                         pendingCallback.error(e.getMessage());
                     }
                 });
-            }
-
-            @Override
-            public void onStatusChanged(String provider, int status, Bundle extras) {
-            }
-
-            @Override
-            public void onProviderEnabled(String provider) {
-            }
-
-            @Override
-            public void onProviderDisabled(String provider) {
-            }
-        };
-
-        try {
-            boolean gpsEnabled = manager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-            boolean networkEnabled = manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
-
-            if (gpsEnabled) {
-                manager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    0L,
-                    0.0f,
-                    moveToCurrentLocationListener
-                );
-            }
-
-            if (networkEnabled) {
-                manager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER,
-                    0L,
-                    0.0f,
-                    moveToCurrentLocationListener
-                );
-            }
-
-            if (!gpsEnabled && !networkEnabled) {
+            })
+            .addOnFailureListener(e -> {
                 cancelMoveToCurrentLocation();
-                callback.error("Location provider is not enabled.");
-            }
-        } catch (SecurityException e) {
-            cancelMoveToCurrentLocation();
-            callback.error("Location permission is not granted.");
-        }
+                callback.error("Unable to get current location.");
+            });
     }
 
     private String getAccuracyLabel(float accuracy) {
@@ -1836,15 +1755,10 @@ private void startUserTracking(CallbackContext callback) {
     }
 
     private void unregisterMoveToCurrentLocation() {
-        if (moveToCurrentLocationManager != null && moveToCurrentLocationListener != null) {
-            try {
-                moveToCurrentLocationManager.removeUpdates(moveToCurrentLocationListener);
-            } catch (SecurityException ignored) {
-            }
+        if (moveToCurrentLocationToken != null) {
+            moveToCurrentLocationToken.cancel();
+            moveToCurrentLocationToken = null;
         }
-
-        moveToCurrentLocationManager = null;
-        moveToCurrentLocationListener = null;
         moveToCurrentLocationCallback = null;
     }
 
@@ -3506,12 +3420,40 @@ private boolean addMarkerInternal(
     }
 
     private void getCurrentLocationAccuracy(final CallbackContext callbackContext) {
-        // Run on the UI thread for consistency with every other plugin action in this
-        // class, even though LocationManager access here doesn't strictly require it.
         runForSession(() -> {
             if (!hasLocationPermission()) {
                 Log.d("MapboxPlugin", "getCurrentLocationAccuracy: location permission not granted");
-                callbackContext.success(buildAccuracyResult(-1f, "Unknown"));
+                deliverAccuracy(callbackContext, -1f, "Unknown");
+                return;
+            }
+
+            if (fusedLocationClient == null) {
+                fusedLocationClient = LocationServices
+                    .getFusedLocationProviderClient(cordova.getActivity());
+            }
+
+            fusedLocationClient.getLastLocation()
+                .addOnSuccessListener(last -> {
+                    if (last != null
+                            && last.hasAccuracy()
+                            && System.currentTimeMillis() - last.getTime()
+                            <= MAX_LOCATION_AGE_MS) {
+                        deliverAccuracy(
+                            callbackContext,
+                            last.getAccuracy(),
+                            getAccuracyLabel(last.getAccuracy())
+                        );
+                        return;
+                    }
+                    useLocationManagerCache(callbackContext);
+                })
+                .addOnFailureListener(e -> useLocationManagerCache(callbackContext));
+        });
+    }
+
+    private void useLocationManagerCache(final CallbackContext callbackContext) {
+        runForSession(() -> {
+            if (callbackContext == null) {
                 return;
             }
 
@@ -3521,7 +3463,7 @@ private boolean addMarkerInternal(
 
             if (locationManager == null) {
                 Log.d("MapboxPlugin", "getCurrentLocationAccuracy: LocationManager unavailable");
-                callbackContext.success(buildAccuracyResult(-1f, "Unknown"));
+                deliverAccuracy(callbackContext, -1f, "Unknown");
                 return;
             }
 
@@ -3529,12 +3471,24 @@ private boolean addMarkerInternal(
 
             if (bestLocation == null || !bestLocation.hasAccuracy()) {
                 Log.d("MapboxPlugin", "getCurrentLocationAccuracy: no recent location with accuracy available");
-                callbackContext.success(buildAccuracyResult(-1f, "Unknown"));
+                deliverAccuracy(callbackContext, -1f, "Unknown");
                 return;
             }
 
             float accuracy = bestLocation.getAccuracy();
-            callbackContext.success(buildAccuracyResult(accuracy, getAccuracyLabel(accuracy)));
+            deliverAccuracy(callbackContext, accuracy, getAccuracyLabel(accuracy));
+        });
+    }
+
+    private void deliverAccuracy(
+        final CallbackContext callbackContext,
+        final float accuracy,
+        final String label
+    ) {
+        runForSession(() -> {
+            if (callbackContext != null) {
+                callbackContext.success(buildAccuracyResult(accuracy, label));
+            }
         });
     }
 
