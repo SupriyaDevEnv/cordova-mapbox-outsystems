@@ -629,8 +629,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let id: String
             if let rawId = options["id"] {
-                guard let idStr = rawId as? String else {
-                    self.sendError("Invalid id: must be a string.", command)
+                guard let idStr = self.stringOption(rawId) else {
+                    self.sendError("Invalid id: must be a string, number, or boolean.", command)
                     return
                 }
                 guard !idStr.isEmpty else {
@@ -671,7 +671,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let markers = options["markers"] as? [[String: Any]] ?? []
             var ids = replace ? Set<String>() : Set(self.markers.keys)
             for (index, marker) in markers.enumerated() {
-                let id = marker["id"] as? String ?? String(index)
+                let id = marker["id"].flatMap(self.stringOption) ?? String(index)
                 guard !id.isEmpty, id.utf8.count <= 256 else { self.sendError("Invalid marker id.", command); return }
                 ids.insert(id)
             }
@@ -680,7 +680,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
             if replace { self.clearMarkersInternal() }
             for (index, marker) in markers.enumerated() {
-                let id = marker["id"] as? String ?? String(index)
+                let id = marker["id"].flatMap(self.stringOption) ?? String(index)
                 let latitude = self.doubleOption(marker["latitude"], defaultValue: 0)
                 let longitude = self.doubleOption(marker["longitude"], defaultValue: 0)
                 guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
@@ -817,8 +817,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.pathLineWidth = options["lineWidth"] as? Double ?? 3.0
             self.pathLineOpacity = options["lineOpacity"] as? Double ?? 1.0
 
-            let trackCamera = options["trackCamera"] as? String ?? "true"
-            if trackCamera == "true" {
+            if self.boolOption(options["trackCamera"], defaultValue: true) {
                 self.startUserTracking(command)
             } else {
                 self.sendSuccess(["status": "started"], command)
@@ -1026,11 +1025,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
             let visible = options["visible"] as? Bool ?? true
-
-            guard !self.pathPoints.isEmpty else {
-                self.sendError("No path is loaded. Use loadPath or startPathTracking first.", command)
-                return
-            }
 
             self.isPathVisible = visible
 
@@ -2053,6 +2047,22 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
 
         return defaultValue
+    }
+
+    private func boolOption(_ value: Any?, defaultValue: Bool) -> Bool {
+        if let value = value as? Bool { return value }
+        if let value = value as? String {
+            if value.caseInsensitiveCompare("true") == .orderedSame { return true }
+            if value.caseInsensitiveCompare("false") == .orderedSame { return false }
+        }
+        return defaultValue
+    }
+
+    private func stringOption(_ value: Any) -> String? {
+        if let value = value as? String { return value }
+        if let value = value as? Bool { return value ? "true" : "false" }
+        if let value = value as? NSNumber { return value.stringValue }
+        return nil
     }
 
     private func isValidLatitude(_ lat: Double) -> Bool {

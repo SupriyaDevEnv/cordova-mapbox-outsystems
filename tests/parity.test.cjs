@@ -49,3 +49,17 @@ test('iOS consistently converts native-pixel rectangles to UIKit points', () => 
       name[0].toUpperCase() + name.slice(1) + ' / scale'));
   }
 });
+
+test('iOS matches Android option coercion and idempotent path visibility', () => {
+  const pathStart = ios.split('func startPathTracking(command:')[1].split('@objc(stopPathTracking:', 1)[0];
+  assert.match(pathStart, /boolOption\(options\["trackCamera"\], defaultValue: true\)/);
+
+  const markers = ios.split('func loadMarkers(command:')[1].split('@objc(removeMarker:', 1)[0];
+  assert.match(markers, /marker\["id"\]\.flatMap\(self\.stringOption\)/);
+  assert.match(ios, /private func stringOption/);
+
+  const visibility = ios.split('func setPathVisibility(command:')[1].split('@objc(downloadOfflineRegion:', 1)[0];
+  assert.doesNotMatch(visibility, /No path is loaded/);
+  assert.match(visibility, /self\.isPathVisible = visible/);
+  assert.match(visibility, /self\.sendSuccess\(command\)/);
+});
