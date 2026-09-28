@@ -70,8 +70,6 @@
             <string>Realm Mapping uses your location to show your position on the map.</string>
         </config-file>
 
-        <!-- MABS requires an explicit Swift language version for plugins containing Swift sources. -->
-        <preference name="SwiftVersion" value="5" />
         <preference name="deployment-target" default="14.0" />
         <podspec>
             <pods use-frameworks="true">
