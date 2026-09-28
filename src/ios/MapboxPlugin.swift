@@ -1114,13 +1114,20 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let x = self.doubleOption(options["x"], defaultValue: 0)
-            let y = self.doubleOption(options["y"], defaultValue: 0)
-            let width = self.doubleOption(options["width"], defaultValue: 1)
-            let height = self.doubleOption(options["height"], defaultValue: 1)
-            guard [x, y, width, height].allSatisfy({ $0.isFinite && abs($0) <= 1000000 }), width > 0, height > 0 else {
+            let nativeX = self.doubleOption(options["x"], defaultValue: 0)
+            let nativeY = self.doubleOption(options["y"], defaultValue: 0)
+            let nativeWidth = self.doubleOption(options["width"], defaultValue: 1)
+            let nativeHeight = self.doubleOption(options["height"], defaultValue: 1)
+            guard [nativeX, nativeY, nativeWidth, nativeHeight].allSatisfy({
+                $0.isFinite && abs($0) <= 1000000
+            }), nativeWidth > 0, nativeHeight > 0 else {
                 self.sendError("Invalid offline rectangle.", command); return
             }
+            let scale = Double(UIScreen.main.scale)
+            let x = nativeX / scale
+            let y = nativeY / scale
+            let width = nativeWidth / scale
+            let height = nativeHeight / scale
             guard let minZoom = MapboxSecurity.zoom(self.doubleOption(options["minZoom"], defaultValue: 10)),
                   let maxZoom = MapboxSecurity.zoom(self.doubleOption(options["maxZoom"], defaultValue: 16)), minZoom <= maxZoom else {
                 self.sendError("Offline zoom must be between 2 and 18 with minZoom <= maxZoom.", command); return
@@ -1873,22 +1880,17 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func frameFromOptions(_ options: [String: Any]) -> CGRect {
-        var x = doubleOption(options["x"], defaultValue: 0)
-        var y = doubleOption(options["y"], defaultValue: 0)
-        var width = doubleOption(options["width"], defaultValue: Double(webView.bounds.width))
-        var height = doubleOption(options["height"], defaultValue: Double(webView.bounds.height))
-
         let scale = Double(UIScreen.main.scale)
-        let bounds = webView.bounds
-        let appearsDevicePixelScaled = scale > 1
-            && (width > Double(bounds.width) + 1 || height > Double(bounds.height) + 1)
-
-        if appearsDevicePixelScaled {
-            x /= scale
-            y /= scale
-            width /= scale
-            height /= scale
-        }
+        let x = doubleOption(options["x"], defaultValue: 0) / scale
+        let y = doubleOption(options["y"], defaultValue: 0) / scale
+        let width = doubleOption(
+            options["width"],
+            defaultValue: Double(webView.bounds.width) * scale
+        ) / scale
+        let height = doubleOption(
+            options["height"],
+            defaultValue: Double(webView.bounds.height) * scale
+        ) / scale
 
         return CGRect(x: x, y: y, width: max(width, 1), height: max(height, 1))
     }

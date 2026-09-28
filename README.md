@@ -97,6 +97,8 @@ window.MapboxPlugin.close()
 
 `setCamera` and `flyTo` support partial camera updates: omitted latitude, longitude, zoom, bearing, or pitch values preserve the current camera value on both platforms. `initialize` applies its optional bearing and pitch on both platforms.
 
+Map viewport, resize, touch-region, and offline-selection rectangles use WebView-local native pixels on both platforms. Convert CSS viewport coordinates by multiplying them by `window.devicePixelRatio`; iOS converts those values to UIKit points internally without guessing from the rectangle size.
+
 For behind-WebView maps, keep the WebView/page background transparent. Android and iOS now discover overlay touch regions automatically. See Touch Routing below.
 
 ## Fly To

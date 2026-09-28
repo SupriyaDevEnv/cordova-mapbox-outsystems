@@ -35,3 +35,17 @@ test('initial camera applies bearing and pitch on both platforms', () => {
   assert.match(iosInitialize, /bearing: bearing/);
   assert.match(iosInitialize, /pitch: pitch/);
 });
+
+test('iOS consistently converts native-pixel rectangles to UIKit points', () => {
+  const frame = ios.split('private func frameFromOptions')[1].split('private func touchRectFromOptions')[0];
+  assert.doesNotMatch(frame, /appearsDevicePixelScaled/);
+  assert.match(frame, /options\["x"\][\s\S]*\/ scale/);
+  assert.match(frame, /options\["width"\][\s\S]*\/ scale/);
+
+  const offline = ios.split('func downloadOfflineRegionForRect(command:')[1]
+    .split('private func startOfflineDownload')[0];
+  for (const name of ['x', 'y', 'width', 'height']) {
+    assert.match(offline, new RegExp('let ' + name + ' = native' +
+      name[0].toUpperCase() + name.slice(1) + ' / scale'));
+  }
+});
