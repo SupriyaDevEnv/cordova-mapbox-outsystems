@@ -56,6 +56,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var lastHeadingBearing: CLLocationDirection = -1
     private var lastHeadingUpdate: TimeInterval = 0
     private var isUserTrackingEnabled = false
+    private(set) var isCameraFollowingUser = false
     private var isUserLocationEnabled = false
     private var isDeviceHeadingEnabled = false
     private var isHeadingFollowModeEnabled = false
@@ -149,6 +150,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             self.mapView = mapView
+            mapView.gestures.panGestureRecognizer.addTarget(self, action: #selector(self.pauseCameraFollowForGesture(_:)))
+            mapView.gestures.pinchGestureRecognizer.addTarget(self, action: #selector(self.pauseCameraFollowForGesture(_:)))
             self.annotations = mapView.annotations.makePointAnnotationManager()
             self.installMapTapHandler(on: mapView)
 
@@ -395,6 +398,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 ? nil
                 : self.doubleOption(options["zoom"], defaultValue: 0)
 
+            self.resumeCameraFollowing()
             self.requestLocationAuthorizationIfNeeded()
             self.moveToCurrentLocationCallbackId = command.callbackId
             self.headingLocationManager?.startUpdatingLocation()
@@ -438,6 +442,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
 
         isUserTrackingEnabled = true
+        resumeCameraFollowing()
         fireTrackingStatusChanged()
         headingLocationManager?.startUpdatingLocation()
         sendSuccess(command)
@@ -445,11 +450,27 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     private func stopUserTracking() {
         isUserTrackingEnabled = false
+        isCameraFollowingUser = false
         fireTrackingStatusChanged()
         if moveToCurrentLocationCallbackId == nil {
             headingLocationManager?.stopUpdatingLocation()
         }
         lastUserTrackingUpdate = 0
+    }
+
+    func resumeCameraFollowing() {
+        isCameraFollowingUser = true
+    }
+
+    func isTrackingLocationManager(_ manager: CLLocationManager) -> Bool {
+        isUserTrackingEnabled && manager === headingLocationManager
+    }
+
+    @objc private func pauseCameraFollowForGesture(_ recognizer: UIGestureRecognizer) {
+        guard recognizer.state == .began || recognizer.state == .changed else { return }
+        guard isCameraFollowingUser else { return }
+        isCameraFollowingUser = false
+        mapView?.camera.cancelAnimations()
     }
 
     private func stopHeadingFollowMode() {
@@ -527,7 +548,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             moveToCurrentLocationZoom = nil
 
             runForSession {
-                self.mapView?.mapboxMap.setCamera(to: camera)
+                if self.isCameraFollowingUser {
+                    self.mapView?.mapboxMap.setCamera(to: camera)
+                }
                 if !self.isUserTrackingEnabled {
                     manager.stopUpdatingLocation()
                 }
@@ -553,7 +576,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         let coordinate = location.coordinate
 
         runForSession {
-            self.mapView?.mapboxMap.setCamera(to: CameraOptions(center: coordinate))
+            guard self.isTrackingLocationManager(manager) else { return }
+            if self.isCameraFollowingUser {
+                self.mapView?.mapboxMap.setCamera(to: CameraOptions(center: coordinate))
+            }
 
             if self.isPathTrackingActive && !self.isPathTrackingPaused {
                 guard self.pathPoints.count < MapboxSecurity.maxPoints else {
@@ -1916,6 +1942,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     @objc private func handleMapOverlayPan(_ recognizer: UIPanGestureRecognizer) {
+        pauseCameraFollowForGesture(recognizer)
         guard let mapView = mapView, let overlay = mapTouchOverlay else {
             return
         }
@@ -1934,6 +1961,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     @objc private func handleMapOverlayPinch(_ recognizer: UIPinchGestureRecognizer) {
+        pauseCameraFollowForGesture(recognizer)
         guard let mapView = mapView else {
             return
         }

@@ -438,6 +438,8 @@ window.MapboxPlugin.onMarkerClick(function (event) {
 
 ## Touch Routing
 
+On iOS, dragging or pinching either the native map or the behind-WebView overlay pauses camera following and cancels the current camera animation. Location updates and an already-running path recording continue. Ending the gesture does not resume following; call `moveToCurrentLocation` or enable user tracking explicitly to resume. A pending current-location result still resolves if a gesture pauses its camera movement before the fix arrives.
+
 On Android and iOS, a gesture starting in an overlay exclusion rectangle stays with the WebView. Otherwise it goes to native Mapbox only when it starts inside the laid-out map rectangle. Touches outside the map stay with the WebView. The chosen target keeps the entire gesture, including movement outside its original rectangle.
 
 ### Automatic Android and iOS overlay regions

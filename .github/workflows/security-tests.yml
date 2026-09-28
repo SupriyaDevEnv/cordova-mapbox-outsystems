@@ -36,3 +36,5 @@ jobs:
         run: swiftc -frontend -parse src/ios/*.swift
       - name: Regress iOS touch coordinates and map boundaries
         run: python3 tests/test-ios-touch-routing.py
+      - name: Regress iOS camera follow during manual gestures
+        run: python3 tests/test-ios-camera-follow.py

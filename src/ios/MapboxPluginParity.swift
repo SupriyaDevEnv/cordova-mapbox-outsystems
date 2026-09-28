@@ -144,6 +144,7 @@ class MapboxPluginParity: MapboxPlugin {
             self.moveLocationZoom = options["zoom"] == nil
                 ? nil
                 : self.doubleValue(options["zoom"], defaultValue: 0)
+            self.resumeCameraFollowing()
             self.moveLocationCallbackId = command.callbackId
 
             if self.moveLocationManager == nil {
@@ -238,6 +239,8 @@ class MapboxPluginParity: MapboxPlugin {
             return
         }
 
+        guard isTrackingLocationManager(manager) else { return }
+
         // Accuracy updates are independent from camera throttling so the UI can
         // receive fresh GPS quality information even while camera updates are gated.
         sendLocationAccuracyUpdate(location)
@@ -290,6 +293,7 @@ class MapboxPluginParity: MapboxPlugin {
         }
 
         runForSession {
+            guard self.isTrackingLocationManager(manager), self.isCameraFollowingUser else { return }
             guard let mapView = self.activeMapView() else {
                 return
             }
@@ -352,10 +356,12 @@ class MapboxPluginParity: MapboxPlugin {
                 return
             }
 
-            if let zoom = zoom {
-                mapView.mapboxMap.setCamera(to: CameraOptions(center: coordinate, zoom: zoom))
-            } else {
-                mapView.mapboxMap.setCamera(to: CameraOptions(center: coordinate))
+            if self.isCameraFollowingUser {
+                if let zoom = zoom {
+                    mapView.mapboxMap.setCamera(to: CameraOptions(center: coordinate, zoom: zoom))
+                } else {
+                    mapView.mapboxMap.setCamera(to: CameraOptions(center: coordinate))
+                }
             }
 
             let accuracy = location.horizontalAccuracy >= 0 ? location.horizontalAccuracy : -1
