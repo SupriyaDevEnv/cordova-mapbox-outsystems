@@ -3364,14 +3364,14 @@ private boolean addMarkerInternal(
     }
 
     private Bitmap createWaypointMarkerBitmap() {
-        return createMarkerBitmap(Color.rgb(220, 38, 38));
+        return createMarkerBitmap(Color.rgb(220, 38, 38), false);
     }
 
     private Bitmap createFindMarkerBitmap() {
-        return createMarkerBitmap(Color.rgb(37, 99, 235));
+        return createMarkerBitmap(Color.rgb(37, 99, 235), true);
     }
 
-    private Bitmap createMarkerBitmap(int pinColor) {
+    private Bitmap createMarkerBitmap(int pinColor, boolean isFind) {
         int width = 72;
         int height = 96;
         float centerX = width / 2.0f;
@@ -3411,6 +3411,29 @@ private boolean addMarkerInternal(
         innerPaint.setStrokeWidth(2.0f);
         innerPaint.setColor(Color.argb(40, 0, 0, 0));
         canvas.drawCircle(centerX, circleCenterY, 10.0f, innerPaint);
+
+        if (isFind) {
+            Paint findIconPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            findIconPaint.setColor(pinColor);
+            findIconPaint.setStyle(Paint.Style.STROKE);
+            findIconPaint.setStrokeWidth(2.5f);
+            findIconPaint.setStrokeCap(Paint.Cap.ROUND);
+
+            canvas.drawCircle(
+                centerX - 1.0f,
+                circleCenterY - 1.0f,
+                4.0f,
+                findIconPaint
+            );
+
+            canvas.drawLine(
+                centerX + 2.0f,
+                circleCenterY + 2.0f,
+                centerX + 7.0f,
+                circleCenterY + 7.0f,
+                findIconPaint
+            );
+        }
 
         return bitmap;
     }
