@@ -48,6 +48,7 @@ public interface Animator {
         void onAnimationStart(Animator animation);
         void onAnimationEnd(Animator animation);
         void onAnimationCancel(Animator animation);
+        void onAnimationRepeat(Animator animation);
     }
 }
 '''
