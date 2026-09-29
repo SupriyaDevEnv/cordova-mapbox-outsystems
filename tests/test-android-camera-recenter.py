@@ -94,7 +94,7 @@ class MapAnimationOptions {
 class CameraOptions {
     private Point center;
 
-    Point center() { return center; }
+    Point getCenter() { return center; }
 
     static class Builder {
         private final CameraOptions options = new CameraOptions();
