@@ -2631,7 +2631,7 @@ private void startUserTracking(CallbackContext callback) {
             for (int i = 0; i < markers.length(); i++) {
                 JSONObject marker = markers.optJSONObject(i);
                 if (marker == null) continue;
-                String id = marker.optString("id", String.valueOf(i));
+                String id = marker.optString("Id", String.valueOf(i));
                 if (id.isEmpty() || id.length() > 256) { callback.error("Invalid marker id."); return; }
                 ids.add(id);
             }
@@ -2647,17 +2647,17 @@ private void startUserTracking(CallbackContext callback) {
                     continue;
                 }
 
-                double markerLat = marker.optDouble("latitude", 0.0);
-                double markerLng = marker.optDouble("longitude", 0.0);
+                double markerLat = marker.optDouble("Latitude", 0.0);
+                double markerLng = marker.optDouble("Longitude", 0.0);
                 if (!isValidLatitude(markerLat) || !isValidLongitude(markerLng)) {
                     continue;
                 }
 
                 addMarkerInternal(
-                    marker.optString("id", String.valueOf(i)),
+                    marker.optString("Id", String.valueOf(i)),
                     markerLat,
                     markerLng,
-                    marker.optBoolean("isFind", false)
+                    marker.optBoolean("IsFind", false)
                 );
             }
 
