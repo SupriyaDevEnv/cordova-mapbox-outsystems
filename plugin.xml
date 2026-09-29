@@ -25,8 +25,8 @@
 
     <hook type="after_prepare" src="hooks/verify-runtime-token.js" />
     <preference name="MAPBOX_ALLOWED_STYLE_HOSTS" default="api.mapbox.com" />
-    <!-- Comma-separated HTTPS hosts allowed for marker imageUrl values. Empty allows any HTTPS host. -->
-    <preference name="MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" default="" />
+    <!-- A comma represents an empty host list (any HTTPS host); Cordova treats default="" as a required variable. -->
+    <preference name="MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" default="," />
 
     <platform name="android">
         <hook type="after_prepare" src="hooks/android/verify-mapbox-feature.js" />
