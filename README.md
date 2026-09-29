@@ -10,7 +10,7 @@
 - Offline zooms must be between 2 and 18, with `minZoom <= maxZoom`; invalid values are rejected. Both circle and rectangle downloads are checked against a conservative bounding-box diagonal of 100 km and an estimated 50,000-tile budget (including lower zooms). This can reject large/high-zoom requests that older releases accepted. Polar and antimeridian-crossing bounds are rejected. The budget is an estimate, not a byte quota; Mapbox's tile-store constraints still apply. The consuming app should manage retained offline regions and its storage budget.
 - Style URLs and underlying SDK error details are no longer included in plugin diagnostic logs.
 
-Run `npm test` for the bridge and build-hook regressions. The `Native security regression tests` workflow also compiles/runs the Java and Swift input policy, executes the actual iOS empty-path method with a minimal host, and parses the iOS plugin sources. These checks do not replace device testing or a build of your consuming OutSystems application with its exact Cordova and Mapbox dependencies.
+From a development Git checkout, run `npm test` for the bridge and build-hook regressions. The `Native security regression tests` workflow also compiles/runs the Java and Swift input policy, executes the actual iOS empty-path method with a minimal host, and parses the iOS plugin sources. These checks do not replace device testing or a build of your consuming OutSystems application with its exact Cordova and Mapbox dependencies.
 
 Cordova-style native Mapbox plugin for OutSystems mobile apps.
 
@@ -619,7 +619,7 @@ By default, any HTTPS host is allowed. To allow only specific hosts, set the `MA
 ```json
 {
   "plugin": {
-    "url": "https://github.com/devnandagopaljb/cordova-mapbox-outsystems.git",
+    "url": "https://github.com/SupriyaDevEnv/cordova-mapbox-outsystems.git",
     "variables": [
       { "name": "MAPBOX_ACCESS_TOKEN", "value": "pk.your_public_runtime_token_here" },
       { "name": "MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS", "value": "cdn.example.com,images.example.com" }
@@ -723,7 +723,7 @@ The Mapbox access token is configured once through OutSystems extensibility conf
 ```json
 {
   "plugin": {
-    "url": "https://github.com/devnandagopaljb/cordova-mapbox-outsystems.git",
+    "url": "https://github.com/SupriyaDevEnv/cordova-mapbox-outsystems.git",
     "variables": [
       {
         "name": "MAPBOX_ACCESS_TOKEN",
@@ -742,10 +742,28 @@ The Mapbox access token is configured once through OutSystems extensibility conf
 4. Generate the Android/iOS mobile app.
 5. Test on a real device.
 
+## Production packaging
+
+The production plugin contains `plugin.xml`, `package.json`, `README.md`, `www/`, `src/`, and `hooks/`. Both hooks, the Android Gradle file, and all Android/iOS source files are build inputs and must remain included.
+
+The npm `files` allowlist excludes development files from `npm pack` (npm also includes `package.json` and `README.md`). `.gitattributes` excludes `tests/`, `.github/`, and Git configuration files from `git archive` and GitHub source ZIPs. All regression tests, including the five native Python tests, remain in Git and CI; Python is not required to install or run the packaged plugin.
+
+Create an OutSystems plugin ZIP from a committed revision:
+
+```sh
+git archive --format=zip --output=../cordova-mapbox-outsystems.zip HEAD
+```
+
+The ZIP has `plugin.xml` at its root. Do not ZIP the working directory manually: that would include development files and bypass the archive exclusions. A Git clone still contains tests and CI files; for a clean distributable use the ZIP or npm package. Pin the reviewed commit when configuring a production Git installation.
+
+From a development checkout, run `python3 tests/check-package.py` to verify the actual ZIP and npm tarball, including every file referenced by `plugin.xml`. Native build and device validation must still be performed with the consuming OutSystems application.
+
+The known rollback revision is `f88b385f0dae6382d2c8fcca80a438be1a68404b`. This packaging change preserves its history. To generate the original rollback package, use that exact revision instead of `HEAD`; it retains the packaging rules and contents of that revision.
+
 ## SDK Versions
 
-- Android uses Mapbox Maps `11.20.2` by default.
-- iOS uses Mapbox Maps `~> 11.0`.
+- Android uses Mapbox Maps `11.30.0` by default.
+- iOS pins Mapbox Maps to `11.30.0`.
 - iOS reads the token natively and assigns it via `MapboxOptions.accessToken`.
 
 ## Android Size Reduction

@@ -1,0 +1,5 @@
+# Keep development tooling in Git, but out of downloadable plugin archives.
+/tests export-ignore
+/.github export-ignore
+/.gitignore export-ignore
+/.gitattributes export-ignore
