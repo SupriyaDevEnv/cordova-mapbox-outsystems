@@ -1773,7 +1773,7 @@ private void startUserTracking(CallbackContext callback) {
                         );
                         // Seed the follow target so the first tick after the
                         // flight lands does not issue a redundant camera move.
-                        lastCameraFollowTarget = cameraOptions.center();
+                        lastCameraFollowTarget = cameraOptions.getCenter();
                     }
 
                     JSONObject result = new JSONObject();
