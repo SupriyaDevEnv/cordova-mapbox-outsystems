@@ -442,7 +442,7 @@ Images load in the background: the marker appears immediately as a plain pin and
 
 ### Load Many Markers
 
-Each marker object may include `id`, `latitude`, `longitude`, `isFind`, `pinColor`, and `imageUrl`:
+Each marker object uses capitalized keys matching the OutSystems structure: `Id`, `Latitude`, `Longitude`, `IsFind`, `PinColor`, and `ImageUrl`. They behave like the `addMarker` fields above:
 
 ```javascript
 window.MapboxPlugin.loadMarkers($parameters.Markers, {

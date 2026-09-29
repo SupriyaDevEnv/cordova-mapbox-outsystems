@@ -38,3 +38,5 @@ jobs:
         run: python3 tests/test-ios-touch-routing.py
       - name: Regress iOS camera follow during manual gestures
         run: python3 tests/test-ios-camera-follow.py
+      - name: Regress Android recenter against the camera follow ticker
+        run: python3 tests/test-android-camera-recenter.py

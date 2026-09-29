@@ -212,17 +212,13 @@ final class MarkerIcons: NSObject, URLSessionDataDelegate {
             innerRing.stroke()
 
             if isFind {
-                pinColor.setStroke()
-                let lens = UIBezierPath(ovalIn: circle(centerX - 1, headY - 1, 4))
-                lens.lineWidth = 2.5
-                lens.stroke()
-
-                let handle = UIBezierPath()
-                handle.move(to: CGPoint(x: centerX + 2, y: headY + 2))
-                handle.addLine(to: CGPoint(x: centerX + 7, y: headY + 7))
-                handle.lineWidth = 2.5
-                handle.lineCapStyle = .round
-                handle.stroke()
+                cg.setStrokeColor(pinColor.cgColor)
+                cg.setLineWidth(2.5)
+                cg.setLineCap(.round)
+                cg.strokeEllipse(in: CGRect(x: centerX - 5, y: headY - 5, width: 8, height: 8))
+                cg.move(to: CGPoint(x: centerX + 2, y: headY + 2))
+                cg.addLine(to: CGPoint(x: centerX + 7, y: headY + 7))
+                cg.strokePath()
             }
         }
     }

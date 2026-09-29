@@ -657,7 +657,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             guard self.markers[id] != nil || self.markers.count < self.maxMarkers,
                   id.utf8.count <= 256 else { self.sendError("Marker/id limit exceeded.", command); return }
-            guard let style = self.markerStyle(from: options) else {
+            let isFind = options["isFind"] as? Bool ?? false
+            guard let style = self.markerStyle(isFind: isFind, pinColor: options["pinColor"], imageUrl: options["imageUrl"]) else {
                 self.sendError(self.markerImageNotAllowed, command)
                 return
             }
@@ -679,10 +680,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let replace = options["replace"] as? Bool ?? true
             let markers = options["markers"] as? [[String: Any]] ?? []
             var ids = replace ? Set<String>() : Set(self.markers.keys)
+            var styles: [MarkerStyle] = []
             for (index, marker) in markers.enumerated() {
-                let id = marker["id"].flatMap(self.stringOption) ?? String(index)
+                let id = marker["Id"].flatMap(self.stringOption) ?? String(index)
                 guard !id.isEmpty, id.utf8.count <= 256 else { self.sendError("Invalid marker id.", command); return }
-                guard self.markerStyle(from: marker) != nil else { self.sendError(self.markerImageNotAllowed, command); return }
+                let isFind = marker["IsFind"] as? Bool ?? false
+                guard let style = self.markerStyle(isFind: isFind, pinColor: marker["PinColor"], imageUrl: marker["ImageUrl"]) else {
+                    self.sendError(self.markerImageNotAllowed, command); return
+                }
+                styles.append(style)
                 ids.insert(id)
             }
             guard markers.count <= self.maxMarkers, ids.count <= self.maxMarkers else {
@@ -690,14 +696,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
             if replace { self.clearMarkersInternal() }
             for (index, marker) in markers.enumerated() {
-                let id = marker["id"].flatMap(self.stringOption) ?? String(index)
-                let latitude = self.doubleOption(marker["latitude"], defaultValue: 0)
-                let longitude = self.doubleOption(marker["longitude"], defaultValue: 0)
+                let id = marker["Id"].flatMap(self.stringOption) ?? String(index)
+                let latitude = self.doubleOption(marker["Latitude"], defaultValue: 0)
+                let longitude = self.doubleOption(marker["Longitude"], defaultValue: 0)
                 guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
                     continue
                 }
-                guard let style = self.markerStyle(from: marker) else { continue }
-                self.addMarkerInternal(id: id, latitude: latitude, longitude: longitude, style: style, publish: false)
+                self.addMarkerInternal(id: id, latitude: latitude, longitude: longitude, style: styles[index], publish: false)
             }
             self.annotations?.annotations = Array(self.markers.values)
 
@@ -1584,11 +1589,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
-    /// Returns nil when the marker's imageUrl is not an allowed image source.
-    private func markerStyle(from options: [String: Any]) -> MarkerStyle? {
-        let isFind = options["isFind"] as? Bool ?? false
-        let color = colorOption(options["pinColor"], defaultColor: isFind ? MarkerIcons.findPinColor : MarkerIcons.defaultPinColor)
-        let imageUrl = (options["imageUrl"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    /// Returns nil when imageUrl is not an allowed image source.
+    private func markerStyle(isFind: Bool, pinColor: Any?, imageUrl rawImageUrl: Any?) -> MarkerStyle? {
+        let color = colorOption(pinColor, defaultColor: isFind ? MarkerIcons.findPinColor : MarkerIcons.defaultPinColor)
+        let imageUrl = (rawImageUrl as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if imageUrl.isEmpty {
             return MarkerStyle(color: color, isFind: isFind, imageUrl: nil)
         }

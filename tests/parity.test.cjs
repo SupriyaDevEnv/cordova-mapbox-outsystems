@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const android = fs.readFileSync('src/android/MapboxPluginEntry.java', 'utf8');
 const androidPermissions = fs.readFileSync('src/android/MapboxPluginPermissionEntry.java', 'utf8');
 const ios = fs.readFileSync('src/ios/MapboxPlugin.swift', 'utf8');
+const iosMarkerIcons = fs.readFileSync('src/ios/MarkerIcons.swift', 'utf8');
 
 function javaMethod(name, nextName) {
   return android.split('private void ' + name + '(')[1].split('private void ' + nextName + '(')[0];
@@ -56,7 +57,12 @@ test('iOS matches Android option coercion and idempotent path visibility', () =>
   assert.match(pathStart, /boolOption\(options\["trackCamera"\], defaultValue: true\)/);
 
   const markers = ios.split('func loadMarkers(command:')[1].split('@objc(removeMarker:', 1)[0];
-  assert.match(markers, /marker\["id"\]\.flatMap\(self\.stringOption\)/);
+  assert.match(markers, /marker\["Id"\]\.flatMap\(self\.stringOption\)/);
+  assert.match(markers, /marker\["Latitude"\]/);
+  assert.match(markers, /marker\["Longitude"\]/);
+  assert.match(markers, /marker\["IsFind"\]/);
+  assert.match(iosMarkerIcons, /cg\.setLineCap\(\.round\)/);
+  assert.match(iosMarkerIcons, /cg\.strokeEllipse\(in:/);
   assert.match(ios, /private func stringOption/);
 
   const visibility = ios.split('func setPathVisibility(command:')[1].split('@objc(downloadOfflineRegion:', 1)[0];
@@ -69,21 +75,25 @@ test('markers accept imageUrl and pinColor on both platforms and reject disallow
   const androidAdd = javaMethod('addMarker', 'loadMarkers');
   const androidLoad = android.split('private void loadMarkers(')[1].split('private boolean addMarkerInternal(')[0];
   for (const body of [androidAdd, androidLoad]) {
-    assert.match(body, /markerStyleFromOptions\(/);
+    assert.match(body, /markerStyle\(/);
     assert.match(body, /MARKER_IMAGE_NOT_ALLOWED/);
   }
-  assert.match(android, /optString\("imageUrl"/);
-  assert.match(android, /optString\("pinColor"/);
+  assert.match(androidAdd, /optString\("imageUrl"/);
+  assert.match(androidAdd, /optString\("pinColor"/);
+  assert.match(androidLoad, /optString\("ImageUrl"/);
+  assert.match(androidLoad, /optString\("PinColor"/);
   assert.match(android, /markerImageAllowed\(imageUrl, allowedMarkerImageHosts\(\)\)/);
 
   const iosAdd = ios.split('func addMarker(command:')[1].split('@objc(loadMarkers:', 1)[0];
   const iosLoad = ios.split('func loadMarkers(command:')[1].split('@objc(removeMarker:', 1)[0];
   for (const body of [iosAdd, iosLoad]) {
-    assert.match(body, /markerStyle\(from:/);
+    assert.match(body, /markerStyle\(isFind:/);
     assert.match(body, /markerImageNotAllowed/);
   }
-  assert.match(ios, /options\["imageUrl"\]/);
-  assert.match(ios, /options\["pinColor"\]/);
+  assert.match(iosAdd, /options\["imageUrl"\]/);
+  assert.match(iosAdd, /options\["pinColor"\]/);
+  assert.match(iosLoad, /marker\["ImageUrl"\]/);
+  assert.match(iosLoad, /marker\["PinColor"\]/);
   assert.match(ios, /MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS/);
 });
 
