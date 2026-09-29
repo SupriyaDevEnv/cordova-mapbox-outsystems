@@ -11,7 +11,14 @@ source = Path('src/ios/MapboxPlugin.swift').read_text()
 method = source[source.index('    private func touchRectFromOptions('):
                 source.index('    private func installMapTouchOverlay(')]
 method = method.replace('private func', 'func', 1)
-overlay = source[source.index('private class MapTouchOverlayView:'):]
+# Extract only the overlay class, not unrelated declarations appended after it.
+start = source.index('private class MapTouchOverlayView:')
+end = source.index('{', start) + 1
+depth = 1
+while depth:
+    depth += (source[end] == '{') - (source[end] == '}')
+    end += 1
+overlay = source[start:end]
 overlay = overlay.replace('private class', 'class', 1)
 host = '''
 import Foundation

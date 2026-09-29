@@ -19,6 +19,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - run: npm test
+      - name: Validate production ZIP and npm package
+        run: python3 tests/check-package.py
       - name: Compile and run Android input policy
         run: |
           mkdir -p "$RUNNER_TEMP/mapbox-tests"
