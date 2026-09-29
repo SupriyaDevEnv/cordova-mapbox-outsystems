@@ -25,6 +25,8 @@
 
     <hook type="after_prepare" src="hooks/verify-runtime-token.js" />
     <preference name="MAPBOX_ALLOWED_STYLE_HOSTS" default="api.mapbox.com" />
+    <!-- Comma-separated HTTPS hosts allowed for marker imageUrl values. Empty allows any HTTPS host. -->
+    <preference name="MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" default="" />
 
     <platform name="android">
         <hook type="after_prepare" src="hooks/android/verify-mapbox-feature.js" />
@@ -38,6 +40,7 @@
         <config-file parent="/*" target="res/xml/config.xml">
             <preference name="MAPBOX_ACCESS_TOKEN" value="$MAPBOX_ACCESS_TOKEN" />
             <preference name="MAPBOX_ALLOWED_STYLE_HOSTS" value="$MAPBOX_ALLOWED_STYLE_HOSTS" />
+            <preference name="MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" value="$MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" />
         </config-file>
 
         <config-file parent="/manifest" target="AndroidManifest.xml">
@@ -49,6 +52,7 @@
 
         <framework src="src/android/mapbox-plugin.gradle" custom="true" type="gradleReference" />
         <source-file src="src/android/MapboxSecurity.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
+        <source-file src="src/android/MarkerIcons.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
         <source-file src="src/android/MapboxPluginEntry.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
         <source-file src="src/android/MapboxPluginPermissionEntry.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
     </platform>
@@ -64,6 +68,7 @@
         <config-file parent="/*" target="config.xml">
             <preference name="MAPBOX_ACCESS_TOKEN" value="$MAPBOX_ACCESS_TOKEN" />
             <preference name="MAPBOX_ALLOWED_STYLE_HOSTS" value="$MAPBOX_ALLOWED_STYLE_HOSTS" />
+            <preference name="MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" value="$MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" />
         </config-file>
 
         <config-file parent="NSLocationWhenInUseUsageDescription" target="*-Info.plist">
@@ -78,6 +83,7 @@
         </podspec>
 
         <source-file src="src/ios/MapboxSecurity.swift" />
+        <source-file src="src/ios/MarkerIcons.swift" />
         <source-file src="src/ios/MapboxPlugin.swift" />
         <source-file src="src/ios/MapboxPluginParity.swift" />
         <source-file src="src/ios/MapboxPluginPermissionParity.swift" />

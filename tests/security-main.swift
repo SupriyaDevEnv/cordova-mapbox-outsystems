@@ -11,6 +11,16 @@ struct SecurityTests {
         for url in ["http://api.mapbox.com/a", "https://api.mapbox.com.evil/a", "file:///a", "https://user:pass@api.mapbox.com/a", "https://api.mapbox.com:8443/a", "https://api.mapbox.com/a#b"] {
             precondition(!MapboxSecurity.styleAllowed(url, hosts: "api.mapbox.com"))
         }
+        precondition(MapboxSecurity.markerImageAllowed("https://cdn.example/a.png", hosts: ""))
+        precondition(MapboxSecurity.markerImageAllowed("https://cdn.example/a.png", hosts: " , "))
+        precondition(MapboxSecurity.markerImageAllowed("https://CDN.example/a.png?v=1", hosts: "api.mapbox.com, cdn.example"))
+        precondition(MapboxSecurity.markerImageAllowed("data:image/png;base64,iVBORw0KGgo=", hosts: "cdn.example"))
+        for url in ["", "http://cdn.example/a.png", "https://evil.example/a.png", "file:///a.png",
+                    "https://user:pass@cdn.example/a.png", "javascript:alert(1)", "data:text/html;base64,PGh0bWw+",
+                    "data:image/png;base64,", "data:image/png,rawdata", "data:image/png;base64,abc<"] {
+            precondition(!MapboxSecurity.markerImageAllowed(url, hosts: "cdn.example"))
+        }
+        precondition(!MapboxSecurity.markerImageAllowed("data:image/png;base64," + String(repeating: "A", count: MapboxSecurity.maxMarkerImageBytes / 3 * 4 + 8), hosts: ""))
         for value in [1e100, -1e100, Double.nan, Double.infinity, -Double.infinity, 1, 19] {
             precondition(MapboxSecurity.zoom(value) == nil)
         }

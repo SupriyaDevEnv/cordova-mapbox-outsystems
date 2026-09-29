@@ -11,6 +11,16 @@ public class MapboxSecurityTest {
         for (String url : new String[]{"http://api.mapbox.com/a", "https://api.mapbox.com.evil/a", "file:///a", "https://user:pass@api.mapbox.com/a", "https://api.mapbox.com:8443/a", "https://api.mapbox.com/a#b"}) {
             check(!MapboxSecurity.styleAllowed(url, "api.mapbox.com"));
         }
+        check(MapboxSecurity.markerImageAllowed("https://cdn.example/a.png", ""));
+        check(MapboxSecurity.markerImageAllowed("https://cdn.example/a.png", " , "));
+        check(MapboxSecurity.markerImageAllowed("https://CDN.example/a.png?v=1", "api.mapbox.com, cdn.example"));
+        check(MapboxSecurity.markerImageAllowed("data:image/png;base64,iVBORw0KGgo=", "cdn.example"));
+        for (String url : new String[]{"", "http://cdn.example/a.png", "https://evil.example/a.png", "file:///a.png",
+                "https://user:pass@cdn.example/a.png", "javascript:alert(1)", "data:text/html;base64,PGh0bWw+",
+                "data:image/png;base64,", "data:image/png,rawdata", "data:image/png;base64,abc<"}) {
+            check(!MapboxSecurity.markerImageAllowed(url, "cdn.example"));
+        }
+        check(!MapboxSecurity.markerImageAllowed("data:image/png;base64," + "A".repeat(MapboxSecurity.MAX_MARKER_IMAGE_BYTES / 3 * 4 + 8), ""));
         check(!MapboxSecurity.validZoom(1e100));
         check(!MapboxSecurity.validZoom(Double.NaN));
         check(!MapboxSecurity.validZoom(Double.POSITIVE_INFINITY));

@@ -65,6 +65,28 @@ test('iOS matches Android option coercion and idempotent path visibility', () =>
   assert.match(visibility, /self\.sendSuccess\(command\)/);
 });
 
+test('markers accept imageUrl and pinColor on both platforms and reject disallowed images', () => {
+  const androidAdd = javaMethod('addMarker', 'loadMarkers');
+  const androidLoad = android.split('private void loadMarkers(')[1].split('private boolean addMarkerInternal(')[0];
+  for (const body of [androidAdd, androidLoad]) {
+    assert.match(body, /markerStyleFromOptions\(/);
+    assert.match(body, /MARKER_IMAGE_NOT_ALLOWED/);
+  }
+  assert.match(android, /optString\("imageUrl"/);
+  assert.match(android, /optString\("pinColor"/);
+  assert.match(android, /markerImageAllowed\(imageUrl, allowedMarkerImageHosts\(\)\)/);
+
+  const iosAdd = ios.split('func addMarker(command:')[1].split('@objc(loadMarkers:', 1)[0];
+  const iosLoad = ios.split('func loadMarkers(command:')[1].split('@objc(removeMarker:', 1)[0];
+  for (const body of [iosAdd, iosLoad]) {
+    assert.match(body, /markerStyle\(from:/);
+    assert.match(body, /markerImageNotAllowed/);
+  }
+  assert.match(ios, /options\["imageUrl"\]/);
+  assert.match(ios, /options\["pinColor"\]/);
+  assert.match(ios, /MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS/);
+});
+
 test('location accuracy subscriptions actively monitor and clean up on both platforms', () => {
   const androidRegistration = javaMethod('registerLocationAccuracyCallback', 'stopLocationAccuracyMonitoring');
   assert.match(androidRegistration, /requestLocationUpdates/);

@@ -5,6 +5,7 @@
 - Closing the map (including the native Close button) or resetting the WebView stops location/heading services, cancels downloads and pending permission actions, and clears map-session data and callbacks. Re-register callbacks after initializing a new map session.
 - `MAPBOX_ACCESS_TOKEN` must be a public `pk.*` token. Both platform builds reject configured secret tokens. Initialization always reads the current configuration and removes legacy cached values, so token rotation works after app upgrades. Unconfigured build templates may still be prepared, but cannot initialize the map.
 - Style URLs must be `mapbox://styles/<owner>/<style>` or HTTPS on an explicitly approved host. `MAPBOX_ALLOWED_STYLE_HOSTS` is a comma-separated build preference, defaulting to `api.mapbox.com`. Configure additional trusted style hosts through OutSystems Extensibility Configuration. Credentials in URLs, non-443 ports, fragments, HTTP and local-file URLs are rejected. Only allow hosts serving trusted styles: this entry-point policy does not inspect redirects or every resource referenced by a style.
+- Marker `imageUrl` values must be HTTPS URLs or base64 `data:image/(png|jpeg|webp|gif)` URIs, up to 1 MiB of image data. `MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS` is an optional comma-separated build preference; when set, only those hosts (including redirect targets) are allowed. When empty (the default), any HTTPS host is allowed.
 - Native inputs are limited to approximately 4 MiB; at most 10,000 markers may exist at once, with marker IDs limited to 256 characters/bytes. Boundary batches allow 1,000 boundaries and 20,000 total vertices. Imported paths allow 2–20,000 points. Tracking stops location updates at the recording limit; call `stopPathTracking()` to retrieve the retained points. Stopping an empty recording returns an empty path with zero distance.
 - Offline zooms must be between 2 and 18, with `minZoom <= maxZoom`; invalid values are rejected. Both circle and rectangle downloads are checked against a conservative bounding-box diagonal of 100 km and an estimated 50,000-tile budget (including lower zooms). This can reject large/high-zoom requests that older releases accepted. Polar and antimeridian-crossing bounds are rejected. The budget is an estimate, not a byte quota; Mapbox's tile-store constraints still apply. The consuming app should manage retained offline regions and its storage budget.
 - Style URLs and underlying SDK error details are no longer included in plugin diagnostic logs.
@@ -421,17 +422,27 @@ window.MapboxPlugin.addMarker({
   id: $parameters.Id,
   latitude: $parameters.Latitude,
   longitude: $parameters.Longitude,
-  isFind: $parameters.IsFind
+  isFind: $parameters.IsFind,
+  imageUrl: $parameters.ImageUrl, // optional
+  pinColor: $parameters.PinColor  // optional, e.g. "#16A34A"
 })
   .then($resolve)
   .catch($reject);
 ```
 
-`isFind` is optional and defaults to `false`. Markers with `isFind: true` render as a blue pin; every other marker (including ones flagged `isWaypoint`) renders as the default red pin.
+Every marker uses the same pin shape. These optional fields customize it:
+
+| Field | Default | Effect |
+|---|---|---|
+| `isFind` | `false` | Blue pin with a magnifying-glass icon. Otherwise a red pin (including markers flagged `isWaypoint`). |
+| `pinColor` | red, or blue when `isFind` | Pin color as `#RRGGBB` or `#RRGGBBAA`. Invalid values fall back to the default. |
+| `imageUrl` | none | Image drawn inside the pin head, center-cropped to a circle with a white ring. Replaces the `isFind` icon. |
+
+Images load in the background: the marker appears immediately as a plain pin and switches to the image once it arrives. Each distinct `imageUrl` is downloaded once and cached in memory, so many markers sharing one URL cost one request. If an image fails to load (network error, non-200 response, over 1 MiB, or not a decodable image), the marker keeps the plain pin. A disallowed `imageUrl` (see the security notes above) rejects `addMarker`, and rejects the whole `loadMarkers` call before any marker changes.
 
 ### Load Many Markers
 
-Each marker object may include `id`, `latitude`, `longitude`, and `isFind`:
+Each marker object may include `id`, `latitude`, `longitude`, `isFind`, `pinColor`, and `imageUrl`:
 
 ```javascript
 window.MapboxPlugin.loadMarkers($parameters.Markers, {

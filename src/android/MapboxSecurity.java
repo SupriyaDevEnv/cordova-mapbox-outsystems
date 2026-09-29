@@ -27,6 +27,37 @@ final class MapboxSecurity {
         return false;
     }
 
+    static final int MAX_MARKER_IMAGE_BYTES = 1024 * 1024;
+
+    // HTTPS URLs (optionally limited to a host list) or base64 image data URIs.
+    static boolean markerImageAllowed(String value, String hosts) {
+        if (value == null || value.isEmpty()) return false;
+        if (value.startsWith("data:")) {
+            int comma = value.indexOf(',');
+            if (comma < 0 || comma > 64 || value.length() - comma - 1 > MAX_MARKER_IMAGE_BYTES / 3 * 4 + 4
+                    || !value.substring(0, comma + 1).matches("data:image/(png|jpeg|jpg|webp|gif);base64,")) return false;
+            for (int i = comma + 1; i < value.length(); i++) {
+                char c = value.charAt(i);
+                if (!(Character.isLetterOrDigit(c) && c < 128) && c != '+' && c != '/' && c != '=') return false;
+            }
+            return comma + 1 < value.length();
+        }
+        if (value.length() > 4096) return false;
+        try {
+            URI uri = new URI(value);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                    || uri.getRawUserInfo() != null) return false;
+            boolean restricted = false;
+            for (String host : (hosts == null ? "" : hosts).split(",")) {
+                if (host.trim().isEmpty()) continue;
+                restricted = true;
+                if (uri.getHost().equalsIgnoreCase(host.trim())) return true;
+            }
+            return !restricted;
+        } catch (Exception ignored) { }
+        return false;
+    }
+
     static boolean validZoom(double zoom) {
         return Double.isFinite(zoom) && zoom >= 2 && zoom <= 18;
     }

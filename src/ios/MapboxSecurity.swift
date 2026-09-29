@@ -19,6 +19,36 @@ enum MapboxSecurity {
         }
     }
 
+    static let maxMarkerImageBytes = 1024 * 1024
+
+    /// HTTPS URLs (optionally limited to a host list) or base64 image data URIs.
+    static func markerImageAllowed(_ value: String, hosts: String) -> Bool {
+        if value.hasPrefix("data:") {
+            guard let comma = value.firstIndex(of: ","),
+                  value.utf8.distance(from: value.startIndex, to: comma) <= 64 else { return false }
+            let header = String(value[...comma])
+            let payload = value.utf8[value.utf8.index(after: comma)...]
+            guard header.range(of: "^data:image/(png|jpeg|jpg|webp|gif);base64,$", options: .regularExpression) != nil,
+                  !payload.isEmpty, payload.count <= maxMarkerImageBytes / 3 * 4 + 4 else { return false }
+            return payload.allSatisfy { byte in
+                switch byte {
+                case UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "A")...UInt8(ascii: "Z"),
+                     UInt8(ascii: "a")...UInt8(ascii: "z"), UInt8(ascii: "+"), UInt8(ascii: "/"), UInt8(ascii: "="):
+                    return true
+                default:
+                    return false
+                }
+            }
+        }
+        guard value.utf8.count <= 4096, let url = URLComponents(string: value),
+              url.scheme?.lowercased() == "https", let host = url.host, !host.isEmpty,
+              url.user == nil, url.password == nil else { return false }
+        let allowed = hosts.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        return allowed.isEmpty || allowed.contains(host.lowercased())
+    }
+
     static func zoom(_ value: Double) -> UInt8? {
         guard value.isFinite, value >= 2, value <= 18 else { return nil }
         return UInt8(value)

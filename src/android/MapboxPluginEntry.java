@@ -4,10 +4,7 @@ import android.Manifest;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.Path;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -95,6 +92,8 @@ import org.json.JSONObject;
 
 public class MapboxPluginEntry extends CordovaPlugin {
     private static final int MAX_MARKERS = 10000;
+    private static final String MARKER_IMAGE_NOT_ALLOWED =
+        "Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 1 MiB.";
     private static final int MAX_BOUNDARIES = 1000;
     private static final double MAX_OFFLINE_RADIUS_KM = 50.0;
     private static final double MIN_OFFLINE_ZOOM = 2.0;
@@ -186,6 +185,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private final Map<String, String> markerRecordIds = new HashMap<>();
     private final Map<String, PointAnnotation> markerAnnotationsByRecordId = new HashMap<>();
     private final Map<String, Point> markerPointsByRecordId = new HashMap<>();
+    private final Map<String, MarkerStyle> markerStylesByRecordId = new HashMap<>();
+    private final Map<String, List<String>> pendingMarkerImages = new HashMap<>();
+    private final MarkerIcons markerIcons = new MarkerIcons();
 
     private PolylineAnnotationManager lineAnnotationManager;
     private final List<PolylineAnnotation> pathAnnotations = new ArrayList<>();
@@ -2590,14 +2592,19 @@ private void startUserTracking(CallbackContext callback) {
             String id = options.optString("id", String.valueOf(System.currentTimeMillis()));
             double latitude = options.optDouble("latitude", 0.0);
             double longitude = options.optDouble("longitude", 0.0);
-            boolean isFind = options.optBoolean("isFind", false);
+            MarkerStyle style = markerStyleFromOptions(options);
 
             if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
                 callback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
                 return;
             }
 
-            if (!addMarkerInternal(id, latitude, longitude, isFind)) {
+            if (style == null) {
+                callback.error(MARKER_IMAGE_NOT_ALLOWED);
+                return;
+            }
+
+            if (!addMarkerInternal(id, latitude, longitude, style)) {
                 callback.error("Marker unavailable or marker/id limit exceeded.");
                 return;
             }
@@ -2633,6 +2640,7 @@ private void startUserTracking(CallbackContext callback) {
                 if (marker == null) continue;
                 String id = marker.optString("id", String.valueOf(i));
                 if (id.isEmpty() || id.length() > 256) { callback.error("Invalid marker id."); return; }
+                if (markerStyleFromOptions(marker) == null) { callback.error(MARKER_IMAGE_NOT_ALLOWED); return; }
                 ids.add(id);
             }
             if (markers.length() > MAX_MARKERS || ids.size() > MAX_MARKERS) {
@@ -2657,7 +2665,7 @@ private void startUserTracking(CallbackContext callback) {
                     marker.optString("id", String.valueOf(i)),
                     markerLat,
                     markerLng,
-                    marker.optBoolean("isFind", false)
+                    markerStyleFromOptions(marker)
                 );
             }
 
@@ -2670,36 +2678,14 @@ private boolean addMarkerInternal(
         double latitude,
         double longitude) {
 
-    return addMarkerInternal(
-        id,
-        latitude,
-        longitude,
-        false,
-        null
-    );
+    return addMarkerInternal(id, latitude, longitude, MarkerStyle.DEFAULT);
 }
 
 private boolean addMarkerInternal(
         String id,
         double latitude,
         double longitude,
-        boolean isFind) {
-
-    return addMarkerInternal(
-        id,
-        latitude,
-        longitude,
-        isFind,
-        null
-    );
-}
-
-private boolean addMarkerInternal(
-        String id,
-        double latitude,
-        double longitude,
-        boolean isFind,
-        Bitmap customBitmap) {
+        MarkerStyle style) {
 
     if (!ensurePointAnnotationManager()) {
         return false;
@@ -2715,11 +2701,7 @@ private boolean addMarkerInternal(
 
     PointAnnotationOptions markerOptions = new PointAnnotationOptions()
         .withPoint(Point.fromLngLat(longitude, latitude))
-        .withIconImage(
-            customBitmap != null
-                ? customBitmap
-                : (isFind ? createFindMarkerBitmap() : createWaypointMarkerBitmap())
-        )
+        .withIconImage(markerIcons.pin(style.color, style.isFind, style.imageUrl))
         .withIconAnchor(IconAnchor.BOTTOM)
         .withIconSize(1.0);
 
@@ -2732,9 +2714,86 @@ private boolean addMarkerInternal(
         id,
         Point.fromLngLat(longitude, latitude)
     );
+    markerStylesByRecordId.put(id, style);
+
+    if (style.imageUrl != null && !markerIcons.hasImage(style.imageUrl)) {
+        requestMarkerImage(id, style.imageUrl);
+    }
 
     return true;
 }
+
+    /** Returns null when the marker's imageUrl is not an allowed image source. */
+    private MarkerStyle markerStyleFromOptions(JSONObject options) {
+        boolean isFind = options.optBoolean("isFind", false);
+        int defaultColor = isFind ? MarkerIcons.FIND_PIN_COLOR : MarkerIcons.DEFAULT_PIN_COLOR;
+        int color = MarkerIcons.parseColor(options.optString("pinColor", null), defaultColor);
+        String imageUrl = options.optString("imageUrl", "").trim();
+        if (imageUrl.isEmpty()) {
+            return new MarkerStyle(color, isFind, null);
+        }
+        if (!MapboxSecurity.markerImageAllowed(imageUrl, allowedMarkerImageHosts())) {
+            return null;
+        }
+        return new MarkerStyle(color, isFind, imageUrl);
+    }
+
+    private String allowedMarkerImageHosts() {
+        return preferences.getString("MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS", "");
+    }
+
+    // Markers show a plain pin until their image arrives; one download serves every marker using it.
+    private void requestMarkerImage(String id, String imageUrl) {
+        List<String> waiting = pendingMarkerImages.get(imageUrl);
+        if (waiting != null) {
+            waiting.add(id);
+            return;
+        }
+
+        waiting = new ArrayList<>();
+        waiting.add(id);
+        pendingMarkerImages.put(imageUrl, waiting);
+
+        long generation = sessionGeneration;
+        markerIcons.load(imageUrl, allowedMarkerImageHosts(), image ->
+            runForGeneration(generation, () -> applyMarkerImage(imageUrl, image)));
+    }
+
+    private void applyMarkerImage(String imageUrl, Bitmap image) {
+        List<String> waiting = pendingMarkerImages.remove(imageUrl);
+        if (waiting == null || image == null || pointAnnotationManager == null) {
+            return;
+        }
+
+        List<PointAnnotation> changed = new ArrayList<>();
+        for (String id : waiting) {
+            PointAnnotation annotation = markerAnnotationsByRecordId.get(id);
+            MarkerStyle style = markerStylesByRecordId.get(id);
+            if (annotation == null || style == null || !imageUrl.equals(style.imageUrl)) {
+                continue;
+            }
+            annotation.setIconImageBitmap(markerIcons.pin(style.color, style.isFind, imageUrl, image));
+            changed.add(annotation);
+        }
+
+        if (!changed.isEmpty()) {
+            pointAnnotationManager.update(changed);
+        }
+    }
+
+    private static final class MarkerStyle {
+        static final MarkerStyle DEFAULT = new MarkerStyle(MarkerIcons.DEFAULT_PIN_COLOR, false, null);
+
+        final int color;
+        final boolean isFind;
+        final String imageUrl;
+
+        MarkerStyle(int color, boolean isFind, String imageUrl) {
+            this.color = color;
+            this.isFind = isFind;
+            this.imageUrl = imageUrl;
+        }
+    }
 
     private void removeMarker(JSONObject options, CallbackContext callback) {
     runForSession(() -> {
@@ -2754,6 +2813,7 @@ private boolean addMarkerInternal(
             markerRecordIds.remove(annotation.getId());
         }
         markerPointsByRecordId.remove(id);
+        markerStylesByRecordId.remove(id);
     }
 
     private void clearMarkers(CallbackContext callback) {
@@ -2774,6 +2834,7 @@ private boolean addMarkerInternal(
         markerRecordIds.clear();
         markerAnnotationsByRecordId.clear();
         markerPointsByRecordId.clear();
+        markerStylesByRecordId.clear();
     }
 
     private void loadBoundaries(JSONObject options, CallbackContext callback) {
@@ -3363,81 +3424,6 @@ private boolean addMarkerInternal(
         });
     }
 
-    private Bitmap createWaypointMarkerBitmap() {
-        return createMarkerBitmap(Color.rgb(220, 38, 38), false);
-    }
-
-    private Bitmap createFindMarkerBitmap() {
-        return createMarkerBitmap(Color.rgb(37, 99, 235), true);
-    }
-
-    private Bitmap createMarkerBitmap(int pinColor, boolean isFind) {
-        int width = 72;
-        int height = 96;
-        float centerX = width / 2.0f;
-        float circleRadius = 25.0f;
-        float circleCenterY = 32.0f;
-
-        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(bitmap);
-
-        Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        shadowPaint.setColor(Color.argb(65, 0, 0, 0));
-        canvas.drawOval(centerX - 16.0f, height - 16.0f, centerX + 16.0f, height - 8.0f, shadowPaint);
-
-        Path pinPath = new Path();
-        pinPath.addCircle(centerX, circleCenterY, circleRadius, Path.Direction.CW);
-        pinPath.moveTo(centerX - 14.0f, circleCenterY + 19.0f);
-        pinPath.quadTo(centerX - 5.0f, circleCenterY + 52.0f, centerX, height - 10.0f);
-        pinPath.quadTo(centerX + 5.0f, circleCenterY + 52.0f, centerX + 14.0f, circleCenterY + 19.0f);
-        pinPath.close();
-
-        Paint pinPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        pinPaint.setColor(pinColor);
-        canvas.drawPath(pinPath, pinPaint);
-
-        Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        strokePaint.setStyle(Paint.Style.STROKE);
-        strokePaint.setStrokeWidth(3.0f);
-        strokePaint.setColor(Color.WHITE);
-        canvas.drawPath(pinPath, strokePaint);
-
-        Paint centerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        centerPaint.setColor(Color.WHITE);
-        canvas.drawCircle(centerX, circleCenterY, 10.0f, centerPaint);
-
-        Paint innerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        innerPaint.setStyle(Paint.Style.STROKE);
-        innerPaint.setStrokeWidth(2.0f);
-        innerPaint.setColor(Color.argb(40, 0, 0, 0));
-        canvas.drawCircle(centerX, circleCenterY, 10.0f, innerPaint);
-
-        if (isFind) {
-            Paint findIconPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            findIconPaint.setColor(pinColor);
-            findIconPaint.setStyle(Paint.Style.STROKE);
-            findIconPaint.setStrokeWidth(2.5f);
-            findIconPaint.setStrokeCap(Paint.Cap.ROUND);
-
-            canvas.drawCircle(
-                centerX - 1.0f,
-                circleCenterY - 1.0f,
-                4.0f,
-                findIconPaint
-            );
-
-            canvas.drawLine(
-                centerX + 2.0f,
-                circleCenterY + 2.0f,
-                centerX + 7.0f,
-                circleCenterY + 7.0f,
-                findIconPaint
-            );
-        }
-
-        return bitmap;
-    }
-
     private void sendKeepCallback(CallbackContext callback, JSONObject payload) {
         if (callback == null) {
             return;
@@ -3708,6 +3694,8 @@ private boolean addMarkerInternal(
         markerRecordIds.clear();
         markerAnnotationsByRecordId.clear();
         markerPointsByRecordId.clear();
+        markerStylesByRecordId.clear();
+        pendingMarkerImages.clear();
         waypointSelectedCallback = null;
         markerClickCallback = null;
         offlineDownloadProgressCallback = null;
@@ -3928,6 +3916,7 @@ private boolean addMarkerInternal(
     @Override
     public void onDestroy() {
         closeInternal();
+        markerIcons.shutdown();
         super.onDestroy();
     }
 
