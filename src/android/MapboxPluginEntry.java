@@ -1651,6 +1651,10 @@ private void startUserTracking(CallbackContext callback) {
                         isRecenterAnimating = false;
                     }
                 }
+
+                @Override
+                public void onAnimationRepeat(Animator animation) {
+                }
             }
         );
     }
