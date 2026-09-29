@@ -152,7 +152,9 @@ final class MarkerIcons: NSObject, URLSessionDataDelegate {
     }
 
     private static func draw(pinColor: UIColor, isFind: Bool, image: UIImage?) -> UIImage {
-        UIGraphicsImageRenderer(size: size).image { context in
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
             let cg = context.cgContext
             let centerX = size.width / 2
 

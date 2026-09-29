@@ -63,6 +63,7 @@ test('iOS matches Android option coercion and idempotent path visibility', () =>
   assert.match(markers, /marker\["IsFind"\]/);
   assert.match(iosMarkerIcons, /cg\.setLineCap\(\.round\)/);
   assert.match(iosMarkerIcons, /cg\.strokeEllipse\(in:/);
+  assert.match(iosMarkerIcons, /format\.scale = 1/);
   assert.match(ios, /private func stringOption/);
 
   const visibility = ios.split('func setPathVisibility(command:')[1].split('@objc(downloadOfflineRegion:', 1)[0];
