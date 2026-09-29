@@ -1,6 +1,7 @@
 package com.outsystems.mapbox;
 
 import android.Manifest;
+import android.animation.Animator;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
@@ -110,6 +111,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
 
     private static final long CAMERA_FOLLOW_INTERVAL_MS = 250L;
     private static final long CAMERA_FOLLOW_DURATION_MS = 200L;
+    private static final long RECENTER_ANIMATION_DURATION_MS = 1500L;
 
     private static final int MOVEMENT_STATE_STATIONARY = 0;
     private static final int MOVEMENT_STATE_SLOW = 1;
@@ -236,6 +238,8 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private long lastLocationAccuracyUpdateMs = 0L;
     private static final long LOCATION_ACCURACY_CALLBACK_INTERVAL_MS = 500L;
     private boolean isCameraFollowingUser = true;
+    private boolean isRecenterAnimating = false;
+    private int recenterAnimationGeneration = 0;
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) {
@@ -1557,6 +1561,7 @@ private void startUserTracking(CallbackContext callback) {
                 if (mapView != null
                         && isUserTrackingEnabled
                         && isCameraFollowingUser
+                        && !isRecenterAnimating
                         && smoothedTrackingPoint != null) {
                     Point target = smoothedTrackingPoint;
                     boolean moved = lastCameraFollowTarget == null
@@ -1601,9 +1606,59 @@ private void startUserTracking(CallbackContext callback) {
         cameraFollowHandler.postDelayed(cameraFollowRunnable, 0L);
     }
 
+    /**
+     * Runs a recenter flight and holds the camera-follow ticker at bay until it
+     * settles. Mapbox cancels any in-flight high-level animation when a new one
+     * starts, so the ticker would otherwise interrupt the flight a quarter of
+     * the way in. A superseded flight fires onAnimationCancel on its own
+     * listener, so the generation check keeps that stale callback from
+     * releasing the guard while the newer flight is still running.
+     */
+    private void runRecenterAnimation(
+        CameraOptions cameraOptions,
+        MapAnimationOptions animationOptions
+    ) {
+        final int generation = ++recenterAnimationGeneration;
+        isRecenterAnimating = true;
+
+        CameraAnimationsPlugin cameraAnimations = mapView.getPlugin(
+            Plugin.MAPBOX_CAMERA_PLUGIN_ID
+        );
+        if (cameraAnimations == null) {
+            mapView.getMapboxMap().setCamera(cameraOptions);
+            isRecenterAnimating = false;
+            return;
+        }
+
+        cameraAnimations.flyTo(
+            cameraOptions,
+            animationOptions,
+            new Animator.AnimatorListener() {
+                @Override
+                public void onAnimationStart(Animator animation) {
+                }
+
+                @Override
+                public void onAnimationEnd(Animator animation) {
+                    if (generation == recenterAnimationGeneration) {
+                        isRecenterAnimating = false;
+                    }
+                }
+
+                @Override
+                public void onAnimationCancel(Animator animation) {
+                    if (generation == recenterAnimationGeneration) {
+                        isRecenterAnimating = false;
+                    }
+                }
+            }
+        );
+    }
+
     private void stopCameraFollow() {
         cameraFollowHandler.removeCallbacksAndMessages(null);
         lastCameraFollowTarget = null;
+        isRecenterAnimating = false;
     }
 
     private void moveToCurrentLocation(JSONObject options, CallbackContext callback) {
@@ -1705,19 +1760,16 @@ private void startUserTracking(CallbackContext callback) {
                         if (applyZoom) {
                             cameraBuilder.zoom(zoom);
                         }
-                        CameraAnimationsPlugin cameraAnimations =
-                            mapView.getPlugin(Plugin.MAPBOX_CAMERA_PLUGIN_ID);
-                        if (cameraAnimations != null) {
-                            cameraAnimations.easeTo(
-                                cameraBuilder.build(),
-                                new MapAnimationOptions.Builder()
-                                    .duration(700L)
-                                    .build(),
-                                null
-                            );
-                        } else {
-                            mapView.getMapboxMap().setCamera(cameraBuilder.build());
-                        }
+                        CameraOptions cameraOptions = cameraBuilder.build();
+                        runRecenterAnimation(
+                            cameraOptions,
+                            new MapAnimationOptions.Builder()
+                                .duration(RECENTER_ANIMATION_DURATION_MS)
+                                .build()
+                        );
+                        // Seed the follow target so the first tick after the
+                        // flight lands does not issue a redundant camera move.
+                        lastCameraFollowTarget = cameraOptions.center();
                     }
 
                     JSONObject result = new JSONObject();
