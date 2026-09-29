@@ -56,7 +56,12 @@ test('iOS matches Android option coercion and idempotent path visibility', () =>
   assert.match(pathStart, /boolOption\(options\["trackCamera"\], defaultValue: true\)/);
 
   const markers = ios.split('func loadMarkers(command:')[1].split('@objc(removeMarker:', 1)[0];
-  assert.match(markers, /marker\["id"\]\.flatMap\(self\.stringOption\)/);
+  assert.match(markers, /marker\["Id"\]\.flatMap\(self\.stringOption\)/);
+  assert.match(markers, /marker\["Latitude"\]/);
+  assert.match(markers, /marker\["Longitude"\]/);
+  assert.match(markers, /marker\["IsFind"\]/);
+  assert.match(ios, /cg\.setLineCap\(\.round\)/);
+  assert.match(ios, /cg\.strokeEllipse\(in:/);
   assert.match(ios, /private func stringOption/);
 
   const visibility = ios.split('func setPathVisibility(command:')[1].split('@objc(downloadOfflineRegion:', 1)[0];

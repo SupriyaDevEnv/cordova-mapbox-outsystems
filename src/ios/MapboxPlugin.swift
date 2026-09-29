@@ -672,7 +672,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let markers = options["markers"] as? [[String: Any]] ?? []
             var ids = replace ? Set<String>() : Set(self.markers.keys)
             for (index, marker) in markers.enumerated() {
-                let id = marker["id"].flatMap(self.stringOption) ?? String(index)
+                let id = marker["Id"].flatMap(self.stringOption) ?? String(index)
                 guard !id.isEmpty, id.utf8.count <= 256 else { self.sendError("Invalid marker id.", command); return }
                 ids.insert(id)
             }
@@ -681,13 +681,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
             if replace { self.clearMarkersInternal() }
             for (index, marker) in markers.enumerated() {
-                let id = marker["id"].flatMap(self.stringOption) ?? String(index)
-                let latitude = self.doubleOption(marker["latitude"], defaultValue: 0)
-                let longitude = self.doubleOption(marker["longitude"], defaultValue: 0)
+                let id = marker["Id"].flatMap(self.stringOption) ?? String(index)
+                let latitude = self.doubleOption(marker["Latitude"], defaultValue: 0)
+                let longitude = self.doubleOption(marker["Longitude"], defaultValue: 0)
                 guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
                     continue
                 }
-                let isFind = marker["isFind"] as? Bool ?? false
+                let isFind = marker["IsFind"] as? Bool ?? false
                 self.addMarkerInternal(id: id, latitude: latitude, longitude: longitude, isFind: isFind, publish: false)
             }
             self.annotations?.annotations = Array(self.markers.values)
@@ -1667,14 +1667,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func createWaypointMarkerImage() -> UIImage {
-        createMarkerImage(pinColor: UIColor(red: 220 / 255, green: 38 / 255, blue: 38 / 255, alpha: 1))
+        createMarkerImage(pinColor: UIColor(red: 220 / 255, green: 38 / 255, blue: 38 / 255, alpha: 1), isFind: false)
     }
 
     private func createFindMarkerImage() -> UIImage {
-        createMarkerImage(pinColor: UIColor(red: 37 / 255, green: 99 / 255, blue: 235 / 255, alpha: 1))
+        createMarkerImage(pinColor: UIColor(red: 37 / 255, green: 99 / 255, blue: 235 / 255, alpha: 1), isFind: true)
     }
 
-    private func createMarkerImage(pinColor: UIColor) -> UIImage {
+    private func createMarkerImage(pinColor: UIColor, isFind: Bool) -> UIImage {
         let size = CGSize(width: 72, height: 96)
         let renderer = UIGraphicsImageRenderer(size: size)
 
@@ -1723,6 +1723,16 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             )
             innerRing.lineWidth = 2
             innerRing.stroke()
+
+            if isFind {
+                cg.setStrokeColor(pinColor.cgColor)
+                cg.setLineWidth(2.5)
+                cg.setLineCap(.round)
+                cg.strokeEllipse(in: CGRect(x: centerX - 5, y: circleCenterY - 5, width: 8, height: 8))
+                cg.move(to: CGPoint(x: centerX + 2, y: circleCenterY + 2))
+                cg.addLine(to: CGPoint(x: centerX + 7, y: circleCenterY + 7))
+                cg.strokePath()
+            }
         }
     }
 
