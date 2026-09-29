@@ -415,7 +415,68 @@ window.MapboxPlugin.loadPath({
 
 ## Markers
 
-### Add One Marker
+Reference for the marker functions on `window.MapboxPlugin`: adding, bulk loading, customizing, removing, and listening for taps. Every function except `onMarkerClick` returns a Promise.
+
+| Function | Purpose |
+|---|---|
+| [`addMarker(options)`](#addmarkeroptions) | Add or replace one marker |
+| [`loadMarkers(markers, options)`](#loadmarkersmarkers-options) | Add many markers in one call |
+| [`removeMarker(id)`](#removemarkerid) | Remove one marker |
+| [`clearMarkers()`](#clearmarkers) | Remove all markers |
+| [`onMarkerClick(callback, errorCallback)`](#onmarkerclickcallback-errorcallback) | Receive marker tap events |
+
+The map must be initialized before adding markers.
+
+### Marker appearance
+
+Every marker is the same teardrop pin, anchored at its bottom tip. Three optional fields change how it looks:
+
+| Look | How to get it |
+|---|---|
+| Red pin with a white dot | Default |
+| Blue pin with a magnifying-glass icon | `isFind: true` |
+| Any pin color | `pinColor: "#16A34A"` |
+| Image inside the pin head | `imageUrl: "https://..."` |
+
+- `pinColor` overrides the default color, including the blue of `isFind` pins.
+- `imageUrl` replaces the white dot or the magnifying glass. The image is center-cropped to a circle and framed by a white ring.
+- The fields can be combined, for example a green pin with a photo inside.
+
+### addMarker(options)
+
+Adds one marker. If a marker with the same `id` already exists, it is replaced.
+
+#### Parameters
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `id` | string or number | No | Current time in milliseconds | Unique marker ID, up to 256 characters. Returned as a string. |
+| `latitude` | number | Yes | `0` | Between -90 and 90. |
+| `longitude` | number | Yes | `0` | Between -180 and 180. |
+| `isFind` | boolean | No | `false` | Blue pin with a magnifying-glass icon. |
+| `pinColor` | string | No | Red, or blue when `isFind` | `#RRGGBB` or `#RRGGBBAA` (alpha last). Invalid values fall back to the default. |
+| `imageUrl` | string | No | None | Image shown inside the pin. See [Image sources](#marker-image-sources). |
+
+`latitude` and `longitude` default to `0`, which is a valid coordinate in the Gulf of Guinea. Always pass them.
+
+#### Returns
+
+A Promise that resolves with `{ id: string }`.
+
+#### Errors
+
+The Promise rejects with one of these messages:
+
+| Message | Cause |
+|---|---|
+| `Map is not initialized.` | `initialize` has not completed, or the map was closed. |
+| `Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].` | Coordinates out of range. |
+| `Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 1 MiB.` | `imageUrl` is not an [allowed image source](#marker-image-sources). |
+| `Marker unavailable or marker/id limit exceeded.` (Android)<br>`Marker/id limit exceeded.` (iOS) | 10,000 markers already exist, or the `id` is empty or longer than 256 characters. |
+| `Invalid id: must be a string, number, or boolean.` / `Invalid id: must not be empty.` (iOS only) | Unusable `id`. |
+| `Map input exceeds the 4 MiB limit.` | The options, including any data URI, exceed 4 MiB. |
+
+#### Example
 
 ```javascript
 window.MapboxPlugin.addMarker({
@@ -423,42 +484,179 @@ window.MapboxPlugin.addMarker({
   latitude: $parameters.Latitude,
   longitude: $parameters.Longitude,
   isFind: $parameters.IsFind,
-  imageUrl: $parameters.ImageUrl, // optional
-  pinColor: $parameters.PinColor  // optional, e.g. "#16A34A"
+  pinColor: "#16A34A",
+  imageUrl: "https://cdn.example.com/avatars/42.png"
 })
-  .then($resolve)
+  .then(function (result) {
+    $parameters.MarkerId = result.id;
+    $resolve();
+  })
   .catch($reject);
 ```
 
-Every marker uses the same pin shape. These optional fields customize it:
+### loadMarkers(markers, options)
 
-| Field | Default | Effect |
-|---|---|---|
-| `isFind` | `false` | Blue pin with a magnifying-glass icon. Otherwise a red pin (including markers flagged `isWaypoint`). |
-| `pinColor` | red, or blue when `isFind` | Pin color as `#RRGGBB` or `#RRGGBBAA`. Invalid values fall back to the default. |
-| `imageUrl` | none | Image drawn inside the pin head, center-cropped to a circle with a white ring. Replaces the `isFind` icon. |
+Adds many markers in one native call. Use this instead of calling `addMarker` in a loop.
 
-Images load in the background: the marker appears immediately as a plain pin and switches to the image once it arrives. Each distinct `imageUrl` is downloaded once and cached in memory, so many markers sharing one URL cost one request. If an image fails to load (network error, non-200 response, over 1 MiB, or not a decodable image), the marker keeps the plain pin. A disallowed `imageUrl` (see the security notes above) rejects `addMarker`, and rejects the whole `loadMarkers` call before any marker changes.
+#### Parameters
 
-### Load Many Markers
+`markers` is an array of marker objects. Their keys are capitalized to match the OutSystems structure, unlike `addMarker`:
 
-Each marker object uses capitalized keys matching the OutSystems structure: `Id`, `Latitude`, `Longitude`, `IsFind`, `PinColor`, and `ImageUrl`. They behave like the `addMarker` fields above:
+| Key | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `Id` | string or number | No | The item's array index | Unique marker ID, up to 256 characters. |
+| `Latitude` | number | Yes | `0` | Between -90 and 90. |
+| `Longitude` | number | Yes | `0` | Between -180 and 180. |
+| `IsFind` | boolean | No | `false` | Same as `isFind` in `addMarker`. |
+| `PinColor` | string | No | Red, or blue when `IsFind` | Same as `pinColor` in `addMarker`. |
+| `ImageUrl` | string | No | None | Same as `imageUrl` in `addMarker`. |
+
+`options` is optional:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `replace` | boolean | `true` | `true` removes all existing markers first. `false` keeps them and adds or replaces by `Id`. |
+
+#### Returns
+
+A Promise that resolves with no value.
+
+#### Validation and errors
+
+Every marker is validated before any marker is changed. The whole call is rejected, and existing markers are untouched, when:
+
+| Message | Cause |
+|---|---|
+| `Too many markers: maximum allowed is 10000.` | More than 10,000 items in the array. Checked in JavaScript. |
+| `Too many markers: maximum total is 10000.` | Existing plus new markers would exceed 10,000 when `replace` is `false`. |
+| `Invalid marker id.` | An `Id` is empty or longer than 256 characters. |
+| `Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 1 MiB.` | An `ImageUrl` is not an [allowed image source](#marker-image-sources). |
+| `Map is not initialized.` | The map is not ready. |
+| `Map input exceeds the 4 MiB limit.` | The call's JSON exceeds 4 MiB. Many data URIs add up quickly; prefer HTTPS URLs for bulk loads. |
+
+Items with invalid coordinates do not reject the call. They are skipped silently.
+
+#### Example
 
 ```javascript
-window.MapboxPlugin.loadMarkers($parameters.Markers, {
-  replace: true
-})
+// $parameters.Markers: List of { Id, Latitude, Longitude, IsFind, PinColor, ImageUrl }
+window.MapboxPlugin.loadMarkers($parameters.Markers, { replace: true })
   .then($resolve)
   .catch($reject);
 ```
 
-### Marker Click Callback
+### removeMarker(id)
+
+Removes one marker. Resolves with no value, whether or not the marker existed.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `id` | string | The marker's ID. |
+
+Pass the ID as a string. iOS ignores numeric IDs here, so `removeMarker(42)` silently does nothing on iOS. Use `removeMarker("42")` instead.
+
+```javascript
+window.MapboxPlugin.removeMarker(String($parameters.Id)).then($resolve).catch($reject);
+```
+
+### clearMarkers()
+
+Removes every marker. Resolves with no value.
+
+```javascript
+window.MapboxPlugin.clearMarkers().then($resolve).catch($reject);
+```
+
+### onMarkerClick(callback, errorCallback)
+
+Registers one listener for marker taps. Registering again replaces the previous listener. It does not return a Promise.
+
+The callback receives:
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | string | Always `"markerClicked"`. |
+| `id` | string | ID of the tapped marker. |
+| `latitude` | number | The marker's latitude. |
+| `longitude` | number | The marker's longitude. |
 
 ```javascript
 window.MapboxPlugin.onMarkerClick(function (event) {
-  console.log("Marker clicked", event.id, event.latitude, event.longitude);
+  $actions.OnMarkerSelected(event.id);
 });
 ```
+
+- Events are rate-limited to one every 100 ms.
+- On Android, tapping the map within 150 m of a marker also reports the nearest marker. On iOS, only a tap on the pin itself counts.
+
+### Marker image loading
+
+1. The marker appears immediately as a plain pin in its color.
+2. The image downloads in the background.
+3. When the download finishes, the pin switches to show the image.
+
+- **One download per URL.** Markers sharing an `imageUrl` share one download, even if they are added while it is still in progress.
+- **Cached in memory.** Up to 64 recent images are kept, so re-adding markers with the same image is instant. The cache is not saved to disk and is cleared when the app restarts.
+- **Failures keep the plain pin.** This covers network errors, timeouts (10 seconds), non-200 responses, files over 1 MiB, and data that is not an image. Nothing is reported to JavaScript. The download is retried the next time a marker uses that URL.
+- **Images are scaled down** to at most 128 pixels on the long side before drawing. Animated GIFs show their first frame.
+- **Replaced or removed markers are safe.** If a marker is removed or given a different image before its download finishes, the late download does not affect it. Downloads that finish after the map is closed are ignored.
+
+### Marker image sources
+
+`imageUrl` (`ImageUrl` in `loadMarkers`) accepts two forms:
+
+| Form | Example | Rules |
+|---|---|---|
+| HTTPS URL | `https://cdn.example.com/a.png` | HTTPS only, no user name or password in the URL. Must pass the host allowlist, if one is configured, including every redirect. |
+| Base64 data URI | `data:image/png;base64,iVBORw0...` | Type `png`, `jpeg`, `jpg`, `webp`, or `gif`. Base64 only, up to 1 MiB of image data. Useful for OutSystems binary data, for example `"data:image/png;base64," + BinaryToBase64(Image)`. |
+
+Rejected examples: `http://...`, `file:///...`, `https://user:pass@host/...`, `data:text/html;base64,...`, `data:image/png,<raw data>`.
+
+#### Restricting image hosts
+
+By default, any HTTPS host is allowed. To allow only specific hosts, set the `MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS` plugin variable to a comma-separated list in OutSystems Extensibility Configuration, next to the access token, then rebuild the app:
+
+```json
+{
+  "plugin": {
+    "url": "https://github.com/devnandagopaljb/cordova-mapbox-outsystems.git",
+    "variables": [
+      { "name": "MAPBOX_ACCESS_TOKEN", "value": "pk.your_public_runtime_token_here" },
+      { "name": "MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS", "value": "cdn.example.com,images.example.com" }
+    ]
+  }
+}
+```
+
+- Host names must match exactly (case-insensitive). Subdomains are not included automatically.
+- Downloads that redirect to an unlisted host fail, and the marker keeps its plain pin.
+- The allowlist does not affect data URIs.
+
+### Marker limits
+
+| Limit | Value |
+|---|---|
+| Markers on the map | 10,000 |
+| Marker ID length | 256 characters |
+| Items per `loadMarkers` call | 10,000 |
+| Size of one call | 4 MiB of JSON |
+| Image data | 1 MiB per image |
+| Image download timeout | 10 seconds |
+| Tap events | One per 100 ms |
+
+### Marker platform differences
+
+- **Pin size.** The pin is drawn 72 × 96 on both platforms, but Android uses physical pixels and iOS uses points. On a typical 3× Android phone the pin appears about one third the size of the iOS pin, so images inside it are smaller too.
+- **Tap area.** Android also reports taps on the map within 150 m of a marker. iOS reports only taps on the pin.
+- **Numeric IDs in `removeMarker`.** Android accepts them; iOS ignores them. Pass strings.
+- **Non-object items in `loadMarkers`.** Android skips `null` items. On iOS, one non-object item makes the whole array read as empty, so with `replace: true` all markers are cleared.
+
+### Marker changes from earlier versions
+
+- **Breaking:** `loadMarkers` item keys are capitalized: `Id`, `Latitude`, `Longitude`, `IsFind`. Items using `id`, `latitude`, `longitude`, or `isFind` are no longer read. Every such item falls back to an index ID and coordinates `0, 0`. `addMarker` still uses lowercase keys.
+- **New:** `pinColor` / `PinColor` and `imageUrl` / `ImageUrl`.
+- **New:** `isFind` pins show a magnifying-glass icon on both platforms.
+- **New:** the `MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS` preference.
 
 ## Touch Routing
 
