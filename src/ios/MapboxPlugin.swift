@@ -1595,6 +1595,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         )
         marker.image = markerIcons.pin(color: style.color, isFind: style.isFind, source: style.imageUrl)
         marker.iconAnchor = .bottom
+        marker.iconSize = 1.0
         marker.tapHandler = { [weak self, id] context in
             guard let self = self else { return true }
             let now = ProcessInfo.processInfo.systemUptime

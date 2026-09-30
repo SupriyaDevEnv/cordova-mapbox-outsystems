@@ -95,6 +95,8 @@ test('markers accept imageUrl and pinColor on both platforms and reject disallow
   assert.match(iosAdd, /options\["pinColor"\]/);
   assert.match(iosLoad, /marker\["ImageUrl"\]/);
   assert.match(iosLoad, /marker\["PinColor"\]/);
+  assert.match(ios, /marker\.iconSize = 1\.0/);
+  assert.match(android, /\.withIconSize\(1\.0\)/);
   assert.match(ios, /MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS/);
 });
 
