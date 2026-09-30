@@ -148,8 +148,23 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             if behindWebView, let superview = self.webView.superview {
                 self.makeWebViewTransparent()
+
+                // frameFromOptions() returns coordinates relative to the WebView.
+                // Convert them to the WebView's superview coordinate system
+                // before adding the native Mapbox view.
+                let mapFrameInWebView = self.frameFromOptions(options)
+
+                let mapFrameInSuperview =
+                    self.webView.convert(mapFrameInWebView, to: superview)
+
+                mapView.frame = mapFrameInSuperview
+
                 superview.insertSubview(mapView, belowSubview: self.webView)
-                self.installMapTouchOverlay(in: superview, frame: mapView.frame)
+
+                self.installMapTouchOverlay(
+                    in: superview,
+                    frame: mapFrameInSuperview
+                )
             } else {
                 self.webView.superview?.addSubview(mapView)
             }
@@ -276,8 +291,23 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            mapView.frame = self.frameFromOptions(options)
-            self.mapTouchOverlay?.frame = mapView.frame
+            let newFrame = self.frameFromOptions(options)
+
+            if let superview = mapView.superview,
+               self.webView.superview === superview {
+
+                let convertedFrame =
+                    self.webView.convert(newFrame, to: superview)
+
+                mapView.frame = convertedFrame
+                self.mapTouchOverlay?.frame = convertedFrame
+
+            } else {
+
+                mapView.frame = newFrame
+                self.mapTouchOverlay?.frame = newFrame
+            }
+
             self.sendSuccess(command)
         }
     }
