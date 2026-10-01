@@ -4,6 +4,18 @@ var SERVICE = 'MapboxPlugin';
 var touchRegions = null;
 var touchGeneration = 0;
 
+function validateCameraZoomBounds(options) {
+  ['minZoom', 'maxZoom'].forEach(function (key) {
+    var value = options[key];
+    if (value != null && (typeof value !== 'number' || !isFinite(value) || value < 0 || value > 25.5)) {
+      throw new Error(key + ' must be a finite number between 0 and 25.5.');
+    }
+  });
+  if (options.minZoom != null && options.maxZoom != null && options.minZoom > options.maxZoom) {
+    throw new Error('minZoom must be less than or equal to maxZoom.');
+  }
+}
+
 function stopTouchRegions() {
   touchGeneration++;
   if (touchRegions) touchRegions.stop();
@@ -58,6 +70,12 @@ var api = {
 
   initialize: function (options) {
     options = options || {};
+    // Validate before serialization (which turns NaN/Infinity into null) or changing touch routing.
+    try {
+      validateCameraZoomBounds(options);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     delete options.token;
     stopTouchRegions();
     var generation = touchGeneration;

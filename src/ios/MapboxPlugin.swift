@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import Security
 import CoreLocation
 import UIKit
@@ -87,6 +88,19 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         ], command)
     }
 
+    private func optionalCameraZoom(_ options: [String: Any], _ key: String) throws -> CGFloat? {
+        guard let value = options[key], !(value is NSNull) else { return nil }
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite,
+              (0...25.5).contains(number.doubleValue) else {
+            throw NSError(domain: "MapboxPlugin", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "\(key) must be a finite number between 0 and 25.5."
+            ])
+        }
+        return CGFloat(number.doubleValue)
+    }
+
     @objc(initialize:)
     func initialize(command: CDVInvokedUrlCommand) {
         runForSession {
@@ -96,6 +110,19 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             guard self.validInput(options, command) else { return }
+            let minZoom: CGFloat?
+            let maxZoom: CGFloat?
+            do {
+                minZoom = try self.optionalCameraZoom(options, "minZoom")
+                maxZoom = try self.optionalCameraZoom(options, "maxZoom")
+            } catch {
+                self.sendError(error.localizedDescription, command)
+                return
+            }
+            if let minZoom = minZoom, let maxZoom = maxZoom, minZoom > maxZoom {
+                self.sendError("minZoom must be less than or equal to maxZoom.", command)
+                return
+            }
             let token = self.getAccessToken()
 
             guard !token.isEmpty else {
@@ -140,6 +167,19 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 frame: isInline ? self.frameFromOptions(options) : self.webView.bounds,
                 mapInitOptions: initOptions
             )
+
+            if minZoom != nil || maxZoom != nil {
+                do {
+                    try mapView.mapboxMap.setCameraBounds(with: CameraBoundsOptions(
+                        maxZoom: maxZoom, minZoom: minZoom
+                    ))
+                    // Reapply after bounds: MapInitOptions may have clamped zoom to SDK defaults.
+                    mapView.mapboxMap.setCamera(to: camera)
+                } catch {
+                    self.sendError("Camera zoom bounds conflict with the map's default bounds.", command)
+                    return
+                }
+            }
 
             mapView.ornaments.options.compass.visibility = .hidden
             mapView.ornaments.options.scaleBar.visibility = .hidden

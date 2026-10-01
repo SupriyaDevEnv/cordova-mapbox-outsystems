@@ -50,6 +50,7 @@ import com.mapbox.geojson.LineString;
 import com.mapbox.geojson.Point;
 import com.mapbox.geojson.Polygon;
 import com.mapbox.maps.CameraOptions;
+import com.mapbox.maps.CameraBoundsOptions;
 import com.mapbox.maps.GlyphsRasterizationMode;
 import com.mapbox.maps.MapView;
 import com.mapbox.maps.MapboxMap;
@@ -417,8 +418,33 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
         }
     }
 
+    private static Double optionalCameraZoom(JSONObject options, String key) {
+        if (options.isNull(key)) return null;
+        Object value = options.opt(key);
+        if (!(value instanceof Number)) {
+            throw new IllegalArgumentException(key + " must be a finite number between 0 and 25.5.");
+        }
+        double zoom = ((Number) value).doubleValue();
+        if (Double.isNaN(zoom) || Double.isInfinite(zoom) || zoom < 0 || zoom > 25.5) {
+            throw new IllegalArgumentException(key + " must be a finite number between 0 and 25.5.");
+        }
+        return zoom;
+    }
+
     private void initialize(JSONObject options, CallbackContext callback) {
         runForSession(() -> {
+            final Double minZoom;
+            final Double maxZoom;
+            try {
+                minZoom = optionalCameraZoom(options, "minZoom");
+                maxZoom = optionalCameraZoom(options, "maxZoom");
+                if (minZoom != null && maxZoom != null && minZoom > maxZoom) {
+                    throw new IllegalArgumentException("minZoom must be less than or equal to maxZoom.");
+                }
+            } catch (IllegalArgumentException error) {
+                callback.error(error.getMessage());
+                return;
+            }
             try {
                 String token = getAccessToken();
                 if (token.isEmpty()) {
@@ -453,6 +479,17 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
                 rootView.setLayoutParams(layoutParamsFromOptions(options));
 
                 mapView = new MapView(cordova.getActivity());
+
+                if (minZoom != null || maxZoom != null) {
+                    CameraBoundsOptions.Builder bounds = new CameraBoundsOptions.Builder();
+                    if (minZoom != null) bounds.minZoom(minZoom);
+                    if (maxZoom != null) bounds.maxZoom(maxZoom);
+                    if (mapView.getMapboxMap().setBounds(bounds.build()).isError()) {
+                        closeInternal();
+                        callback.error("Camera zoom bounds conflict with the map's default bounds.");
+                        return;
+                    }
+                }
 
                 CompassPlugin compassPlugin =
                     mapView.getPlugin(Plugin.MAPBOX_COMPASS_PLUGIN_ID);
