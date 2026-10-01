@@ -98,6 +98,34 @@ window.MapboxPlugin.close()
 
 `setCamera` and `flyTo` support partial camera updates: omitted latitude, longitude, zoom, bearing, or pitch values preserve the current camera value on both platforms. `initialize` applies its optional bearing and pitch on both platforms.
 
+`initialize` also accepts optional `minZoom` and `maxZoom` camera limits on Android and iOS:
+
+```javascript
+window.MapboxPlugin.initialize({
+  latitude: 12.97,
+  longitude: 77.59,
+  zoom: 18,
+  minZoom: 18,
+  maxZoom: 22,
+  inline: true
+});
+```
+
+Each bound must be a finite JavaScript number in `[0, 25.5]` (decimals are allowed).
+Strings, booleans, `NaN`, infinities, and out-of-range values reject the returned Promise.
+When both bounds are provided, `minZoom` must be less than or equal to `maxZoom`;
+equal values lock the camera zoom. Native entry points enforce the same validation.
+Either bound may be supplied alone. `null`, `undefined`, or an omitted bound leaves
+that bound at the SDK's previous/default behavior; no replacement default is injected.
+If a supplied bound conflicts with the untouched SDK default, initialization rejects
+instead of changing the omitted bound. Supply both bounds to request a range beyond
+the defaults. Reinitializing without bounds restores the original SDK behavior.
+
+These limits constrain the initial camera, zoom gestures, and later camera updates
+(including `setCamera` and `flyTo`); the SDK clamps the requested camera zoom to its
+bounds. They do not change offline downloads: download `minZoom`/`maxZoom` still use
+the separate 2–18 range and existing defaults of 10/16.
+
 Map viewport, resize, touch-region, and offline-selection rectangles use WebView-local native pixels on both platforms. Convert CSS viewport coordinates by multiplying them by `window.devicePixelRatio`; iOS converts those values to UIKit points internally without guessing from the rectangle size.
 
 `trackCamera` accepts either a boolean or the strings `"true"`/`"false"` on both platforms. Marker IDs may be strings or JSON numbers and are returned as strings. `setPathVisibility` is idempotent when no path has been loaded.

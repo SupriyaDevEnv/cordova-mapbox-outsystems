@@ -19,6 +19,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - run: npm test
+      - name: Validate optional initialization zoom bounds on both platforms
+        run: python3 tests/test-initialize-zoom.py
       - name: Validate production ZIP and npm package
         run: python3 tests/check-package.py
       - name: Compile and run Android input policy
