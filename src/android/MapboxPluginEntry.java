@@ -2584,23 +2584,26 @@ private void startUserTracking(CallbackContext callback) {
 
         pointAnnotationManager = PointAnnotationManagerKt.createPointAnnotationManager(annotationPlugin, null);
         pointAnnotationManager.addClickListener(annotation -> {
-            String recordId = markerRecordIds.get(annotation.getId());
-            if (recordId == null) {
-                recordId = "";
+            String markerId = markerRecordIds.get(annotation.getId());
+            if (markerId == null || markerClickCallback == null) {
+                return true;
             }
 
             try {
+                MarkerStyle style = markerStylesByRecordId.get(markerId);
+                String type = (style != null && style.isFind) ? "Find" : "Waypoint";
+
                 JSONObject payload = new JSONObject();
-                payload.put("type", "markerClicked");
-                payload.put("id", recordId);
-                payload.put("latitude", annotation.getPoint().latitude());
-                payload.put("longitude", annotation.getPoint().longitude());
+                payload.put("id", markerId);
+                payload.put("type", type);
+
                 long now = System.currentTimeMillis();
                 if (now - lastKeepCallbackMarkerMs >= CALLBACK_RATE_LIMIT_MS) {
                     lastKeepCallbackMarkerMs = now;
                     sendKeepCallback(markerClickCallback, payload);
                 }
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                Log.e("MapboxPlugin", "Failed to handle marker click", e);
             }
 
             return true;
@@ -2659,11 +2662,12 @@ private void startUserTracking(CallbackContext callback) {
         }
 
         try {
+            MarkerStyle style = markerStylesByRecordId.get(nearestId);
+            String type = (style != null && style.isFind) ? "Find" : "Waypoint";
+
             JSONObject payload = new JSONObject();
-            payload.put("type", "markerClicked");
             payload.put("id", nearestId);
-            payload.put("latitude", nearestPoint.latitude());
-            payload.put("longitude", nearestPoint.longitude());
+            payload.put("type", type);
             long now = System.currentTimeMillis();
             if (now - lastKeepCallbackMarkerMs >= CALLBACK_RATE_LIMIT_MS) {
                 lastKeepCallbackMarkerMs = now;
