@@ -2805,7 +2805,7 @@ private boolean addMarkerInternal(
         .withPoint(Point.fromLngLat(longitude, latitude))
         .withIconImage(markerIcons.pin(style.color, style.isFind, style.imageUrl))
         .withIconAnchor(IconAnchor.BOTTOM)
-        .withIconSize(1.0);
+        .withIconSize(0.5);
 
     PointAnnotation annotation =
         pointAnnotationManager.create(markerOptions);

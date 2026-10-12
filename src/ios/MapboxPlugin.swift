@@ -1631,7 +1631,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         )
         marker.image = markerIcons.pin(color: style.color, isFind: style.isFind, source: style.imageUrl)
         marker.iconAnchor = .bottom
-        marker.iconSize = 1.0
+        marker.iconSize = 0.5
         marker.tapHandler = { [weak self, id] context in
             guard let self = self else { return true }
             let now = ProcessInfo.processInfo.systemUptime
@@ -2076,14 +2076,20 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     @objc private func handleMapOverlayTap(_ recognizer: UITapGestureRecognizer) {
-        guard let mapView = mapView, let overlay = mapTouchOverlay else {
+        guard recognizer.state == .ended,
+              let mapView = mapView,
+              let overlay = mapTouchOverlay else {
             return
         }
 
-        let point = recognizer.location(in: overlay)
-        let coordinate = mapView.mapboxMap.coordinate(for: point)
+        let overlayPoint = recognizer.location(in: overlay)
+        let tapPoint = overlay.convert(overlayPoint, to: mapView)
 
-        if sendMarkerClickIfNear(coordinate) {
+        if let markerId = hitMarkerAtScreenPoint(tapPoint, mapView: mapView) {
+            sendKeepCallback(markerClickCallbackId, payload: [
+                "type": markerType(for: markerId),
+                "id": markerId
+            ])
             return
         }
 
@@ -2091,21 +2097,53 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             return
         }
 
+        let coordinate = mapView.mapboxMap.coordinate(for: tapPoint)
         var id = ""
+
         if autoAddWaypointMarker {
             id = String(Int(Date().timeIntervalSince1970 * 1000))
-            addMarkerInternal(id: id, latitude: coordinate.latitude, longitude: coordinate.longitude)
+            addMarkerInternal(
+                id: id,
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            )
         }
 
         let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastKeepCallbackWaypointTs >= callbackRateLimit else { return }
+        guard now - lastKeepCallbackWaypointTs >= callbackRateLimit else {
+            return
+        }
+
         lastKeepCallbackWaypointTs = now
+
         sendKeepCallback(waypointSelectedCallbackId, payload: [
             "type": "waypointSelected",
             "id": id,
             "latitude": coordinate.latitude,
             "longitude": coordinate.longitude
         ])
+    }
+
+    private func hitMarkerAtScreenPoint(_ tapPoint: CGPoint, mapView: MapView) -> String? {
+        let markerWidth: CGFloat = 44
+        let markerHeight: CGFloat = 48
+
+        for (id, marker) in markers {
+            let coordinate = marker.point.coordinates
+            let markerPoint = mapView.mapboxMap.point(for: coordinate)
+            let markerRect = CGRect(
+                x: markerPoint.x - markerWidth / 2,
+                y: markerPoint.y - markerHeight,
+                width: markerWidth,
+                height: markerHeight
+            )
+
+            if markerRect.contains(tapPoint) {
+                return id
+            }
+        }
+
+        return nil
     }
 
     private func doubleOption(_ value: Any?, defaultValue: Double) -> Double {
