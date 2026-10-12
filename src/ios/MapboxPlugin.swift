@@ -1593,10 +1593,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
-            if self.sendMarkerClickIfNear(context.coordinate) {
-                return
-            }
-
             guard self.waypointSelectionEnabled else {
                 return
             }
@@ -1642,10 +1638,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             guard now - self.lastKeepCallbackMarkerTs >= self.callbackRateLimit else { return true }
             self.lastKeepCallbackMarkerTs = now
             self.sendKeepCallback(self.markerClickCallbackId, payload: [
-                "type": "markerClicked",
-                "id": id,
-                "latitude": context.coordinate.latitude,
-                "longitude": context.coordinate.longitude
+                "type": self.markerType(for: id),
+                "id": id
             ])
             return true
         }
@@ -1790,12 +1784,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         guard now - lastKeepCallbackMarkerTs >= callbackRateLimit else { return true }
         lastKeepCallbackMarkerTs = now
         sendKeepCallback(markerClickCallbackId, payload: [
-            "type": "markerClicked",
-            "id": nearestId,
-            "latitude": marker.point.coordinates.latitude,
-            "longitude": marker.point.coordinates.longitude
+            "type": markerType(for: nearestId),
+            "id": nearestId
         ])
         return true
+    }
+
+    private func markerType(for id: String) -> String {
+        let isFind = markerStyles[id]?.isFind ?? false
+        return isFind ? "Find" : "Waypoint"
     }
 
     @objc(getCamera:)

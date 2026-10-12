@@ -2506,11 +2506,6 @@ private void startUserTracking(CallbackContext callback) {
             return true;
         }
 
-        if (sendMarkerClickIfNear(point)) {
-            lastMapSelectionCallbackMs = now;
-            return true;
-        }
-
         if (!waypointSelectionEnabled) {
             return false;
         }
