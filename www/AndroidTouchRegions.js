@@ -137,6 +137,7 @@ module.exports = function start(win, send) {
   win.addEventListener('pagehide', stop);
 
   function stop() {
+    if (stopped) return;
     stopped = true;
     observer.disconnect();
     if (resizeObserver) resizeObserver.disconnect();
@@ -146,6 +147,10 @@ module.exports = function start(win, send) {
     win.removeEventListener('resize', schedule);
     win.removeEventListener('scroll', schedule, true);
     win.removeEventListener('pagehide', stop);
+    observed = [];
+    lastRects = null;
+    dirty = false;
+    frame = retry = null;
   }
 
   return { stop: stop, ready: update() };

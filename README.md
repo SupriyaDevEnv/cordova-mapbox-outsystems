@@ -1,12 +1,22 @@
 # OutSystems Mapbox Native Plugin
 
+## Close cleanup build: 1.0.4-close-cleanup.1
+
+This cleanup release is based on commit `b7ed11a314f4c4085faba61667d8861766f7b882`.
+
+`MapboxPlugin.close()` stops the owned DOM observer/animation/retry bridge, releases native Cordova callback registrations, cancels pending operations and downloads, stops GPS/tracking/heading/compass work, and removes native touch routing. Android uses a removable routing container without replacing the WebView's touch listener. iOS removes only the plugin-owned overlay recognizers and gesture targets. Previous WebView appearance is restored when still owned by this plugin.
+
+Await `MapboxPlugin.close()` before initializing the next map. Pending Promise operations reject with a cancellation error when the map closes; handle these rejections in your screen actions. Re-register event callbacks after a successful new `initialize()`. Repeated close calls are supported. Native Close buttons also notify JavaScript to stop its bridge. Completed offline regions remain stored; close cancels active transfers and clears the in-memory map session, not downloaded offline data. Retrieve a recorded path before close if it must be saved.
+
+The package has passed JavaScript regression checks and Java/Swift syntax parsing. It has **not** been compiled with the consuming OutSystems application's native dependencies or tested on devices. Perform Android/iOS builds and the supplied device checks before production deployment.
+
 ## Security behavior in 1.0.3
 
 - Closing the map (including the native Close button) or resetting the WebView stops location/heading services, cancels downloads and pending permission actions, and clears map-session data and callbacks. Re-register callbacks after initializing a new map session.
 - `MAPBOX_ACCESS_TOKEN` must be a public `pk.*` token. Both platform builds reject configured secret tokens. Initialization always reads the current configuration and removes legacy cached values, so token rotation works after app upgrades. Unconfigured build templates may still be prepared, but cannot initialize the map.
 - Style URLs must be `mapbox://styles/<owner>/<style>` or HTTPS on an explicitly approved host. `MAPBOX_ALLOWED_STYLE_HOSTS` is a comma-separated build preference, defaulting to `api.mapbox.com`. Configure additional trusted style hosts through OutSystems Extensibility Configuration. Credentials in URLs, non-443 ports, fragments, HTTP and local-file URLs are rejected. Only allow hosts serving trusted styles: this entry-point policy does not inspect redirects or every resource referenced by a style.
 - Marker `imageUrl` values must be HTTPS URLs or base64 `data:image/(png|jpeg|webp|gif)` URIs, up to 1 MiB of image data. `MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS` is an optional comma-separated build preference; when set, only those hosts (including redirect targets) are allowed. When empty (the default), any HTTPS host is allowed.
-- Native inputs are limited to approximately 4 MiB; at most 10,000 markers may exist at once, with marker IDs limited to 256 characters/bytes. Boundary batches allow 1,000 boundaries and 20,000 total vertices. Imported paths allow 2–20,000 points. Tracking stops location updates at the recording limit; call `stopPathTracking()` to retrieve the retained points. Stopping an empty recording returns an empty path with zero distance.
+- Native inputs are limited to approximately 4 MiB; at most 10,000 markers may exist at once, with marker IDs limited to 256 characters/bytes. Boundary batches allow 1,000 boundaries and 20,000 total vertices. Imported paths allow 2â€“20,000 points. Tracking stops location updates at the recording limit; call `stopPathTracking()` to retrieve the retained points. Stopping an empty recording returns an empty path with zero distance.
 - Offline zooms must be between 2 and 18, with `minZoom <= maxZoom`; invalid values are rejected. Both circle and rectangle downloads are checked against a conservative bounding-box diagonal of 100 km and an estimated 50,000-tile budget (including lower zooms). This can reject large/high-zoom requests that older releases accepted. Polar and antimeridian-crossing bounds are rejected. The budget is an estimate, not a byte quota; Mapbox's tile-store constraints still apply. The consuming app should manage retained offline regions and its storage budget.
 - Style URLs and underlying SDK error details are no longer included in plugin diagnostic logs.
 
@@ -124,7 +134,7 @@ the defaults. Reinitializing without bounds restores the original SDK behavior.
 These limits constrain the initial camera, zoom gestures, and later camera updates
 (including `setCamera` and `flyTo`); the SDK clamps the requested camera zoom to its
 bounds. They do not change offline downloads: download `minZoom`/`maxZoom` still use
-the separate 2–18 range and existing defaults of 10/16.
+the separate 2â€“18 range and existing defaults of 10/16.
 
 Map viewport, resize, touch-region, and offline-selection rectangles use WebView-local native pixels on both platforms. Convert CSS viewport coordinates by multiplying them by `window.devicePixelRatio`; iOS converts those values to UIKit points internally without guessing from the rectangle size.
 
@@ -292,7 +302,7 @@ window.MapboxPlugin.startPathTracking({
   lineColor: "#FF0000",    // optional, default "#FF0000"
   lineWidth: 3.0,          // optional, default 3.0
   lineOpacity: 0.8,        // optional, default 1.0
-  trackCamera: "true"      // optional, default "true" — also enable camera following
+  trackCamera: "true"      // optional, default "true" â€” also enable camera following
 })
   .then($resolve)
   .catch($reject);
@@ -344,12 +354,12 @@ window.MapboxPlugin.continuePathTracking()
 
 **Pause/Continue Flow:**
 ```
-Start → line segment A drawn
-  Pause → line stops, no GPS collected
-  Continue → new line segment B starts from current position
-  Pause → line stops again
-  Continue → new line segment C starts
-Stop → returns all points + segment boundaries
+Start â†’ line segment A drawn
+  Pause â†’ line stops, no GPS collected
+  Continue â†’ new line segment B starts from current position
+  Pause â†’ line stops again
+  Continue â†’ new line segment C starts
+Stop â†’ returns all points + segment boundaries
 ```
 
 The `segments` array in the stop result tells you where each segment starts/ends in the flat points array:
@@ -674,7 +684,7 @@ By default, any HTTPS host is allowed. To allow only specific hosts, set the `MA
 
 ### Marker platform differences
 
-- **Pin size.** The pin is drawn 72 × 96 on both platforms, but Android uses physical pixels and iOS uses points. On a typical 3× Android phone the pin appears about one third the size of the iOS pin, so images inside it are smaller too.
+- **Pin size.** The pin is drawn 72 Ã— 96 on both platforms, but Android uses physical pixels and iOS uses points. On a typical 3Ã— Android phone the pin appears about one third the size of the iOS pin, so images inside it are smaller too.
 - **Tap area.** Android also reports taps on the map within 150 m of a marker. iOS reports only taps on the pin.
 - **Numeric IDs in `removeMarker`.** Android accepts them; iOS ignores them. Pass strings.
 - **Non-object items in `loadMarkers`.** Android skips `null` items. On iOS, one non-object item makes the whole array read as empty, so with `replace: true` all markers are cleared.

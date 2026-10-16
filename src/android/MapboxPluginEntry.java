@@ -152,6 +152,23 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
         });
     }
 
+    private final List<CallbackContext> sessionCallbacks = new ArrayList<>();
+    private CallbackContext closeCallback;
+    private FrameLayout touchRouter;
+    private View routedWebView;
+    private ViewGroup.LayoutParams originalWebViewLayout;
+    private android.graphics.drawable.Drawable originalWebViewBackground;
+    private android.graphics.drawable.Drawable mapWebViewBackground;
+    private com.mapbox.maps.plugin.gestures.OnMoveListener moveGestureListener;
+    private com.mapbox.maps.plugin.gestures.OnScaleListener scaleGestureListener;
+
+    private void releaseCallback(CallbackContext callback) {
+        if (callback == null || callback.isFinished()) return;
+        PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
+        result.setKeepCallback(false);
+        callback.sendPluginResult(result);
+    }
+
     private FrameLayout rootView;
     private final List<TouchRect> touchableRects = new ArrayList<>();
     private boolean currentGestureTargetsWebView = false;
@@ -177,6 +194,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private LocationCallback fusedLocationCallback;
     private CallbackContext moveToCurrentLocationCallback = null;
     private CancellationTokenSource moveToCurrentLocationToken = null;
+    private CancellationTokenSource bootstrapLocationToken;
     private double moveToCurrentLocationZoom = 0.0;
     private boolean moveToCurrentLocationZoomSet = false;
     private float currentLocationAccuracy = -1f;
@@ -246,6 +264,17 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (!executeOnUiThread(action, args, callbackContext)) {
+                callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.INVALID_ACTION));
+            }
+        });
+        return true;
+    }
+
+    private boolean executeOnUiThread(String action, JSONArray args, CallbackContext callbackContext) {
+        sessionCallbacks.removeIf(CallbackContext::isFinished);
+        if (!"close".equals(action) && !"initialize".equals(action)) sessionCallbacks.add(callbackContext);
         if (args.toString().length() > MapboxSecurity.MAX_INPUT_CHARS) {
             callbackContext.error("Map input exceeds the 4 MiB limit.");
             return true;
@@ -256,6 +285,11 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
         }
 
         switch (action) {
+            case "registerCloseCallback":
+                releaseCallback(closeCallback);
+                closeCallback = callbackContext;
+                if (mapView == null) { closeCallback.success(); closeCallback = null; }
+                return true;
             case "ping":
                 try {
                     JSONObject result = new JSONObject();
@@ -471,6 +505,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
                 }
 
                 closeInternal();
+                sessionCallbacks.add(callback);
 
                 boolean behindWebView = options.optBoolean("behindWebView", false);
 
@@ -519,8 +554,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
 
 if (gestures != null) {
 
-    gestures.addOnMoveListener(
-    new com.mapbox.maps.plugin.gestures.OnMoveListener() {
+    moveGestureListener = new com.mapbox.maps.plugin.gestures.OnMoveListener() {
         @Override
         public void onMoveBegin(
                 com.mapbox.android.gestures.MoveGestureDetector detector) {
@@ -537,11 +571,10 @@ if (gestures != null) {
         public void onMoveEnd(
                 com.mapbox.android.gestures.MoveGestureDetector detector) {
         }
-    }
-);
+    };
+    gestures.addOnMoveListener(moveGestureListener);
 
-            gestures.addOnScaleListener(
-                new com.mapbox.maps.plugin.gestures.OnScaleListener() {
+            scaleGestureListener = new com.mapbox.maps.plugin.gestures.OnScaleListener() {
                     @Override
                     public void onScaleBegin(
                             com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
@@ -558,8 +591,8 @@ if (gestures != null) {
                     public void onScaleEnd(
                             com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
                     }
-                }
-            );
+                };
+            gestures.addOnScaleListener(scaleGestureListener);
 }    
 
                 if (!options.optBoolean("inline", false)) {
@@ -616,6 +649,7 @@ if (gestures != null) {
                 );
             } catch (Throwable e) {
                 callback.error(sanitizeError("Failed to initialize Mapbox map.", e));
+                closeInternal();
             }
         });
     }
@@ -851,12 +885,16 @@ if (gestures != null) {
                     .setMaxUpdateAgeMillis(MAX_LOCATION_AGE_MS)
                     .build();
 
-            CancellationTokenSource bootstrapToken =
-                new CancellationTokenSource();
+            if (bootstrapLocationToken != null) bootstrapLocationToken.cancel();
+            CancellationTokenSource bootstrapToken = new CancellationTokenSource();
+            bootstrapLocationToken = bootstrapToken;
+            final long bootstrapGeneration = sessionGeneration;
 
             fusedLocationClient
                 .getCurrentLocation(bootstrapRequest, bootstrapToken.getToken())
                 .addOnSuccessListener(fix -> {
+                    if (bootstrapGeneration != sessionGeneration || bootstrapLocationToken != bootstrapToken) return;
+                    bootstrapLocationToken = null;
                     if (fix != null
                             && fix.hasAccuracy()
                             && fix.getAccuracy()
@@ -958,9 +996,11 @@ if (gestures != null) {
             return;
         }
 
+        final long headingGeneration = sessionGeneration;
         headingSensorListener = new SensorEventListener() {
             @Override
             public void onSensorChanged(SensorEvent event) {
+                if (headingGeneration != sessionGeneration || this != headingSensorListener) return;
                 if (mapView == null || event.sensor.getType() != Sensor.TYPE_ROTATION_VECTOR) {
                     return;
                 }
@@ -1725,7 +1765,9 @@ private void startUserTracking(CallbackContext callback) {
     }
 
     private void startMoveToCurrentLocation(CallbackContext callback) {
+        if (moveToCurrentLocationCallback != null) moveToCurrentLocationCallback.error("Location request superseded.");
         unregisterMoveToCurrentLocation();
+        final long locationGeneration = sessionGeneration;
 
         LocationManager manager = (LocationManager) cordova
             .getActivity()
@@ -1763,7 +1805,10 @@ private void startUserTracking(CallbackContext callback) {
         fusedLocationClient
             .getCurrentLocation(request, moveToCurrentLocationToken.getToken())
             .addOnSuccessListener(location -> {
+                if (locationGeneration != sessionGeneration || moveToCurrentLocationCallback != callback) return;
                 if (location == null) {
+                    cancelMoveToCurrentLocation();
+                    callback.error("Unable to get current location.");
                     return;
                 }
 
@@ -1828,6 +1873,7 @@ private void startUserTracking(CallbackContext callback) {
                 });
             })
             .addOnFailureListener(e -> {
+                if (locationGeneration != sessionGeneration || moveToCurrentLocationCallback != callback) return;
                 cancelMoveToCurrentLocation();
                 callback.error("Unable to get current location.");
             });
@@ -2220,6 +2266,7 @@ private void startUserTracking(CallbackContext callback) {
     }
 
     private void registerOfflineDownloadProgressCallback(CallbackContext callback) {
+        releaseCallback(offlineDownloadProgressCallback);
         offlineDownloadProgressCallback = callback;
         PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
         result.setKeepCallback(true);
@@ -2251,6 +2298,7 @@ private void startUserTracking(CallbackContext callback) {
     }
 
     private void registerWaypointSelectedCallback(CallbackContext callback) {
+        releaseCallback(waypointSelectedCallback);
         waypointSelectedCallback = callback;
         PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
         result.setKeepCallback(true);
@@ -2258,6 +2306,7 @@ private void startUserTracking(CallbackContext callback) {
     }
 
     private void registerMarkerClickCallback(CallbackContext callback) {
+        releaseCallback(markerClickCallback);
         markerClickCallback = callback;
         PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
         result.setKeepCallback(true);
@@ -2265,6 +2314,7 @@ private void startUserTracking(CallbackContext callback) {
     }
 
     private void registerTrackingStatusCallback(CallbackContext callback) {
+        releaseCallback(trackingStatusCallback);
         trackingStatusCallback = callback;
         PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
         result.setKeepCallback(true);
@@ -2280,7 +2330,8 @@ private void startUserTracking(CallbackContext callback) {
             }
 
             stopLocationAccuracyMonitoring();
-            locationAccuracyCallback = callback;
+            releaseCallback(locationAccuracyCallback);
+        locationAccuracyCallback = callback;
             lastLocationAccuracyUpdateMs = 0L;
 
             PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
@@ -2289,9 +2340,11 @@ private void startUserTracking(CallbackContext callback) {
 
             accuracyFusedLocationClient = LocationServices
                 .getFusedLocationProviderClient(cordova.getActivity());
+            final long accuracyGeneration = sessionGeneration;
             accuracyFusedLocationCallback = new LocationCallback() {
                 @Override
                 public void onLocationResult(LocationResult locationResult) {
+                    if (accuracyGeneration != sessionGeneration || this != accuracyFusedLocationCallback) return;
                     if (locationResult == null || locationResult.getLastLocation() == null) {
                         return;
                     }
@@ -2319,13 +2372,15 @@ private void startUserTracking(CallbackContext callback) {
 
     private void stopLocationAccuracyMonitoring() {
         if (accuracyFusedLocationClient != null && accuracyFusedLocationCallback != null) {
-            accuracyFusedLocationClient.removeLocationUpdates(accuracyFusedLocationCallback);
+            try { accuracyFusedLocationClient.removeLocationUpdates(accuracyFusedLocationCallback); }
+            catch (SecurityException ignored) { }
         }
         accuracyFusedLocationClient = null;
         accuracyFusedLocationCallback = null;
     }
 
     private void registerCompassCallback(CallbackContext callback) {
+        releaseCallback(compassCallback);
         compassCallback = callback;
 
         PluginResult result =
@@ -2350,10 +2405,11 @@ private void startUserTracking(CallbackContext callback) {
         lastCompassBearing = Double.NaN;
         lastCompassVisible = false;
 
+        final long compassGeneration = sessionGeneration;
         compassCameraSubscription =
             mapView.getMapboxMap().subscribeCameraChanged(cameraChanged -> {
 
-                if (compassCallback == null || mapView == null) {
+                if (compassGeneration != sessionGeneration || compassCallback == null || mapView == null) {
                     return;
                 }
 
@@ -3750,7 +3806,34 @@ private boolean addMarkerInternal(
 
     protected void closeInternal() {
         sessionGeneration++;
+        if (closeCallback != null) { closeCallback.success(); closeCallback = null; }
+        for (CallbackContext pending : sessionCallbacks) {
+            if (!pending.isFinished()) {
+                boolean stream = pending == waypointSelectedCallback || pending == markerClickCallback
+                    || pending == offlineDownloadProgressCallback || pending == trackingStatusCallback
+                    || pending == locationAccuracyCallback || pending == compassCallback;
+                if (stream) releaseCallback(pending);
+                else pending.error("Map closed; operation cancelled.");
+            }
+        }
+        sessionCallbacks.clear();
         cancelPendingLocationActions();
+        compassCallback = null;
+        if (compassCameraSubscription != null) {
+            compassCameraSubscription.cancel();
+            compassCameraSubscription = null;
+        }
+        cancelCurrentDownload();
+        markerIcons.cancelAll();
+        if (bootstrapLocationToken != null) { bootstrapLocationToken.cancel(); bootstrapLocationToken = null; }
+        recenterAnimationGeneration++;
+        isCameraFollowingUser = true;
+        if (mapView != null) {
+            MotionEvent cancel = MotionEvent.obtain(android.os.SystemClock.uptimeMillis(),
+                android.os.SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, 0, 0, 0);
+            try { mapView.dispatchTouchEvent(cancel); } finally { cancel.recycle(); }
+        }
+        removeTouchRouter();
         // Clear callbacks before stopping services so cleanup emits no stale events.
         trackingStatusCallback = null;
         stopLocationAccuracyMonitoring();
@@ -3761,8 +3844,13 @@ private boolean addMarkerInternal(
 
         if (mapView != null) {
             try {
-                mapView.onStop();
-                mapView.onDestroy();
+                GesturesPlugin gestures = mapView.getPlugin(Plugin.MAPBOX_GESTURES_PLUGIN_ID);
+                if (gestures != null) {
+                    if (mapClickListener != null) gestures.removeOnMapClickListener(mapClickListener);
+                    if (moveGestureListener != null) gestures.removeOnMoveListener(moveGestureListener);
+                    if (scaleGestureListener != null) gestures.removeOnScaleListener(scaleGestureListener);
+                }
+                try { mapView.onStop(); } finally { mapView.onDestroy(); }
             } catch (Throwable ignored) {
                 // MapView may already be partially torn down after a failed initialization.
             }
@@ -3814,17 +3902,28 @@ private boolean addMarkerInternal(
         isHeadingFollowModeEnabled = false;
         currentGestureTargetsWebView = false;
         mapClickListener = null;
+        moveGestureListener = null;
+        scaleGestureListener = null;
+        rawTapDownMs = 0L;
+        lastMapSelectionCallbackMs = lastKeepCallbackOfflineMs = lastKeepCallbackWaypointMs = lastKeepCallbackMarkerMs = 0L;
+        lastCompassBearing = Double.NaN;
+        lastCompassVisible = false;
+        fusedLocationClient = null;
+        smoothedLocationProvider = null;
         touchableRects.clear();
     }
 
     private void addBehindWebView(View nativeView) {
         View webViewView = webView.getView();
-        webViewView.setBackgroundColor(Color.TRANSPARENT);
         installTouchRouter(webViewView);
+        originalWebViewBackground = webViewView.getBackground();
+        webViewView.setBackground(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+        mapWebViewBackground = webViewView.getBackground();
 
-        if (webViewView.getParent() instanceof ViewGroup) {
-            ViewGroup parent = (ViewGroup) webViewView.getParent();
-            int webViewIndex = parent.indexOfChild(webViewView);
+        View anchor = touchRouter != null ? touchRouter : webViewView;
+        if (anchor.getParent() instanceof ViewGroup) {
+            ViewGroup parent = (ViewGroup) anchor.getParent();
+            int webViewIndex = parent.indexOfChild(anchor);
             parent.addView(nativeView, Math.max(0, webViewIndex));
             return;
         }
@@ -3834,9 +3933,52 @@ private boolean addMarkerInternal(
     }
 
     private void installTouchRouter(View webViewView) {
+        if (!(webViewView.getParent() instanceof ViewGroup)) {
+            throw new IllegalStateException("WebView must have a parent for Mapbox touch routing.");
+        }
+        ViewGroup parent = (ViewGroup) webViewView.getParent();
+        int index = parent.indexOfChild(webViewView);
+        originalWebViewLayout = webViewView.getLayoutParams();
+        routedWebView = webViewView;
+        touchRouter = new FrameLayout(webViewView.getContext()) {
+            @Override public boolean dispatchTouchEvent(MotionEvent event) {
+                return routeMapTouch(routedWebView, event) || super.dispatchTouchEvent(event);
+            }
+        };
+        parent.removeView(webViewView);
+        parent.addView(touchRouter, index, originalWebViewLayout);
+        touchRouter.addView(webViewView, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private void removeTouchRouter() {
+        View view = routedWebView;
+        FrameLayout router = touchRouter;
+        if (view != null && view.getBackground() == mapWebViewBackground) {
+            view.setBackground(originalWebViewBackground);
+        }
+        if (router != null && view != null && view.getParent() == router
+                && router.getParent() instanceof ViewGroup) {
+            ViewGroup parent = (ViewGroup) router.getParent();
+            int index = parent.indexOfChild(router);
+            router.removeView(view);
+            parent.removeView(router);
+            parent.addView(view, index, originalWebViewLayout);
+        } else if (router != null && view != null && view.getParent() == router) {
+            router.removeView(view);
+            view.setLayoutParams(originalWebViewLayout);
+        } else if (router != null && router.getParent() instanceof ViewGroup) {
+            ((ViewGroup) router.getParent()).removeView(router);
+        }
+        touchRouter = null;
+        routedWebView = null;
+        originalWebViewLayout = null;
+        originalWebViewBackground = mapWebViewBackground = null;
+    }
+
+    private boolean routeMapTouch(View view, MotionEvent event) {
+        if (view == null || mapView == null) return false;
         final int[] webViewLocation = new int[2];
         final int[] mapViewLocation = new int[2];
-        webViewView.setOnTouchListener((view, event) -> {
             int action = event.getActionMasked();
 
             // Choose one target on ACTION_DOWN and keep the entire gesture with it.
@@ -3885,7 +4027,6 @@ private boolean addMarkerInternal(
                 currentGestureTargetsWebView = false;
             }
             return true;
-        });
     }
 
     private boolean isInsideTouchableRect(float x, float y) {
@@ -4016,8 +4157,10 @@ private boolean addMarkerInternal(
 
     @Override
     public void onDestroy() {
-        closeInternal();
-        markerIcons.shutdown();
+        cordova.getActivity().runOnUiThread(() -> {
+            closeInternal();
+            markerIcons.shutdown();
+        });
         super.onDestroy();
     }
 
