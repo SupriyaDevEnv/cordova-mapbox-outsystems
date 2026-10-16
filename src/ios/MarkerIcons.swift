@@ -21,6 +21,7 @@ final class MarkerIcons: NSObject, URLSessionDataDelegate {
         let source: String
         let hosts: String
         let completion: (UIImage?) -> Void
+        let task: URLSessionDataTask
     }
 
     private let pins = NSCache<NSString, UIImage>()
@@ -32,17 +33,32 @@ final class MarkerIcons: NSObject, URLSessionDataDelegate {
         return queue
     }()
     private var downloads: [Int: Download] = [:]
-    private lazy var session: URLSession = {
+    private var currentSession: URLSession?
+    private func activeSession() -> URLSession {
+        if let session = currentSession { return session }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 10
         configuration.httpMaximumConnectionsPerHost = 3
-        return URLSession(configuration: configuration, delegate: self, delegateQueue: self.queue)
-    }()
+        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: self.queue)
+        currentSession = session
+        return session
+    }
 
     override init() {
         super.init()
         pins.countLimit = 64
         images.countLimit = 64
+    }
+
+    func cancelAll() {
+        queue.addOperation {
+            for download in self.downloads.values { download.task.cancel() }
+            self.downloads.removeAll()
+            self.currentSession?.invalidateAndCancel()
+            self.currentSession = nil
+            self.pins.removeAllObjects()
+            self.images.removeAllObjects()
+        }
     }
 
     func hasImage(_ source: String?) -> Bool {
@@ -88,8 +104,8 @@ final class MarkerIcons: NSObject, URLSessionDataDelegate {
         var request = URLRequest(url: url)
         request.setValue("image/*", forHTTPHeaderField: "Accept")
         queue.addOperation {
-            let task = self.session.dataTask(with: request)
-            self.downloads[task.taskIdentifier] = Download(source: source, hosts: hosts, completion: completion)
+            let task = self.activeSession().dataTask(with: request)
+            self.downloads[task.taskIdentifier] = Download(source: source, hosts: hosts, completion: completion, task: task)
             task.resume()
         }
     }

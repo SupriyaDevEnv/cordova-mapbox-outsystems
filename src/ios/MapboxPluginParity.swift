@@ -28,15 +28,18 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(getMapboxVersion:)
     func getMapboxVersion(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         let result = CDVPluginResult(
             status: CDVCommandStatus_OK,
             messageAs: mapboxSdkVersion
         )
+        forgetCallback(command.callbackId)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
     @objc(resizeMap:)
     func resizeMap(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         // iOS setViewport already resizes/repositions both the MapView and its
         // touch overlay, so use the same path for resizeMap.
         super.setViewport(command: command)
@@ -44,6 +47,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(registerLocationAccuracyCallback:)
     func registerLocationAccuracyCallback(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         locationAccuracyCallbackId = command.callbackId
         lastLocationAccuracyUpdate = 0
 
@@ -70,6 +74,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(getCurrentLocationAccuracy:)
     func getCurrentLocationAccuracy(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         runForSession {
             guard CLLocationManager.authorizationStatus() == .authorizedWhenInUse
                     || CLLocationManager.authorizationStatus() == .authorizedAlways else {
@@ -103,6 +108,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(setUserTrackingEnabled:)
     override func setUserTrackingEnabled(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         let options = command.argument(at: 0) as? [String: Any] ?? [:]
         let enabled = options["enabled"] as? Bool ?? true
         resetTrackingSmoothing()
@@ -114,6 +120,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(startPathTracking:)
     override func startPathTracking(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         parityPathTrackingActive = true
         resetTrackingSmoothing()
         super.startPathTracking(command: command)
@@ -121,6 +128,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(stopPathTracking:)
     override func stopPathTracking(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         super.stopPathTracking(command: command)
         parityPathTrackingActive = false
         resetTrackingSmoothing()
@@ -128,6 +136,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(moveToCurrentLocation:)
     override func moveToCurrentLocation(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         runForSession {
             guard self.activeMapView() != nil else {
                 self.sendParityError("Map is not initialized.", command: command)
@@ -165,6 +174,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(setLayerVisibility:)
     func setLayerVisibility(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         runForSession {
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             let layerId = (options["layerId"] as? String ?? "")
@@ -207,6 +217,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     @objc(getLayerIds:)
     func getLayerIds(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         runForSession {
             guard let mapView = self.activeMapView() else {
                 self.sendParityError("Map is not initialized.", command: command)
@@ -220,6 +231,7 @@ class MapboxPluginParity: MapboxPlugin {
 
             let ids = mapView.mapboxMap.allLayerIdentifiers.map { $0.id }
             let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: ids)
+            self.forgetCallback(command.callbackId)
             self.commandDelegate.send(result, callbackId: command.callbackId)
         }
     }
@@ -374,6 +386,7 @@ class MapboxPluginParity: MapboxPlugin {
                     "accuracyLabel": self.accuracyLabel(for: accuracy)
                 ]
             )
+            self.forgetCallback(callbackId)
             self.commandDelegate.send(result, callbackId: callbackId)
         }
     }
@@ -415,6 +428,7 @@ class MapboxPluginParity: MapboxPlugin {
                 "accuracyLabel": label
             ]
         )
+        forgetCallback(command.callbackId)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
@@ -482,6 +496,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     private func sendParitySuccess(_ command: CDVInvokedUrlCommand) {
         let result = CDVPluginResult(status: CDVCommandStatus_OK)
+        forgetCallback(command.callbackId)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
@@ -491,6 +506,7 @@ class MapboxPluginParity: MapboxPlugin {
 
     private func sendParityError(_ message: String, callbackId: String) {
         let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: message)
+        forgetCallback(callbackId)
         commandDelegate.send(result, callbackId: callbackId)
     }
 }

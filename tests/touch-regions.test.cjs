@@ -9,9 +9,15 @@ function target() {
   const listeners = new Map();
   return {
     listeners,
-    addEventListener(name, callback) { listeners.set(name, callback); },
-    removeEventListener(name, callback) { if (listeners.get(name) === callback) listeners.delete(name); },
-    emit(name) { if (listeners.has(name)) listeners.get(name)(); }
+    addEventListener(name, callback) {
+      if (!listeners.has(name)) listeners.set(name, new Set());
+      listeners.get(name).add(callback);
+    },
+    removeEventListener(name, callback) {
+      const set = listeners.get(name);
+      if (set) { set.delete(callback); if (!set.size) listeners.delete(name); }
+    },
+    emit(name) { for (const cb of listeners.get(name) || []) cb(); }
   };
 }
 function element(left, top, width, height, style = {}, parentElement = null) {
@@ -149,7 +155,8 @@ function bridge(h, initializeNow = true) {
     if (name === './AndroidTouchRegions') return start;
     assert.equal(name, 'cordova/exec');
     return (ok, fail, service, action, args) => {
-      calls.push({ action, args });
+      calls.push({ action, args, ok, fail });
+      if (action === 'registerCloseCallback') return;
       if (action === 'initialize' && !initializeNow) finishInitialize = ok;
       else ok({ status: 'ok' });
     };
@@ -166,10 +173,10 @@ test(platform + ' automatically starts, stops legacy script, supports manual own
   const { api, calls } = bridge(h);
   await api.initialize({ behindWebView: true });
   assert.equal(legacyStops, 1);
-  assert.deepEqual(calls.map(c => c.action), ['initialize', 'setTouchableRects']);
+  assert.deepEqual(calls.map(c => c.action), ['initialize', 'registerCloseCallback', 'setTouchableRects']);
   await api.setTouchableRects([{ x: 0, y: 0, width: 5, height: 5 }]);
   assert.equal(h.win.listeners.size, 0);
-  h.win.emit('resize'); await h.frame(); assert.equal(calls.length, 3);
+  h.win.emit('resize'); await h.frame(); assert.equal(calls.length, 4);
   await api.initialize({ behindWebView: true });
   assert.ok(h.win.listeners.size > 0);
   await api.close(); assert.equal(h.win.listeners.size, 0);
@@ -183,7 +190,7 @@ test('unsupported platforms, foreground maps and explicit opt-out retain existin
     const h = host(); h.win.cordova.platformId = platform;
     const { api, calls } = bridge(h);
     await api.initialize(options);
-    assert.deepEqual(calls.map(c => c.action), ['initialize']);
+    assert.deepEqual(calls.map(c => c.action), platform === 'browser' ? ['initialize'] : ['initialize', 'registerCloseCallback']);
     assert.equal(h.observers.length, 0);
   }
 });
@@ -209,7 +216,57 @@ test('iOS uses native pixels and its 20-region budget, then clears dismissed ove
 test('a late initialization callback cannot start observers after close', async () => {
   const h = host(); const b = bridge(h, false);
   const initializing = b.api.initialize({ behindWebView: true });
-  await b.api.close(); b.finish(); await initializing;
+  const rejected = assert.rejects(initializing, /cancelled/);
+  await b.api.close(); b.finish(); await rejected;
   assert.equal(h.observers.length, 0);
   assert.deepEqual(b.calls.map(c => c.action), ['initialize', 'close']);
+});
+
+test('close removes only owned listeners and does not restart after a late observer callback', async () => {
+  const h = host(); let external = 0;
+  h.win.addEventListener('scroll', () => external++);
+  h.doc.addEventListener('load', () => external++);
+  const controller = start(h.win, () => Promise.resolve());
+  await controller.ready;
+  h.win.emit('resize');
+  controller.stop(); controller.stop();
+  h.observers.forEach(observer => observer.callback());
+  h.win.emit('scroll'); h.doc.emit('load');
+  assert.equal(external, 2);
+  assert.equal(h.win.listeners.size, 1);
+  assert.equal(h.doc.listeners.size, 1);
+  assert.equal(h.frames.size, 0);
+  assert.equal(h.timers.size, 0);
+  assert.ok(h.observers.every(observer => observer.nodes.length === 0));
+});
+
+test('native close stops automatic observers and manual-mode event callbacks', async () => {
+  const h = host(); const b = bridge(h); let events = 0;
+  await b.api.initialize({ behindWebView: true });
+  b.api.onCompassChanged(() => events++);
+  const compass = b.calls.find(c => c.action === 'registerCompassCallback');
+  await b.api.setTouchableRects([]);
+  const closed = b.calls.find(c => c.action === 'registerCloseCallback');
+  closed.ok({ closed: true });
+  const before = events;
+  compass.ok({ bearing: 10 });
+  assert.equal(events, before);
+  assert.equal(h.win.listeners.size, 0);
+  await b.api.initialize({ behindWebView: true });
+  closed.ok({ closed: true });
+  assert.ok(h.win.listeners.size > 0, 'old native close must not close the reopened session');
+  b.calls.filter(c => c.action === 'registerCloseCallback').at(-1).ok({ closed: true });
+  assert.equal(h.win.listeners.size, 0);
+});
+
+test('repeated close succeeds and old subscriptions cannot deliver into a reopened map', async () => {
+  const h = host(); const b = bridge(h); let events = 0;
+  await b.api.initialize({ behindWebView: true });
+  b.api.onMarkerClick(() => events++);
+  const old = b.calls.find(c => c.action === 'registerMarkerClickCallback');
+  await Promise.all([b.api.close(), b.api.close()]);
+  await b.api.initialize({ behindWebView: true });
+  const before = events; old.ok({ id: 'stale' });
+  assert.equal(events, before);
+  await b.api.close();
 });

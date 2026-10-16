@@ -1,4 +1,45 @@
-var exec = require('cordova/exec');
+var nativeExec = require('cordova/exec');
+var callbacks = new Set();
+var lifecycleGeneration = 0;
+function exec(success, error, service, action, args) {
+  callbacks.forEach(function (previous) {
+    if (previous.stream && previous.action === action) {
+      previous.active = false; callbacks.delete(previous);
+    }
+  });
+  var record = { action: action, error: error, active: true, stream: action.indexOf('register') === 0 };
+  callbacks.add(record);
+  function finish(handler, value) {
+    if (!record.active) return;
+    if (!record.stream) { record.active = false; callbacks.delete(record); }
+    if (handler) handler(value);
+  }
+  try {
+    nativeExec(function (value) { finish(success, value); }, function (value) {
+      record.stream = false; finish(error, value);
+    }, service, action, args);
+  } catch (e) { record.stream = false; finish(error, e); }
+}
+function cancelCallbacks() {
+  var old = Array.from(callbacks);
+  old.forEach(function (record) {
+    if (record.action === 'close') return;
+    callbacks.delete(record);
+    record.active = false;
+    if (!record.stream && record.error) {
+      try { record.error(new Error('Map closed; operation cancelled.')); }
+      catch (e) { if (typeof console !== 'undefined') console.warn('Mapbox cancellation callback failed.', e); }
+    }
+  });
+}
+function observeNativeClose(generation) {
+  nativeExec(function () {
+    if (generation !== lifecycleGeneration) return;
+    lifecycleGeneration++;
+    stopTouchRegions();
+    cancelCallbacks();
+  }, function () {}, SERVICE, 'registerCloseCallback', []);
+}
 
 var SERVICE = 'MapboxPlugin';
 var touchRegions = null;
@@ -18,8 +59,16 @@ function validateCameraZoomBounds(options) {
 
 function stopTouchRegions() {
   touchGeneration++;
-  if (touchRegions) touchRegions.stop();
+  var previous = touchRegions;
   touchRegions = null;
+  if (previous) previous.stop();
+  // Only the documented Mapbox legacy bridge owns these listeners.
+  if (typeof window !== 'undefined' && window.__mapboxTouchBridge &&
+      typeof window.__mapboxTouchBridge.stop === 'function') {
+    try { window.__mapboxTouchBridge.stop(); } catch (e) {
+      if (window.console) window.console.warn('Mapbox legacy touch bridge cleanup failed.', e);
+    }
+  }
 }
 
 function call(action, args) {
@@ -78,16 +127,18 @@ var api = {
     }
     delete options.token;
     stopTouchRegions();
+    cancelCallbacks();
+    var lifecycle = ++lifecycleGeneration;
     var generation = touchGeneration;
     var automatic = typeof window !== 'undefined' && window.cordova &&
       (window.cordova.platformId === 'android' || window.cordova.platformId === 'ios') &&
       options.behindWebView === true &&
       options.autoTouchRouting !== false;
-    if (automatic && window.__mapboxTouchBridge && window.__mapboxTouchBridge.stop) {
-      window.__mapboxTouchBridge.stop();
-    }
     return call('initialize', [options]).then(function (result) {
-      if (!automatic || generation !== touchGeneration) return result;
+      if (generation !== touchGeneration) return result;
+      if (typeof window !== 'undefined' && window.cordova &&
+          /^(android|ios)$/.test(window.cordova.platformId)) observeNativeClose(lifecycle);
+      if (!automatic) return result;
       var start = require('./AndroidTouchRegions');
       touchRegions = start(window, function (rects) { return call('setTouchableRects', [rects]); });
       return touchRegions.ready.then(function () { return result; });
@@ -280,7 +331,9 @@ var api = {
   },
 
   close: function () {
+    lifecycleGeneration++;
     stopTouchRegions();
+    cancelCallbacks();
     return call('close', []);
   },
 

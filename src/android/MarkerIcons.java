@@ -42,7 +42,19 @@ final class MarkerIcons {
     // Reusing one Bitmap instance per look lets Mapbox register a single style image for it.
     private final LruCache<String, Bitmap> pins = new LruCache<>(64);
     private final LruCache<String, Bitmap> images = new LruCache<>(64);
-    private final ExecutorService executor = Executors.newFixedThreadPool(3);
+    private ExecutorService executor = Executors.newFixedThreadPool(3);
+    private final java.util.Set<HttpURLConnection> connections = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private volatile long generation;
+
+    synchronized void cancelAll() {
+        generation++;
+        executor.shutdownNow();
+        for (HttpURLConnection connection : connections) connection.disconnect();
+        connections.clear();
+        executor = Executors.newFixedThreadPool(3);
+        pins.evictAll();
+        images.evictAll();
+    }
 
     boolean hasImage(String source) {
         return source != null && images.get(source) != null;
@@ -64,19 +76,21 @@ final class MarkerIcons {
     }
 
     /** Loads an allowed image source off the main thread; {@code done} runs on a worker thread. */
-    void load(String source, String hosts, Loaded done) {
+    synchronized void load(String source, String hosts, Loaded done) {
+        final long requestGeneration = generation;
         executor.execute(() -> {
             Bitmap image = null;
             try {
-                byte[] bytes = read(source, hosts);
+                byte[] bytes = read(source, hosts, requestGeneration);
                 image = bytes == null ? null : decode(bytes);
             } catch (Exception | OutOfMemoryError e) {
                 Log.w("MapboxPlugin", "Marker image could not be loaded.");
             }
-            if (image != null) {
-                images.put(source, image);
+            synchronized (this) {
+                if (requestGeneration != generation) return;
+                if (image != null) images.put(source, image);
+                done.done(image);
             }
-            done.done(image);
         });
     }
 
@@ -84,14 +98,17 @@ final class MarkerIcons {
         executor.shutdownNow();
     }
 
-    private static byte[] read(String source, String hosts) throws Exception {
+    private byte[] read(String source, String hosts, long requestGeneration) throws Exception {
+        if (requestGeneration != generation || Thread.currentThread().isInterrupted()) return null;
         if (source.startsWith("data:")) {
             byte[] bytes = Base64.decode(source.substring(source.indexOf(',') + 1), Base64.DEFAULT);
             return bytes.length <= MapboxSecurity.MAX_MARKER_IMAGE_BYTES ? bytes : null;
         }
 
         HttpURLConnection connection = (HttpURLConnection) new URL(source).openConnection();
+        connections.add(connection);
         try {
+            if (requestGeneration != generation || Thread.currentThread().isInterrupted()) return null;
             connection.setConnectTimeout(TIMEOUT_MS);
             connection.setReadTimeout(TIMEOUT_MS);
             connection.setRequestProperty("Accept", "image/*");
@@ -107,6 +124,7 @@ final class MarkerIcons {
                 byte[] buffer = new byte[8192];
                 int read;
                 while ((read = in.read(buffer)) != -1) {
+                    if (requestGeneration != generation || Thread.currentThread().isInterrupted()) return null;
                     if (out.size() + read > MapboxSecurity.MAX_MARKER_IMAGE_BYTES) {
                         return null;
                     }
@@ -115,6 +133,7 @@ final class MarkerIcons {
                 return out.toByteArray();
             }
         } finally {
+            connections.remove(connection);
             connection.disconnect();
         }
     }

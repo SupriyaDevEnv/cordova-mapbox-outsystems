@@ -21,31 +21,37 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
 
     @objc(enableUserLocation:)
     override func enableUserLocation(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         runWhenLocationAuthorized(.enableUserLocation(command))
     }
 
     @objc(setDeviceHeadingEnabled:)
     override func setDeviceHeadingEnabled(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         runWhenLocationAuthorized(.setDeviceHeadingEnabled(command))
     }
 
     @objc(setHeadingFollowMode:)
     override func setHeadingFollowMode(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         runWhenLocationAuthorized(.setHeadingFollowMode(command))
     }
 
     @objc(setUserTrackingEnabled:)
     override func setUserTrackingEnabled(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         runWhenLocationAuthorized(.setUserTrackingEnabled(command))
     }
 
     @objc(moveToCurrentLocation:)
     override func moveToCurrentLocation(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         runWhenLocationAuthorized(.moveToCurrentLocation(command))
     }
 
     @objc(startPathTracking:)
     override func startPathTracking(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         runWhenLocationAuthorized(.startPathTracking(command))
     }
 
@@ -143,6 +149,7 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
             status: CDVCommandStatus_ERROR,
             messageAs: message
         )
+        forgetCallback(callbackId)
         commandDelegate.send(result, callbackId: callbackId)
     }
 }

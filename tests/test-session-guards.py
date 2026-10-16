@@ -7,7 +7,7 @@ with tempfile.TemporaryDirectory() as temp:
     directory = Path(temp)
     source = Path('src/ios/MapboxPlugin.swift').read_text()
     start = source.index('    func runForSession(')
-    end = source.index('    private var mapView:', start)
+    end = source.index('    private var sessionCallbacks:', start)
     swift = directory / 'main.swift'
     swift.write_text('''import Foundation
 class TestPlugin {
@@ -28,7 +28,7 @@ print("iOS session callback isolation passed")
 
     source = Path('src/android/MapboxPluginEntry.java').read_text()
     start = source.index('    private void runForSession(')
-    end = source.index('    private FrameLayout rootView;', start)
+    end = source.index('    private final List<CallbackContext> sessionCallbacks', start)
     java = directory / 'SessionTest.java'
     java.write_text('''import java.util.*;
 public class SessionTest {
