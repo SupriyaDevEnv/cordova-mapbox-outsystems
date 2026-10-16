@@ -12,6 +12,8 @@ import Foundation
 import CoreLocation
 class CDVInvokedUrlCommand {}
 class TestPlugin {
+    var rememberedCommands = 0
+    func rememberCommand(_ command: CDVInvokedUrlCommand) { rememberedCommands += 1 }
     var isPathTrackingActive = true
     var isPathTrackingPaused = false
     var pathTrackingStartTime = Date().timeIntervalSince1970
@@ -31,6 +33,7 @@ for count in 0...2 {
     let plugin = TestPlugin()
     plugin.pathPoints = (0..<count).map { CLLocationCoordinate2D(latitude: Double($0) * 0.01, longitude: 0) }
     plugin.stopPathTracking(command: CDVInvokedUrlCommand())
+    precondition(plugin.rememberedCommands == 1)
     precondition(!plugin.isPathTrackingActive)
     precondition((plugin.result["points"] as! [[String: Double]]).count == count)
     let distance = plugin.result["distance"] as! Double
