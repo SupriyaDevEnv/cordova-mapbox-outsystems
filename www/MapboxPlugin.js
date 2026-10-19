@@ -132,15 +132,16 @@ var api = {
     var generation = touchGeneration;
     var automatic = typeof window !== 'undefined' && window.cordova &&
       (window.cordova.platformId === 'android' || window.cordova.platformId === 'ios') &&
-      options.behindWebView === true &&
-      options.autoTouchRouting !== false;
+      options.behindWebView === true;
+    var controlsOnly = options.autoTouchRouting === false;
     return call('initialize', [options]).then(function (result) {
-      if (generation !== touchGeneration) return result;
+      if (lifecycle !== lifecycleGeneration) return result;
       if (typeof window !== 'undefined' && window.cordova &&
           /^(android|ios)$/.test(window.cordova.platformId)) observeNativeClose(lifecycle);
-      if (!automatic) return result;
+      if (!automatic || generation !== touchGeneration) return result;
       var start = require('./AndroidTouchRegions');
-      touchRegions = start(window, function (rects) { return call('setTouchableRects', [rects]); });
+      touchRegions = start(window, function (rects) { return call('setTouchableRects', [rects]); },
+        { controlsOnly: controlsOnly });
       return touchRegions.ready.then(function () { return result; });
     });
   },

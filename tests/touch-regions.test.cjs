@@ -34,7 +34,10 @@ function host(elements = []) {
   const doc = Object.assign(target(), {
     documentElement: element(0, 0, 1000, 800),
     elements, animations: [],
-    querySelectorAll(selector) { doc.selector = selector; return doc.elements; },
+    querySelectorAll(selector) {
+      doc.selector = selector;
+      return selector === '.map-control-btn' ? doc.elements.filter(node => node.mapControl) : doc.elements;
+    },
     getAnimations() { return doc.animations; }
   });
   class Observer {
@@ -183,10 +186,8 @@ test(platform + ' automatically starts, stops legacy script, supports manual own
 });
 }
 
-test('unsupported platforms, foreground maps and explicit opt-out retain existing bridge behavior', async () => {
-  for (const [platform, options] of [['browser', { behindWebView: true }], ['android', {}], ['ios', {}],
-    ['ios', { behindWebView: true, autoTouchRouting: false }],
-    ['android', { behindWebView: true, autoTouchRouting: false }]]) {
+test('unsupported platforms and foreground maps retain existing bridge behavior', async () => {
+  for (const [platform, options] of [['browser', { behindWebView: true }], ['android', {}], ['ios', {}]]) {
     const h = host(); h.win.cordova.platformId = platform;
     const { api, calls } = bridge(h);
     await api.initialize(options);
@@ -269,4 +270,77 @@ test('repeated close succeeds and old subscriptions cannot deliver into a reopen
   const before = events; old.ok({ id: 'stale' });
   assert.equal(events, before);
   await b.api.close();
+});
+
+for (const platform of ['android', 'ios']) {
+  test(platform + ' preserves legacy initialization and protects only map-control-btn regions', async () => {
+    const button = Object.assign(element(20, 30, 40, 40), { mapControl: true });
+    const h = host([element(0, 0, 1000, 800), button]);
+    h.win.cordova.platformId = platform;
+    const b = bridge(h);
+    const options = { behindWebView: true, inline: true, autoTouchRouting: false, x: 0, y: 158 };
+    const original = { ...options };
+    await b.api.initialize(options);
+    assert.deepEqual(options, original);
+    assert.deepEqual(b.calls[0].args[0], original);
+    assert.equal(h.doc.selector, '.map-control-btn');
+    assert.deepEqual(b.calls.at(-1).args[0], [{ x: 40, y: 60, width: 80, height: 80 }]);
+    // The fullscreen layout must not steal gestures in the open map area.
+    assert.equal(b.calls.at(-1).args[0].some(r => 400 >= r.x && 400 < r.x + r.width), false);
+
+    h.doc.elements = [];
+    h.observers.forEach(o => o.callback()); await h.frame();
+    assert.deepEqual(b.calls.at(-1).args[0], [], 'navigation removes stale exclusions');
+    const replacement = Object.assign(element(100, 50, 40, 40), { mapControl: true });
+    h.doc.elements = [replacement];
+    h.observers.forEach(o => o.callback()); await h.frame();
+    assert.deepEqual(b.calls.at(-1).args[0], [{ x: 200, y: 100, width: 80, height: 80 }]);
+
+    await b.api.setTouchableRects([]);
+    const count = b.calls.length;
+    h.win.emit('resize'); h.observers.forEach(o => o.callback()); await h.frame();
+    assert.equal(b.calls.length, count, 'explicit manual ownership stops compatibility discovery');
+    await b.api.close();
+    await b.api.initialize(options);
+    assert.deepEqual(b.calls.at(-1).args[0], [{ x: 200, y: 100, width: 80, height: 80 }]);
+    await b.api.close();
+    assert.equal(h.win.listeners.size, 0);
+    assert.equal(h.doc.listeners.size, 0);
+  });
+}
+
+test('manual ownership during initialization still registers native close cleanup', async () => {
+  const h = host(); const b = bridge(h, false);
+  const initializing = b.api.initialize({ behindWebView: true });
+  await b.api.setTouchableRects([]);
+  b.finish(); await initializing;
+  assert.equal(h.observers.length, 0);
+  let events = 0;
+  b.api.onMarkerClick(() => events++);
+  const marker = b.calls.at(-1);
+  const before = events;
+  b.calls.find(c => c.action === 'registerCloseCallback').ok({ closed: true });
+  marker.ok({ id: 'stale' });
+  assert.equal(events, before);
+});
+
+test('stopping before the first bridge microtask prevents stale region writes', async () => {
+  const h = host([element(10, 10, 10, 10)]); const sent = [];
+  const controller = start(h.win, rects => sent.push(rects));
+  controller.stop();
+  await controller.ready;
+  assert.deepEqual(sent, []);
+  assert.equal(h.frames.size, 0);
+});
+
+test('a rejected write after navigation cannot retry or restart stopped tracking', async () => {
+  const h = host([element(10, 10, 10, 10)]); let reject;
+  const controller = start(h.win, () => new Promise((resolve, fail) => { reject = fail; }));
+  await Promise.resolve();
+  h.win.emit('resize'); await h.frame();
+  controller.stop(); reject(new Error('old session closed'));
+  await controller.ready;
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.frames.size, 0);
+  assert.equal(h.warnings.length, 0);
 });
