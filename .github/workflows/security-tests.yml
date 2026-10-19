@@ -19,6 +19,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - run: npm test
+      - name: Regress behind-WebView transparency and appearance restoration
+        run: python3 tests/test-webview-transparency.py
       - name: Validate optional initialization zoom bounds on both platforms
         run: python3 tests/test-initialize-zoom.py
       - name: Validate production ZIP and npm package
