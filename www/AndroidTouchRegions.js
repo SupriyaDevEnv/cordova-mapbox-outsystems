@@ -6,7 +6,7 @@ var selector = [
   '.osui-sidebar--is-open', '.osui-sidebar-overlay',
   '.feedback-message',
   '[role="dialog"]', '[role="menu"]', '[role="listbox"]',
-  '.map-touchable', '.map-touch-region', '[data-map-touch-region]',
+  '.map-control-btn', '.map-touchable', '.map-touch-region', '[data-map-touch-region]',
   '[data-button]', 'button', 'a', 'input', 'select', 'textarea',
   '[contenteditable="true"]', '[role="button"]', '[role="link"]', '[role="tab"]',
   '[role="checkbox"]', '[role="radio"]', '[role="switch"]', '[role="slider"]',
@@ -20,8 +20,11 @@ function contains(outer, inner) {
     inner.y + inner.height <= outer.y + outer.height;
 }
 
-module.exports = function start(win, send) {
+module.exports = function start(win, send, options) {
   var doc = win.document;
+  // Older OutSystems initialization disables broad discovery while still using
+  // map-control-btn overlays. Protect only those controls in compatibility mode.
+  var activeSelector = options && options.controlsOnly ? '.map-control-btn' : selector;
   var maxRects = win.cordova && win.cordova.platformId === 'ios' ? 20 : 50;
   var stopped = false;
   var frame = null;
@@ -34,7 +37,7 @@ module.exports = function start(win, send) {
   var resizeObserver = win.ResizeObserver ? new win.ResizeObserver(schedule) : null;
 
   function collect() {
-    var elements = Array.prototype.slice.call(doc.querySelectorAll(selector));
+    var elements = Array.prototype.slice.call(doc.querySelectorAll(activeSelector));
     if (resizeObserver && (elements.length !== observed.length ||
         elements.some(function (element, index) { return element !== observed[index]; }))) {
       resizeObserver.disconnect();

@@ -704,7 +704,7 @@ On Android and iOS, a gesture starting in an overlay exclusion rectangle stays w
 
 ### Automatic Android and iOS overlay regions
 
-`initialize({ behindWebView: true, ... })` starts plugin-owned DOM tracking by default on Android and iOS. No separate OutSystems touch script is needed. It tracks standard interactive HTML controls and roles, OutSystems bottom sheets, popups, modals and sidebars, `.map-touchable`, `.map-touch-region`, `[data-map-touch-region]`, and inline `cursor: pointer` tag controls inside `.tags-container`.
+`initialize({ behindWebView: true, ... })` starts plugin-owned DOM tracking by default on Android and iOS. No separate OutSystems touch script is needed. It tracks standard interactive HTML controls and roles, OutSystems bottom sheets, popups, modals and sidebars, `.map-control-btn`, `.map-touchable`, `.map-touch-region`, `[data-map-touch-region]`, and inline `cursor: pointer` tag controls inside `.tags-container`.
 
 - Keep your existing map initialization and `setViewport`/`resizeMap` calls. Automatic tracking discovers overlays only; it does not infer which DOM element is your map container.
 - Mark custom clickable or draggable containers with the `map-touch-region` class. Do not put this class on the map container or the whole screen unless all touches there should go to the WebView.
@@ -732,7 +732,7 @@ Rebuild both native apps after updating the plugin. Verify a message can receive
 
 ### Manual regions and compatibility
 
-Set `autoTouchRouting: false` in initialization to retain manual control. Calling `setTouchableRects` explicitly also stops automatic tracking until the next initialization, so manual and automatic writers do not overwrite each other. The existing method and native-pixel coordinate convention remain supported. Both platforms accept WebView-local native-pixel rectangles (CSS viewport coordinates multiplied by device pixel ratio). iOS converts them to UIKit points and checks them relative to the WebView, so map resizing does not discard off-map exclusions.
+Set `autoTouchRouting: false` to disable broad automatic discovery. For compatibility with existing OutSystems initialization JS, behind-WebView maps still track `.map-control-btn` elements in this mode. Only their visible, clipped bounds are reserved for WebView input; the surrounding map remains available to native gestures. This deliberately changes the previous full opt-out behavior so existing map buttons work without editing initialization JS. Calling `setTouchableRects` explicitly (including `[]`) takes full manual ownership and stops all automatic tracking until the next initialization, so manual and automatic writers do not overwrite each other. The existing method and native-pixel coordinate convention remain supported. Both platforms accept WebView-local native-pixel rectangles (CSS viewport coordinates multiplied by device pixel ratio). iOS converts them to UIKit points and checks them relative to the WebView, so map resizing does not discard off-map exclusions.
 
 ```javascript
 var dpr = window.devicePixelRatio || 1;
@@ -838,3 +838,15 @@ For emulator testing, include `x86_64`:
 - Use `moveToCurrentLocation` for a one-time move to user location.
 - Use `setUserTrackingEnabled` only when the map should keep following the user.
 - Background location tracking is not part of the Mapbox map view. Add a background geolocation plugin or native background location feature for that use case.
+
+
+### Touch routing regression check on a device
+
+Rebuild the Cordova app using this plugin revision. Keep existing OutSystems initialization JS, including `autoTouchRouting: false`, unchanged when map controls use `.map-control-btn`.
+
+1. Tap each map control and verify its OutSystems action fires once. Pan, pinch and rotate in the map area between controls.
+2. Start a drag on a control or an automatically discovered sheet and move outside its original bounds; verify the gesture stays with its starting target. Broad sheet discovery requires the default automatic mode.
+3. Navigate away and back repeatedly, then close/reinitialize. Verify replacement buttons work, removed buttons leave no stale touch exclusions, and map/marker callbacks fire only for the current session.
+4. Open/close overlays, scroll, and rotate the device. Verify control bounds update. For manual routing, call `setTouchableRects` and verify automatic updates stop until reinitialization.
+
+The JavaScript regression suite exercises both platform configurations and lifecycle races with a simulated DOM/bridge. Native CI checks and device checks are separate; passing the JavaScript suite does not establish end-to-end device behavior.
