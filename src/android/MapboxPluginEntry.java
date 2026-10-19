@@ -158,6 +158,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private View routedWebView;
     private ViewGroup.LayoutParams originalWebViewLayout;
     private android.graphics.drawable.Drawable originalWebViewBackground;
+    private int originalWebViewBackgroundColor;
     private android.graphics.drawable.Drawable mapWebViewBackground;
     private com.mapbox.maps.plugin.gestures.OnMoveListener moveGestureListener;
     private com.mapbox.maps.plugin.gestures.OnScaleListener scaleGestureListener;
@@ -3917,7 +3918,14 @@ private boolean addMarkerInternal(
         View webViewView = webView.getView();
         installTouchRouter(webViewView);
         originalWebViewBackground = webViewView.getBackground();
+        originalWebViewBackgroundColor = originalWebViewBackground instanceof android.graphics.drawable.ColorDrawable
+            ? ((android.graphics.drawable.ColorDrawable) originalWebViewBackground).getColor()
+            : preferences.getInteger("BackgroundColor", Color.WHITE);
+        // Use a new drawable so View.setBackgroundColor cannot mutate the saved one.
         webViewView.setBackground(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+        // WebView overrides this API to update Chromium's page background. A
+        // transparent View drawable alone still leaves an opaque WebView surface.
+        webViewView.setBackgroundColor(Color.TRANSPARENT);
         mapWebViewBackground = webViewView.getBackground();
 
         View anchor = touchRouter != null ? touchRouter : webViewView;
@@ -3954,6 +3962,7 @@ private boolean addMarkerInternal(
         View view = routedWebView;
         FrameLayout router = touchRouter;
         if (view != null && view.getBackground() == mapWebViewBackground) {
+            view.setBackgroundColor(originalWebViewBackgroundColor);
             view.setBackground(originalWebViewBackground);
         }
         if (router != null && view != null && view.getParent() == router
