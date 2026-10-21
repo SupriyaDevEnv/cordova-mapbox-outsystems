@@ -85,6 +85,7 @@ jobs:
           npm install --global cordova@12.0.0
           cordova create "$RUNNER_TEMP/mapbox-smoke" com.outsystems.mapbox.smoke MapboxSmoke
           cd "$RUNNER_TEMP/mapbox-smoke"
+          node -e 'const fs = require("fs"); const p = "config.xml"; fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("</widget>", "<preference name=\"deployment-target\" value=\"14.0\" /></widget>"));'
           if [ "$SMOKE_PLATFORM" = android ]; then
             cordova platform add android@14.0.1
           else
