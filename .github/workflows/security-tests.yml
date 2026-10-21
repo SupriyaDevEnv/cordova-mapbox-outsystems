@@ -77,6 +77,8 @@ jobs:
           gradle-version: '8.13'
       - uses: android-actions/setup-android@v3
         if: matrix.platform == 'android'
+        with:
+          packages: 'platform-tools'
       - name: Install Android SDK build inputs
         if: matrix.platform == 'android'
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
