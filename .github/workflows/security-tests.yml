@@ -60,7 +60,7 @@ jobs:
           - platform: android
             runner: ubuntu-24.04
           - platform: ios
-            runner: macos-15
+            runner: macos-26
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
