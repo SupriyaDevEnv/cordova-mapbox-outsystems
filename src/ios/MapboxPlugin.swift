@@ -3,6 +3,7 @@ import CoreFoundation
 import Security
 import CoreLocation
 import UIKit
+import WebKit
 import MapboxMaps
 import Turf
 
@@ -1976,7 +1977,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
         if let saved = savedWebViewAppearance {
             if webView.backgroundColor == UIColor.clear { webView.backgroundColor = saved.1 }
-            if webView.scrollView.backgroundColor == UIColor.clear { webView.scrollView.backgroundColor = saved.2 }
+            if let scrollView = (webView as? WKWebView)?.scrollView,
+               scrollView.backgroundColor == UIColor.clear {
+                scrollView.backgroundColor = saved.2
+            }
             if !webView.isOpaque { webView.isOpaque = saved.0 }
             savedWebViewAppearance = nil
         }
@@ -2377,10 +2381,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func makeWebViewTransparent() {
-        savedWebViewAppearance = (webView.isOpaque, webView.backgroundColor, webView.scrollView.backgroundColor)
+        let scrollView = (webView as? WKWebView)?.scrollView
+        savedWebViewAppearance = (webView.isOpaque, webView.backgroundColor, scrollView?.backgroundColor)
         webView.isOpaque = false
         webView.backgroundColor = UIColor.clear
-        webView.scrollView.backgroundColor = UIColor.clear
+        scrollView?.backgroundColor = UIColor.clear
     }
 
     private func sendSuccess(_ command: CDVInvokedUrlCommand) {
