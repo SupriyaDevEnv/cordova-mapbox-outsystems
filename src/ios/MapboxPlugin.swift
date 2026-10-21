@@ -43,7 +43,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     func releaseCallback(_ id: String) {
         forgetCallback(id)
-        let result = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
+        // Cordova 7 imports this initializer as nullable; Cordova 8 as nonnull.
+        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
         result?.setKeepCallbackAs(false)
         commandDelegate.send(result, callbackId: id)
     }
@@ -2401,7 +2402,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func sendNoResultKeepCallback(_ command: CDVInvokedUrlCommand) {
-        let result = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
+        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
         result?.setKeepCallbackAs(true)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
@@ -2411,7 +2412,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             return
         }
 
-        let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
+        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
         result?.setKeepCallbackAs(true)
         commandDelegate.send(result, callbackId: callbackId)
     }
