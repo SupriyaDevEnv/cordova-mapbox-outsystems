@@ -1,6 +1,20 @@
 var nativeExec = require('cordova/exec');
 var callbacks = new Set();
 var lifecycleGeneration = 0;
+function isCancellationError(error) {
+  var message = typeof error === 'string' ? error : error && error.message;
+  return !!(error && error.code === 'MAPBOX_OPERATION_CANCELLED') ||
+    message === 'Map closed; operation cancelled.' ||
+    message === 'Location request was cancelled.' ||
+    message === 'Location request superseded.';
+}
+function cancellationError(action, message) {
+  var error = new Error(message || 'Map closed; operation cancelled.');
+  error.name = 'MapboxCancellationError';
+  error.code = 'MAPBOX_OPERATION_CANCELLED';
+  error.action = action;
+  return error;
+}
 function exec(success, error, service, action, args) {
   callbacks.forEach(function (previous) {
     if (previous.stream && previous.action === action) {
@@ -16,6 +30,9 @@ function exec(success, error, service, action, args) {
   }
   try {
     nativeExec(function (value) { finish(success, value); }, function (value) {
+      if (isCancellationError(value)) {
+        value = cancellationError(action, typeof value === 'string' ? value : value.message);
+      }
       record.stream = false; finish(error, value);
     }, service, action, args);
   } catch (e) { record.stream = false; finish(error, e); }
@@ -27,7 +44,7 @@ function cancelCallbacks() {
     callbacks.delete(record);
     record.active = false;
     if (!record.stream && record.error) {
-      try { record.error(new Error('Map closed; operation cancelled.')); }
+      try { record.error(cancellationError(record.action)); }
       catch (e) { if (typeof console !== 'undefined') console.warn('Mapbox cancellation callback failed.', e); }
     }
   });
@@ -93,6 +110,8 @@ function call(action, args) {
 }
 
 var api = {
+  // Cancellation settles the old request; it does not mean the next map failed.
+  isCancellationError: isCancellationError,
   diagnostic: function () {
     var result = {
       cordova: !!window.cordova,
