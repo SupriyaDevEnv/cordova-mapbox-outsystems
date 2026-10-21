@@ -2860,7 +2860,8 @@ private boolean addMarkerInternal(
 
     PointAnnotationOptions markerOptions = new PointAnnotationOptions()
         .withPoint(Point.fromLngLat(longitude, latitude))
-        .withIconImage(markerIcons.pin(style.color, style.isFind, style.imageUrl))
+        .withIconImage(markerIcons.pin(style.color, style.isFind, style.imageUrl,
+            cordova.getActivity().getResources().getDisplayMetrics().density))
         .withIconAnchor(IconAnchor.BOTTOM)
         .withIconSize(0.5);
 
@@ -2930,7 +2931,8 @@ private boolean addMarkerInternal(
             if (annotation == null || style == null || !imageUrl.equals(style.imageUrl)) {
                 continue;
             }
-            annotation.setIconImageBitmap(markerIcons.pin(style.color, style.isFind, imageUrl, image));
+            annotation.setIconImageBitmap(markerIcons.pin(style.color, style.isFind, imageUrl, image,
+                cordova.getActivity().getResources().getDisplayMetrics().density));
             changed.add(annotation);
         }
 

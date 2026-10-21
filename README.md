@@ -72,6 +72,14 @@ It supports inline maps, behind-WebView maps, markers, current-location movement
 
 ## Initialize Map
 
+Android marker pins use a logical 72x96 canvas rendered at the device density,
+then the existing 0.5 icon scale, for a 36x48 dp image footprint (including transparent
+padding). Plain pins and downloaded-image pins use the same dimensions. This
+keeps markers consistent across Android display densities; it is not tied to an
+Android OS version. Older builds used a fixed 72x96 physical-pixel bitmap, which
+made pins smaller in logical screen units on high-density devices. This correction
+enlarges those pins to the intended logical size. iOS marker sizing is unchanged.
+
 Call `initialize` once when the map screen opens.
 
 ```javascript

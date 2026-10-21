@@ -61,15 +61,16 @@ final class MarkerIcons {
     }
 
     /** Returns the pin for this look, using the cached image when it has loaded. */
-    Bitmap pin(int color, boolean isFind, String source) {
-        return pin(color, isFind, source, source == null ? null : images.get(source));
+    Bitmap pin(int color, boolean isFind, String source, float density) {
+        return pin(color, isFind, source, source == null ? null : images.get(source), density);
     }
 
-    Bitmap pin(int color, boolean isFind, String source, Bitmap image) {
-        String key = color + "|" + isFind + "|" + (image == null ? "" : source);
+    Bitmap pin(int color, boolean isFind, String source, Bitmap image, float density) {
+        density = validDensity(density);
+        String key = density + "|" + color + "|" + isFind + "|" + (image == null ? "" : source);
         Bitmap cached = pins.get(key);
         if (cached == null) {
-            cached = draw(color, isFind, image);
+            cached = draw(color, isFind, image, density);
             pins.put(key, cached);
         }
         return cached;
@@ -157,9 +158,18 @@ final class MarkerIcons {
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
     }
 
-    private static Bitmap draw(int pinColor, boolean isFind, Bitmap image) {
-        Bitmap bitmap = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888);
+    private static float validDensity(float density) {
+        return density > 0 && !Float.isNaN(density) && !Float.isInfinite(density) ? density : 1.0f;
+    }
+
+    private static Bitmap draw(int pinColor, boolean isFind, Bitmap image, float density) {
+        // Annotation images default to the map's pixel ratio. Supply physical
+        // pixels for our logical 72x96 artwork; iconSize=0.5 then yields 36x48 dp.
+        Bitmap bitmap = Bitmap.createBitmap(Math.max(1, Math.round(WIDTH * density)),
+            Math.max(1, Math.round(HEIGHT * density)), Bitmap.Config.ARGB_8888);
+        bitmap.setDensity(Bitmap.DENSITY_NONE);
         Canvas canvas = new Canvas(bitmap);
+        canvas.scale(density, density);
 
         Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         shadowPaint.setColor(Color.argb(65, 0, 0, 0));
