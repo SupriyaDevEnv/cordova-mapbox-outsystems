@@ -180,6 +180,51 @@ Registering `onLocationAccuracyChanged` requests location permission when needed
 
 For behind-WebView maps, keep the WebView/page background transparent. Android and iOS now discover overlay touch regions automatically. See Touch Routing below.
 
+### Navigation cancellation and location requests
+
+Closing or reinitializing the map cancels unfinished operations from the previous
+screen. A pending `moveToCurrentLocation()` can therefore reject after navigating
+away even though the map on the next screen opens successfully. Cancellation is
+not a rendering failure, and cancelled operations must not report success or
+continue their old initialization chain.
+
+The JavaScript bridge identifies lifecycle and superseded-location cancellations
+with `error.code === 'MAPBOX_OPERATION_CANCELLED'`, `error.name ===
+'MapboxCancellationError'` and `error.action` (the cancelled method).
+`MapboxPlugin.isCancellationError(error)` also recognizes the exact legacy native
+cancellation strings. It does not classify permission denial, disabled location
+services or an unavailable location as cancellation.
+
+In an OutSystems asynchronous JavaScript action, replace the terminal
+`.catch($reject)` on the map startup/location chain with:
+
+```javascript
+.catch(function (error) {
+  if (window.MapboxPlugin.isCancellationError(error)) {
+    // The old screen's work is finished. Do not continue its startup chain here.
+    $resolve();
+    return;
+  }
+  $reject(error);
+});
+```
+
+Keep this catch at the end of the chain, after all map setup operations. Resolving
+the JavaScript action must not be followed by additional map actions for a screen
+that has already been destroyed; guard the surrounding OutSystems flow with the
+screen's active state. Call initialize once per screen entry and await it before
+requesting location. Call close on screen destruction; avoid delayed cleanup
+that can close a newer screen's map. This handler change is required in the
+consuming app: the plugin cannot decide which user-facing error handlers to hide.
+
+`Unable to get current location.` is a separate Android failure: the current
+implementation requests a completely fresh fix with a five-second deadline and
+can receive no location. Do not suppress it as cancellation or treat it as a map
+initialization failure. Keep the map usable when location is unavailable and
+offer a retry; inspect permissions, enabled location services and device logs
+if it persists. Do not repeatedly request location from both OnReady and render
+callbacks, which can supersede an in-flight request.
+
 ## Fly To
 
 Use this when you want an animated camera transition that evokes flight, instead of the instant jump of `setCamera`. For long distances Mapbox builds the curved globe-style flight path automatically.
