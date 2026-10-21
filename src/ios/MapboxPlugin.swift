@@ -1,4 +1,6 @@
 import Foundation
+import CoreFoundation
+import Security
 import CoreLocation
 import UIKit
 import MapboxMaps
@@ -6,27 +8,100 @@ import Turf
 
 @objc(MapboxPlugin)
 class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDelegate {
+    private var sessionGeneration: UInt64 = 0
+    func runForSession(_ work: @escaping () -> Void) {
+        runForGeneration(sessionGeneration, work)
+    }
+
+    private func runForGeneration(_ generation: UInt64, _ work: @escaping () -> Void) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.sessionGeneration == generation else { return }
+            work()
+        }
+    }
+
+    private var sessionCallbacks: [String: Bool] = [:]
+    private var streamCallbacks: [String: String] = [:]
+    private var closeCallbackId: String?
+    private var savedWebViewAppearance: (Bool, UIColor?, UIColor?)?
+
+    func rememberCommand(_ command: CDVInvokedUrlCommand) {
+        guard let id = command.callbackId else { return }
+        let method = command.methodName ?? ""
+        let stream = method.hasPrefix("register")
+        if stream, let old = streamCallbacks[method], old != id {
+            releaseCallback(old)
+        }
+        if stream { streamCallbacks[method] = id }
+        sessionCallbacks[id] = stream
+    }
+
+    func forgetCallback(_ id: String) {
+        sessionCallbacks.removeValue(forKey: id)
+        streamCallbacks = streamCallbacks.filter { $0.value != id }
+    }
+
+    func releaseCallback(_ id: String) {
+        forgetCallback(id)
+        let result = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
+        result?.setKeepCallbackAs(false)
+        commandDelegate.send(result, callbackId: id)
+    }
+
+    @objc(registerCloseCallback:)
+    func registerCloseCallback(command: CDVInvokedUrlCommand) {
+        if let old = closeCallbackId { releaseCallback(old) }
+        closeCallbackId = command.callbackId
+        if mapView == nil {
+            sendSuccess(command)
+            closeCallbackId = nil
+        }
+    }
+
     private var mapView: MapView?
     private var mapTouchOverlay: MapTouchOverlayView?
     private var annotations: PointAnnotationManager?
     private var markers: [String: PointAnnotation] = [:]
+    private var markerStyles: [String: MarkerStyle] = [:]
+    private var pendingMarkerImages: [String: [String]] = [:]
+    private let markerIcons = MarkerIcons()
+    private let markerImageNotAllowed =
+        "Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 1 MiB."
     private var boundaryAnnotationManager: PolygonAnnotationManager?
     private var boundaryAnnotations: [PolygonAnnotation] = []
+    private var lineAnnotationManager: PolylineAnnotationManager?
+    private var pathAnnotations: [PolylineAnnotation] = []
+    private var currentSegmentAnnotation: PolylineAnnotation?
+    private var pathPoints: [CLLocationCoordinate2D] = []
+    private var isPathTrackingActive = false
+    private var isPathTrackingPaused = false
+    private var pathTrackingStartTime: TimeInterval = 0
+    private var isPathVisible = true
+    private var pathLineColor: String = "#FF0000"
+    private var pathLineWidth: Double = 3.0
+    private var pathLineOpacity: Double = 1.0
+    private var pathSegments: [[CLLocationCoordinate2D]] = []
+    private var currentSegment: [CLLocationCoordinate2D] = []
     private var waypointSelectedCallbackId: String?
     private var markerClickCallbackId: String?
     private var offlineDownloadProgressCallbackId: String?
+    private var compassCallbackId: String?
+    private var lastCompassBearing: Double = -1
+    private var lastCompassVisible = false
     private var activeStylePackDownload: Cancelable?
     private var activeTileRegionDownload: Cancelable?
     private var isOfflineDownloading = false
     private var waypointSelectionEnabled = false
     private var autoAddWaypointMarker = false
     private var cancelables = Set<AnyCancelable>()
+    private var compassSubscription: AnyCancelable?
     private var headingLocationManager: CLLocationManager?
     private var moveToCurrentLocationCallbackId: String?
     private var moveToCurrentLocationZoom: Double?
     private var lastHeadingBearing: CLLocationDirection = -1
     private var lastHeadingUpdate: TimeInterval = 0
     private var isUserTrackingEnabled = false
+    private(set) var isCameraFollowingUser = false
     private var isUserLocationEnabled = false
     private var isDeviceHeadingEnabled = false
     private var isHeadingFollowModeEnabled = false
@@ -45,11 +120,25 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(ping:)
     func ping(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         sendSuccess([
             "status": "ok",
             "service": "MapboxPlugin",
             "class": "MapboxPlugin"
         ], command)
+    }
+
+    private func optionalCameraZoom(_ options: [String: Any], _ key: String) throws -> CGFloat? {
+        guard let value = options[key], !(value is NSNull) else { return nil }
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite,
+              (0...25.5).contains(number.doubleValue) else {
+            throw NSError(domain: "MapboxPlugin", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "\(key) must be a finite number between 0 and 25.5."
+            ])
+        }
+        return CGFloat(number.doubleValue)
     }
 
     @objc(initialize:)
@@ -60,10 +149,24 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
+            guard self.validInput(options, command) else { return }
+            let minZoom: CGFloat?
+            let maxZoom: CGFloat?
+            do {
+                minZoom = try self.optionalCameraZoom(options, "minZoom")
+                maxZoom = try self.optionalCameraZoom(options, "maxZoom")
+            } catch {
+                self.sendError(error.localizedDescription, command)
+                return
+            }
+            if let minZoom = minZoom, let maxZoom = maxZoom, minZoom > maxZoom {
+                self.sendError("minZoom must be less than or equal to maxZoom.", command)
+                return
+            }
             let token = self.getAccessToken()
 
             guard !token.isEmpty else {
-                self.sendError("Mapbox access token is required. Configure MAPBOX_ACCESS_TOKEN in OutSystems Extensibility Configuration.", command)
+                self.sendError("A public pk.* Mapbox token is required. Configure MAPBOX_ACCESS_TOKEN in OutSystems Extensibility Configuration.", command)
                 return
             }
 
@@ -78,10 +181,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let zoom = self.doubleOption(options["zoom"], defaultValue: 12)
             let bearing = self.doubleOption(options["bearing"], defaultValue: 0)
             let pitch = self.doubleOption(options["pitch"], defaultValue: 0)
-            let styleUrl = options["styleUrl"] as? String
+            let styleUrl = options["styleUrl"] as? String ?? StyleURI.streets.rawValue
+            guard self.styleAllowed(styleUrl) else {
+                self.sendError("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.", command)
+                return
+            }
             let behindWebView = options["behindWebView"] as? Bool ?? false
 
             self.closeInternal()
+            self.rememberCommand(command)
 
             MapboxOptions.accessToken = token
 
@@ -92,7 +200,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 pitch: pitch
             )
 
-            let styleURI = styleUrl.flatMap { StyleURI(rawValue: $0) } ?? .streets
+            let styleURI = StyleURI(rawValue: styleUrl) ?? .streets
             let initOptions = MapInitOptions(cameraOptions: camera, styleURI: styleURI)
 
             let isInline = options["inline"] as? Bool ?? false
@@ -100,17 +208,51 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 frame: isInline ? self.frameFromOptions(options) : self.webView.bounds,
                 mapInitOptions: initOptions
             )
+
+            if minZoom != nil || maxZoom != nil {
+                do {
+                    try mapView.mapboxMap.setCameraBounds(with: CameraBoundsOptions(
+                        maxZoom: maxZoom, minZoom: minZoom
+                    ))
+                    // Reapply after bounds: MapInitOptions may have clamped zoom to SDK defaults.
+                    mapView.mapboxMap.setCamera(to: camera)
+                } catch {
+                    self.sendError("Camera zoom bounds conflict with the map's default bounds.", command)
+                    return
+                }
+            }
+
+            mapView.ornaments.options.compass.visibility = .hidden
+            mapView.ornaments.options.scaleBar.visibility = .hidden
+
             mapView.autoresizingMask = isInline ? [] : [.flexibleWidth, .flexibleHeight]
 
             if behindWebView, let superview = self.webView.superview {
                 self.makeWebViewTransparent()
+
+                // frameFromOptions() returns coordinates relative to the WebView.
+                // Convert them to the WebView's superview coordinate system
+                // before adding the native Mapbox view.
+                let mapFrameInWebView = self.frameFromOptions(options)
+
+                let mapFrameInSuperview =
+                    self.webView.convert(mapFrameInWebView, to: superview)
+
+                mapView.frame = mapFrameInSuperview
+
                 superview.insertSubview(mapView, belowSubview: self.webView)
-                self.installMapTouchOverlay(in: superview, frame: mapView.frame)
+
+                self.installMapTouchOverlay(
+                    in: superview,
+                    frame: mapFrameInSuperview
+                )
             } else {
                 self.webView.superview?.addSubview(mapView)
             }
 
             self.mapView = mapView
+            mapView.gestures.panGestureRecognizer.addTarget(self, action: #selector(self.pauseCameraFollowForGesture(_:)))
+            mapView.gestures.pinchGestureRecognizer.addTarget(self, action: #selector(self.pauseCameraFollowForGesture(_:)))
             self.annotations = mapView.annotations.makePointAnnotationManager()
             self.installMapTapHandler(on: mapView)
 
@@ -136,13 +278,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(setCamera:)
     func setCamera(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard let mapView = self.mapView else {
                 self.sendError("Map is not initialized.", command)
                 return
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             let latitude = self.doubleOption(options["latitude"], defaultValue: mapView.cameraState.center.latitude)
             let longitude = self.doubleOption(options["longitude"], defaultValue: mapView.cameraState.center.longitude)
 
@@ -166,15 +310,35 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
+    @objc(resetMapBearing:)
+    func resetMapBearing(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let mapView = self.mapView else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            mapView.camera.ease(
+                to: CameraOptions(bearing: 0),
+                duration: 0.4
+            )
+
+            self.sendSuccess(command)
+        }
+    }
+
     @objc(flyTo:)
     func flyTo(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard let mapView = self.mapView else {
                 self.sendError("Map is not initialized.", command)
                 return
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             let latitude = self.doubleOption(options["latitude"], defaultValue: mapView.cameraState.center.latitude)
             let longitude = self.doubleOption(options["longitude"], defaultValue: mapView.cameraState.center.longitude)
 
@@ -203,22 +367,40 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(setViewport:)
     func setViewport(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard let mapView = self.mapView else {
                 self.sendError("Map is not initialized.", command)
                 return
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
-            mapView.frame = self.frameFromOptions(options)
-            self.mapTouchOverlay?.frame = mapView.frame
+            guard self.validInput(options, command) else { return }
+            let newFrame = self.frameFromOptions(options)
+
+            if let superview = mapView.superview,
+               self.webView.superview === superview {
+
+                let convertedFrame =
+                    self.webView.convert(newFrame, to: superview)
+
+                mapView.frame = convertedFrame
+                self.mapTouchOverlay?.frame = convertedFrame
+
+            } else {
+
+                mapView.frame = newFrame
+                self.mapTouchOverlay?.frame = newFrame
+            }
+
             self.sendSuccess(command)
         }
     }
 
     @objc(setTouchableRects:)
     func setTouchableRects(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             let rects = command.argument(at: 0) as? [[String: Any]] ?? []
 
             let maxRects = 20
@@ -227,9 +409,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
-            let mapFrame = self.mapView?.frame ?? .zero
             self.mapTouchOverlay?.touchableRects = rects.compactMap {
-                self.touchRectFromOptions($0, mapViewFrame: mapFrame)
+                self.touchRectFromOptions($0)
             }
             self.sendSuccess(command)
         }
@@ -237,7 +418,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(enableUserLocation:)
     func enableUserLocation(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard let mapView = self.mapView else {
                 self.sendError("Map is not initialized.", command)
                 return
@@ -254,13 +436,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(setDeviceHeadingEnabled:)
     func setDeviceHeadingEnabled(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard let mapView = self.mapView else {
                 self.sendError("Map is not initialized.", command)
                 return
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             let enabled = options["enabled"] as? Bool ?? true
 
             if enabled {
@@ -277,13 +461,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(setHeadingFollowMode:)
     func setHeadingFollowMode(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard let mapView = self.mapView else {
                 self.sendError("Map is not initialized.", command)
                 return
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             let enabled = options["enabled"] as? Bool ?? true
 
             if !enabled {
@@ -302,13 +488,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(setUserTrackingEnabled:)
     func setUserTrackingEnabled(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard self.mapView != nil else {
                 self.sendError("Map is not initialized.", command)
                 return
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             let enabled = options["enabled"] as? Bool ?? true
 
             if !enabled {
@@ -323,17 +511,20 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(moveToCurrentLocation:)
     func moveToCurrentLocation(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard self.mapView != nil else {
                 self.sendError("Map is not initialized.", command)
                 return
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             self.moveToCurrentLocationZoom = options["zoom"] == nil
                 ? nil
                 : self.doubleOption(options["zoom"], defaultValue: 0)
 
+            self.resumeCameraFollowing()
             self.requestLocationAuthorizationIfNeeded()
             self.moveToCurrentLocationCallbackId = command.callbackId
             self.headingLocationManager?.startUpdatingLocation()
@@ -377,6 +568,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
 
         isUserTrackingEnabled = true
+        resumeCameraFollowing()
         fireTrackingStatusChanged()
         headingLocationManager?.startUpdatingLocation()
         sendSuccess(command)
@@ -384,11 +576,27 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     private func stopUserTracking() {
         isUserTrackingEnabled = false
+        isCameraFollowingUser = false
         fireTrackingStatusChanged()
         if moveToCurrentLocationCallbackId == nil {
             headingLocationManager?.stopUpdatingLocation()
         }
         lastUserTrackingUpdate = 0
+    }
+
+    func resumeCameraFollowing() {
+        isCameraFollowingUser = true
+    }
+
+    func isTrackingLocationManager(_ manager: CLLocationManager) -> Bool {
+        isUserTrackingEnabled && manager === headingLocationManager
+    }
+
+    @objc private func pauseCameraFollowForGesture(_ recognizer: UIGestureRecognizer) {
+        guard recognizer.state == .began || recognizer.state == .changed else { return }
+        guard isCameraFollowingUser else { return }
+        isCameraFollowingUser = false
+        mapView?.camera.cancelAnimations()
     }
 
     private func stopHeadingFollowMode() {
@@ -414,6 +622,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        guard manager === headingLocationManager else { return }
         var bearing = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
         guard bearing >= 0 else {
             return
@@ -443,12 +652,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         lastHeadingBearing = bearing
         lastHeadingUpdate = now
 
-        DispatchQueue.main.async {
+        runForSession {
             self.mapView?.mapboxMap.setCamera(to: CameraOptions(bearing: bearing))
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard manager === headingLocationManager else { return }
         guard let location = locations.last else {
             return
         }
@@ -463,8 +673,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
             moveToCurrentLocationZoom = nil
 
-            DispatchQueue.main.async {
-                self.mapView?.mapboxMap.setCamera(to: camera)
+            runForSession {
+                if self.isCameraFollowingUser {
+                    self.mapView?.mapboxMap.setCamera(to: camera)
+                }
                 if !self.isUserTrackingEnabled {
                     manager.stopUpdatingLocation()
                 }
@@ -489,8 +701,21 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         lastUserTrackingUpdate = now
         let coordinate = location.coordinate
 
-        DispatchQueue.main.async {
-            self.mapView?.mapboxMap.setCamera(to: CameraOptions(center: coordinate))
+        runForSession {
+            guard self.isTrackingLocationManager(manager) else { return }
+            if self.isCameraFollowingUser {
+                self.mapView?.mapboxMap.setCamera(to: CameraOptions(center: coordinate))
+            }
+
+            if self.isPathTrackingActive && !self.isPathTrackingPaused {
+                guard self.pathPoints.count < MapboxSecurity.maxPoints else {
+                    self.stopUserTracking()
+                    return // Keep the recording available to stopPathTracking().
+                }
+                self.pathPoints.append(coordinate)
+                self.currentSegment.append(coordinate)
+                self.updatePathAnnotation()
+            }
         }
     }
 
@@ -519,18 +744,20 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(addMarker:)
     func addMarker(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard self.mapView != nil else {
                 self.sendError("Map is not initialized.", command)
                 return
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
 
             let id: String
             if let rawId = options["id"] {
-                guard let idStr = rawId as? String else {
-                    self.sendError("Invalid id: must be a string.", command)
+                guard let idStr = self.stringOption(rawId) else {
+                    self.sendError("Invalid id: must be a string, number, or boolean.", command)
                     return
                 }
                 guard !idStr.isEmpty else {
@@ -550,38 +777,57 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
-            self.addMarkerInternal(id: id, latitude: latitude, longitude: longitude)
+            guard self.markers[id] != nil || self.markers.count < self.maxMarkers,
+                  id.utf8.count <= 256 else { self.sendError("Marker/id limit exceeded.", command); return }
+            let isFind = options["isFind"] as? Bool ?? false
+            guard let style = self.markerStyle(isFind: isFind, pinColor: options["pinColor"], imageUrl: options["imageUrl"], pinStyle: options["pinStyle"]) else {
+                self.sendError(self.markerImageNotAllowed, command)
+                return
+            }
+            self.addMarkerInternal(id: id, latitude: latitude, longitude: longitude, style: style)
             self.sendSuccess(["id": id], command)
         }
     }
 
     @objc(loadMarkers:)
     func loadMarkers(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard self.mapView != nil else {
                 self.sendError("Map is not initialized.", command)
                 return
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
-            if options["replace"] as? Bool ?? true {
-                self.clearMarkersInternal()
-            }
-
+            guard self.validInput(options, command) else { return }
+            let replace = options["replace"] as? Bool ?? true
             let markers = options["markers"] as? [[String: Any]] ?? []
-            guard markers.count <= self.maxMarkers else {
-                self.sendError("Too many markers: maximum allowed is \(self.maxMarkers).", command)
-                return
-            }
+            var ids = replace ? Set<String>() : Set(self.markers.keys)
+            var styles: [MarkerStyle] = []
             for (index, marker) in markers.enumerated() {
-                let id = marker["id"] as? String ?? String(index)
-                let latitude = self.doubleOption(marker["latitude"], defaultValue: 0)
-                let longitude = self.doubleOption(marker["longitude"], defaultValue: 0)
+                let id = marker["Id"].flatMap(self.stringOption) ?? String(index)
+                guard !id.isEmpty, id.utf8.count <= 256 else { self.sendError("Invalid marker id.", command); return }
+                let isFind = marker["IsFind"] as? Bool ?? false
+                guard let style = self.markerStyle(isFind: isFind, pinColor: marker["PinColor"], imageUrl: marker["ImageUrl"], pinStyle: marker["PinStyle"]) else {
+                    self.sendError(self.markerImageNotAllowed, command); return
+                }
+                styles.append(style)
+                ids.insert(id)
+            }
+            guard markers.count <= self.maxMarkers, ids.count <= self.maxMarkers else {
+                self.sendError("Too many markers: maximum total is \(self.maxMarkers).", command); return
+            }
+            if replace { self.clearMarkersInternal() }
+            for (index, marker) in markers.enumerated() {
+                let id = marker["Id"].flatMap(self.stringOption) ?? String(index)
+                let latitude = self.doubleOption(marker["Latitude"], defaultValue: 0)
+                let longitude = self.doubleOption(marker["Longitude"], defaultValue: 0)
                 guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
                     continue
                 }
-                self.addMarkerInternal(id: id, latitude: latitude, longitude: longitude)
+                self.addMarkerInternal(id: id, latitude: latitude, longitude: longitude, style: styles[index], publish: false)
             }
+            self.annotations?.annotations = Array(self.markers.values)
 
             self.sendSuccess(command)
         }
@@ -589,10 +835,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(removeMarker:)
     func removeMarker(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             let id = options["id"] as? String ?? ""
             self.markers.removeValue(forKey: id)
+            self.markerStyles.removeValue(forKey: id)
             self.annotations?.annotations = Array(self.markers.values)
             self.sendSuccess(command)
         }
@@ -600,7 +849,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(clearMarkers:)
     func clearMarkers(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             self.clearMarkersInternal()
             self.sendSuccess(command)
         }
@@ -608,17 +858,24 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(loadBoundaries:)
     func loadBoundaries(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard self.mapView != nil else {
                 self.sendError("Map is not initialized.", command)
                 return
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             let boundaries = options["boundaries"] as? [[String: Any]] ?? []
             guard boundaries.count <= self.maxBoundaries else {
                 self.sendError("Too many boundaries: maximum allowed is \(self.maxBoundaries).", command)
                 return
+            }
+            var vertices = 0
+            for boundary in boundaries {
+                vertices += (boundary["geometry"] as? [Any])?.count ?? 0
+                guard vertices <= MapboxSecurity.maxPoints else { self.sendError("Too many boundary vertices.", command); return }
             }
             self.boundaryVisible = options["visible"] as? Bool ?? true
             self.boundaryAnnotations = self.boundaryAnnotationsFromOptions(options, boundaries: boundaries)
@@ -629,8 +886,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(setBoundaryVisibility:)
     func setBoundaryVisibility(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             self.boundaryVisible = options["visible"] as? Bool ?? true
             self.applyBoundaryVisibility()
             self.sendSuccess(command)
@@ -639,16 +898,307 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(clearBoundaries:)
     func clearBoundaries(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             self.clearBoundariesInternal()
+            self.sendSuccess(command)
+        }
+    }
+
+    // --- Path Tracking Methods ---
+
+    private func ensureLineAnnotationManager() -> Bool {
+        guard let mapView = mapView else { return false }
+        if lineAnnotationManager != nil { return true }
+        lineAnnotationManager = mapView.annotations.makePolylineAnnotationManager()
+        return lineAnnotationManager != nil
+    }
+
+    private func updatePathAnnotation() {
+        guard currentSegment.count >= 2, ensureLineAnnotationManager() else { return }
+
+        // Delete old annotation for current segment
+        if let old = currentSegmentAnnotation {
+            lineAnnotationManager?.annotations.removeAll { $0.id == old.id }
+            currentSegmentAnnotation = nil
+        }
+
+        guard isPathVisible else { return }
+
+        var annotation = PolylineAnnotation(lineCoordinates: currentSegment)
+        annotation.lineColor = StyleColor(colorOption(pathLineColor, defaultColor: .red))
+        annotation.lineWidth = pathLineWidth
+        annotation.lineOpacity = pathLineOpacity
+        currentSegmentAnnotation = annotation
+        lineAnnotationManager?.annotations.append(annotation)
+    }
+
+    @objc(startPathTracking:)
+    func startPathTracking(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard self.mapView != nil else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            if self.isPathTrackingActive {
+                self.sendError("Path tracking is already active. Call stopPathTracking first.", command)
+                return
+            }
+
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
+            self.isPathTrackingActive = true
+            self.isPathTrackingPaused = false
+            self.isPathVisible = true
+            self.pathTrackingStartTime = Date().timeIntervalSince1970
+            self.pathPoints.removeAll()
+            self.pathAnnotations.removeAll()
+            self.currentSegmentAnnotation = nil
+            self.pathSegments.removeAll()
+            self.currentSegment.removeAll()
+
+            self.pathLineColor = options["lineColor"] as? String ?? "#FF0000"
+            self.pathLineWidth = options["lineWidth"] as? Double ?? 3.0
+            self.pathLineOpacity = options["lineOpacity"] as? Double ?? 1.0
+
+            if self.boolOption(options["trackCamera"], defaultValue: true) {
+                self.startUserTracking(command)
+            } else {
+                self.sendSuccess(["status": "started"], command)
+            }
+        }
+    }
+
+    @objc(stopPathTracking:)
+    func stopPathTracking(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard self.isPathTrackingActive else {
+                self.sendError("Path tracking is not active.", command)
+                return
+            }
+
+            self.isPathTrackingActive = false
+            self.isPathTrackingPaused = false
+            let duration = Date().timeIntervalSince1970 - self.pathTrackingStartTime
+
+            // Freeze current segment annotation into the permanent list
+            if let ann = self.currentSegmentAnnotation {
+                self.pathAnnotations.append(ann)
+                self.currentSegmentAnnotation = nil
+            }
+
+            // Finish current segment if it has points
+            if !self.currentSegment.isEmpty {
+                self.pathSegments.append(self.currentSegment)
+                self.currentSegment.removeAll()
+            }
+
+            var totalDistance: Double = 0
+            for (previous, current) in zip(self.pathPoints, self.pathPoints.dropFirst()) {
+                let from = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
+                let to = CLLocation(latitude: current.latitude, longitude: current.longitude)
+                totalDistance += from.distance(from: to)
+            }
+
+            let pointsArray: [[String: Double]] = self.pathPoints.map { ["lat": $0.latitude, "lon": $0.longitude] }
+
+            // Build segment boundaries
+            var segmentsArray: [[String: Int]] = []
+            var startIndex = 0
+            for segment in self.pathSegments {
+                segmentsArray.append([
+                    "startIndex": startIndex,
+                    "endIndex": startIndex + segment.count - 1
+                ])
+                startIndex += segment.count
+            }
+
+            self.sendSuccess([
+                "points": pointsArray,
+                "distance": (totalDistance * 100).rounded() / 100,
+                "duration": (duration * 1000).rounded(),
+                "segments": segmentsArray,
+                "segmentCount": self.pathSegments.count
+            ], command)
+        }
+    }
+
+    @objc(pausePathTracking:)
+    func pausePathTracking(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard self.isPathTrackingActive else {
+                self.sendError("Path tracking is not active.", command)
+                return
+            }
+
+            guard !self.isPathTrackingPaused else {
+                self.sendError("Path tracking is already paused.", command)
+                return
+            }
+
+            self.isPathTrackingPaused = true
+
+            // Freeze current segment annotation into the permanent list
+            if let ann = self.currentSegmentAnnotation {
+                self.pathAnnotations.append(ann)
+                self.currentSegmentAnnotation = nil
+            }
+
+            // Finish current segment
+            if !self.currentSegment.isEmpty {
+                self.pathSegments.append(self.currentSegment)
+                self.currentSegment.removeAll()
+            }
+
+            self.sendSuccess([
+                "status": "paused",
+                "segmentCount": self.pathSegments.count
+            ], command)
+        }
+    }
+
+    @objc(continuePathTracking:)
+    func continuePathTracking(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard self.isPathTrackingActive else {
+                self.sendError("Path tracking is not active.", command)
+                return
+            }
+
+            guard self.isPathTrackingPaused else {
+                self.sendError("Path tracking is not paused. Call pausePathTracking first.", command)
+                return
+            }
+
+            self.isPathTrackingPaused = false
+            self.currentSegment.removeAll()
+
+            self.sendSuccess([
+                "status": "continued",
+                "segmentCount": self.pathSegments.count + 1
+            ], command)
+        }
+    }
+
+    @objc(loadPath:)
+    func loadPath(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard self.mapView != nil else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            if self.isPathTrackingActive {
+                self.sendError("Cannot load a path while path tracking is active. Stop tracking first.", command)
+                return
+            }
+
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
+            guard let pointsArray = options["points"] as? [[String: Any]], pointsArray.count >= 2, pointsArray.count <= MapboxSecurity.maxPoints else {
+                self.sendError("A path requires between 2 and 20000 points.", command)
+                return
+            }
+
+            let lineColorHex = options["lineColor"] as? String ?? "#FF0000"
+            let lineWidth = options["lineWidth"] as? Double ?? 3.0
+            let lineOpacity = options["lineOpacity"] as? Double ?? 1.0
+
+            self.pathLineColor = lineColorHex
+            self.pathLineWidth = lineWidth
+            self.pathLineOpacity = lineOpacity
+            self.isPathVisible = true
+
+            self.pathPoints.removeAll()
+            for pointDict in pointsArray {
+                let lat = self.doubleOption(pointDict["lat"] ?? pointDict["latitude"], defaultValue: Double.nan)
+                let lon = self.doubleOption(pointDict["lon"] ?? pointDict["lng"] ?? pointDict["longitude"], defaultValue: Double.nan)
+                guard lat.isFinite, lon.isFinite, self.isValidLatitude(lat), self.isValidLongitude(lon) else { continue }
+                self.pathPoints.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+            }
+
+            guard self.pathPoints.count >= 2 else {
+                self.sendError("A path requires at least 2 valid points.", command)
+                return
+            }
+
+            guard self.ensureLineAnnotationManager() else {
+                self.sendError("Polyline annotation manager is not available.", command)
+                return
+            }
+
+            // Clear any existing path annotations
+            self.lineAnnotationManager?.annotations.removeAll()
+            self.pathAnnotations.removeAll()
+            self.currentSegmentAnnotation = nil
+
+            var annotation = PolylineAnnotation(lineCoordinates: self.pathPoints)
+            annotation.lineColor = StyleColor(self.colorOption(self.pathLineColor, defaultColor: .red))
+            annotation.lineWidth = self.pathLineWidth
+            annotation.lineOpacity = self.pathLineOpacity
+            self.pathAnnotations.removeAll()
+            self.pathAnnotations.append(annotation)
+            self.lineAnnotationManager?.annotations.append(annotation)
+
+            self.sendSuccess([
+                "status": "loaded",
+                "pointCount": self.pathPoints.count
+            ], command)
+        }
+    }
+
+    @objc(clearPaths:)
+    func clearPaths(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            self.lineAnnotationManager?.annotations.removeAll()
+            self.pathAnnotations.removeAll()
+            self.currentSegmentAnnotation = nil
+            self.pathPoints.removeAll()
+            self.sendSuccess(command)
+        }
+    }
+
+    @objc(setPathVisibility:)
+    func setPathVisibility(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard self.mapView != nil else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
+            let visible = options["visible"] as? Bool ?? true
+
+            self.isPathVisible = visible
+
+            if !visible {
+                // Hide: remove all annotations from map
+                self.lineAnnotationManager?.annotations.removeAll()
+                self.pathAnnotations.removeAll()
+                self.currentSegmentAnnotation = nil
+            } else {
+                // Show: redraw current segment
+                self.updatePathAnnotation()
+            }
+
             self.sendSuccess(command)
         }
     }
 
     @objc(downloadOfflineRegion:)
     func downloadOfflineRegion(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         sendOfflineProgress(phase: "started", completed: 0, required: 100)
-        DispatchQueue.main.async {
+        runForSession {
             self.sendOfflineProgress(phase: "native-entered", completed: 0, required: 100)
 
             guard self.mapView != nil else {
@@ -657,6 +1207,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             let latitude = self.doubleOption(options["latitude"], defaultValue: 0)
             let longitude = self.doubleOption(options["longitude"], defaultValue: 0)
 
@@ -666,9 +1217,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             let radiusKm = self.doubleOption(options["radiusKm"], defaultValue: 10)
-            let minZoom = self.uint8Option(options["minZoom"], defaultValue: 10)
-            let maxZoom = self.uint8Option(options["maxZoom"], defaultValue: 16)
+            guard let minZoom = MapboxSecurity.zoom(self.doubleOption(options["minZoom"], defaultValue: 10)),
+                  let maxZoom = MapboxSecurity.zoom(self.doubleOption(options["maxZoom"], defaultValue: 16)), minZoom <= maxZoom else {
+                self.sendError("Offline zoom must be between 2 and 18 with minZoom <= maxZoom.", command); return
+            }
             let styleUrl = options["styleUrl"] as? String ?? StyleURI.streets.rawValue
+            guard self.styleAllowed(styleUrl) else {
+                self.sendError("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.", command)
+                return
+            }
             let regionId = options["regionId"] as? String
                 ?? "offline-\(Int(latitude * 100000))-\(Int(longitude * 100000))"
 
@@ -693,8 +1250,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(downloadOfflineRegionForRect:)
     func downloadOfflineRegionForRect(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         sendOfflineProgress(phase: "started", completed: 0, required: 100)
-        DispatchQueue.main.async {
+        runForSession {
             self.sendOfflineProgress(phase: "native-entered", completed: 0, required: 100)
 
             guard let mapView = self.mapView else {
@@ -703,13 +1261,30 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
-            let x = self.doubleOption(options["x"], defaultValue: 0)
-            let y = self.doubleOption(options["y"], defaultValue: 0)
-            let width = self.doubleOption(options["width"], defaultValue: 1)
-            let height = self.doubleOption(options["height"], defaultValue: 1)
-            let minZoom = self.uint8Option(options["minZoom"], defaultValue: 10)
-            let maxZoom = self.uint8Option(options["maxZoom"], defaultValue: 16)
+            guard self.validInput(options, command) else { return }
+            let nativeX = self.doubleOption(options["x"], defaultValue: 0)
+            let nativeY = self.doubleOption(options["y"], defaultValue: 0)
+            let nativeWidth = self.doubleOption(options["width"], defaultValue: 1)
+            let nativeHeight = self.doubleOption(options["height"], defaultValue: 1)
+            guard [nativeX, nativeY, nativeWidth, nativeHeight].allSatisfy({
+                $0.isFinite && abs($0) <= 1000000
+            }), nativeWidth > 0, nativeHeight > 0 else {
+                self.sendError("Invalid offline rectangle.", command); return
+            }
+            let scale = Double(UIScreen.main.scale)
+            let x = nativeX / scale
+            let y = nativeY / scale
+            let width = nativeWidth / scale
+            let height = nativeHeight / scale
+            guard let minZoom = MapboxSecurity.zoom(self.doubleOption(options["minZoom"], defaultValue: 10)),
+                  let maxZoom = MapboxSecurity.zoom(self.doubleOption(options["maxZoom"], defaultValue: 16)), minZoom <= maxZoom else {
+                self.sendError("Offline zoom must be between 2 and 18 with minZoom <= maxZoom.", command); return
+            }
             let styleUrl = options["styleUrl"] as? String ?? StyleURI.streets.rawValue
+            guard self.styleAllowed(styleUrl) else {
+                self.sendError("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.", command)
+                return
+            }
             let regionId = options["regionId"] as? String ?? "offline-rect-\(Int(Date().timeIntervalSince1970 * 1000))"
 
             guard let styleURI = StyleURI(rawValue: styleUrl) else {
@@ -760,6 +1335,25 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             sendError("An offline region download is already in progress.", command)
             return
         }
+        guard radiusKm.isFinite, radiusKm >= 0, radiusKm <= maxOfflineRadiusKm,
+              !regionId.isEmpty, regionId.utf8.count <= 256 else {
+            sendError("Invalid offline radius or region id.", command); return
+        }
+        let downloadGeneration = sessionGeneration
+        let center = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        let polygon = Polygon(center: center, radius: radiusKm * 1000, vertices: 64)
+        let regionGeometry = geometry ?? polygon.geometry
+        guard case .polygon(let regionPolygon) = regionGeometry else {
+            sendError("Offline geometry must be a polygon.", command); return
+        }
+        let coordinates = regionPolygon.coordinates.flatMap { $0 }
+        guard let south = coordinates.map({ $0.latitude }).min(),
+              let north = coordinates.map({ $0.latitude }).max(),
+              let west = coordinates.map({ $0.longitude }).min(),
+              let east = coordinates.map({ $0.longitude }).max(),
+              MapboxSecurity.offlineBounds(south: south, west: west, north: north, east: east, zoom: Double(maxZoom)) else {
+            sendError("Offline region exceeds the geographic or 50000-tile budget.", command); return
+        }
         let boundedRadiusKm = max(0, min(radiusKm, maxOfflineRadiusKm))
         let boundedMinZoom = max(minOfflineZoom, min(minZoom, maxOfflineZoom))
         let boundedMaxZoom = max(boundedMinZoom, min(maxZoom, maxOfflineZoom))
@@ -773,6 +1367,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             metadata: ["regionId": regionId],
             acceptExpired: false
         ) else {
+            isOfflineDownloading = false
             sendError("Failed to create style pack options.", command)
             return
         }
@@ -781,36 +1376,42 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             for: styleURI,
             loadOptions: stylePackOptions
         ) { progress in
-            self.sendOfflineProgress(
-                phase: "style",
-                completed: UInt64(progress.completedResourceCount),
-                required: UInt64(progress.requiredResourceCount)
-            )
-        } completion: { result in
-            switch result {
-            case .success:
-                self.sendOfflineProgress(phase: "tiles-start", completed: 0, required: 100)
-                self.downloadOfflineTiles(
-                    offlineManager: offlineManager,
-                    regionId: regionId,
-                    latitude: latitude,
-                    longitude: longitude,
-                    radiusKm: boundedRadiusKm,
-                    minZoom: boundedMinZoom,
-                    maxZoom: boundedMaxZoom,
-                    styleURI: styleURI,
-                    geometry: geometry,
-                    command: command
+            self.runForGeneration(downloadGeneration) {
+                self.sendOfflineProgress(
+                    phase: "style",
+                    completed: UInt64(progress.completedResourceCount),
+                    required: UInt64(progress.requiredResourceCount)
                 )
-            case .failure(let error):
-                self.isOfflineDownloading = false
-                self.sendError(self.sanitizeError(contextMessage: "Failed to download style pack.", error: error), command)
+            }
+        } completion: { result in
+            self.runForGeneration(downloadGeneration) {
+                switch result {
+                case .success:
+                    self.sendOfflineProgress(phase: "tiles-start", completed: 0, required: 100)
+                    self.downloadOfflineTiles(
+                        offlineManager: offlineManager,
+                        downloadGeneration: downloadGeneration,
+                        regionId: regionId,
+                        latitude: latitude,
+                        longitude: longitude,
+                        radiusKm: boundedRadiusKm,
+                        minZoom: boundedMinZoom,
+                        maxZoom: boundedMaxZoom,
+                        styleURI: styleURI,
+                        geometry: geometry,
+                        command: command
+                    )
+                case .failure(let error):
+                    self.isOfflineDownloading = false
+                    self.sendError(self.sanitizeError(contextMessage: "Failed to download style pack.", error: error), command)
+                }
             }
         }
     }
 
     private func downloadOfflineTiles(
         offlineManager: OfflineManager,
+        downloadGeneration: UInt64,
         regionId: String,
         latitude: Double,
         longitude: Double,
@@ -821,6 +1422,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         geometry: Geometry? = nil,
         command: CDVInvokedUrlCommand
     ) {
+        guard downloadGeneration == sessionGeneration else { return }
         let descriptorOptions = TilesetDescriptorOptions(
             styleURI: styleURI,
             zoomRange: minZoom...maxZoom,
@@ -845,36 +1447,42 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             forId: regionId,
             loadOptions: loadOptions
         ) { progress in
-            self.sendOfflineProgress(
-                phase: "tiles",
-                completed: UInt64(progress.completedResourceCount),
-                required: UInt64(progress.requiredResourceCount)
-            )
+            self.runForGeneration(downloadGeneration) {
+                self.sendOfflineProgress(
+                    phase: "tiles",
+                    completed: UInt64(progress.completedResourceCount),
+                    required: UInt64(progress.requiredResourceCount)
+                )
+            }
         } completion: { result in
-            self.isOfflineDownloading = false
-            switch result {
-            case .success:
-                self.sendSuccess([
-                    "regionId": regionId,
-                    "latitude": latitude,
-                    "longitude": longitude,
-                    "radiusKm": radiusKm
-                ], command)
-            case .failure(let error):
-                self.sendError(self.sanitizeError(contextMessage: "Failed to download tile region.", error: error), command)
+            self.runForGeneration(downloadGeneration) {
+                self.isOfflineDownloading = false
+                switch result {
+                case .success:
+                    self.sendSuccess([
+                        "regionId": regionId,
+                        "latitude": latitude,
+                        "longitude": longitude,
+                        "radiusKm": radiusKm
+                    ], command)
+                case .failure(let error):
+                    self.sendError(self.sanitizeError(contextMessage: "Failed to download tile region.", error: error), command)
+                }
             }
         }
     }
 
     @objc(showOfflineRegion:)
     func showOfflineRegion(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard let mapView = self.mapView else {
                 self.sendError("Map is not initialized.", command)
                 return
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             let latitude = self.doubleOption(options["latitude"], defaultValue: 0)
             let longitude = self.doubleOption(options["longitude"], defaultValue: 0)
 
@@ -885,6 +1493,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let zoom = self.doubleOption(options["zoom"], defaultValue: 13)
             let styleUrl = options["styleUrl"] as? String ?? StyleURI.streets.rawValue
+            guard self.styleAllowed(styleUrl) else {
+                self.sendError("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.", command)
+                return
+            }
             let styleURI = StyleURI(rawValue: styleUrl) ?? .streets
 
             mapView.mapboxMap.loadStyle(styleURI)
@@ -898,9 +1510,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(deleteOfflineRegion:)
     func deleteOfflineRegion(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         let options = command.argument(at: 0) as? [String: Any] ?? [:]
+        guard self.validInput(options, command) else { return }
         let regionId = options["regionId"] as? String ?? ""
         let styleUrl = options["styleUrl"] as? String ?? StyleURI.streets.rawValue
+        guard self.styleAllowed(styleUrl) else {
+            self.sendError("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.", command)
+            return
+        }
         let deleteStylePack = options["deleteStylePack"] as? Bool ?? true
 
         guard !regionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -919,7 +1537,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(setWaypointSelectionEnabled:)
     func setWaypointSelectionEnabled(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         let options = command.argument(at: 0) as? [String: Any] ?? [:]
+        guard self.validInput(options, command) else { return }
         waypointSelectionEnabled = options["enabled"] as? Bool ?? true
         autoAddWaypointMarker = options["autoAddMarker"] as? Bool ?? false
         sendSuccess(command)
@@ -927,27 +1547,97 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     @objc(registerWaypointSelectedCallback:)
     func registerWaypointSelectedCallback(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         waypointSelectedCallbackId = command.callbackId
         sendNoResultKeepCallback(command)
     }
 
     @objc(registerMarkerClickCallback:)
     func registerMarkerClickCallback(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         markerClickCallbackId = command.callbackId
         sendNoResultKeepCallback(command)
     }
 
     @objc(registerOfflineDownloadProgressCallback:)
     func registerOfflineDownloadProgressCallback(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         offlineDownloadProgressCallbackId = command.callbackId
         sendNoResultKeepCallback(command)
     }
 
     @objc(registerTrackingStatusCallback:)
     func registerTrackingStatusCallback(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
         trackingStatusCallbackId = command.callbackId
         sendNoResultKeepCallback(command)
         fireTrackingStatusChanged()
+    }
+
+    @objc(registerCompassCallback:)
+    func registerCompassCallback(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        compassCallbackId = command.callbackId
+        sendNoResultKeepCallback(command)
+
+        startCompassCameraListener()
+    }
+
+    private func startCompassCameraListener() {
+        guard let mapView = mapView else {
+            return
+        }
+
+        compassSubscription?.cancel()
+        let generation = sessionGeneration
+        let cancellable = mapView.mapboxMap.onCameraChanged.observe { [weak self] _ in
+            guard let self = self, self.sessionGeneration == generation, self.mapView === mapView else {
+                return
+            }
+
+            let bearing = mapView.cameraState.bearing
+
+            let normalizedBearing = ((bearing.truncatingRemainder(dividingBy: 360.0)) + 360.0)
+                .truncatingRemainder(dividingBy: 360.0)
+
+            let distanceFromNorth = min(
+                normalizedBearing,
+                360.0 - normalizedBearing
+            )
+
+            let visible = distanceFromNorth > 1.0
+
+            let bearingChanged: Bool
+
+            if self.lastCompassBearing < 0 {
+                bearingChanged = true
+            } else {
+                bearingChanged =
+                    abs(self.shortestBearingDelta(
+                        from: self.lastCompassBearing,
+                        to: normalizedBearing
+                    )) >= 0.5
+            }
+
+            let visibilityChanged = visible != self.lastCompassVisible
+
+            guard bearingChanged || visibilityChanged else {
+                return
+            }
+
+            self.lastCompassBearing = normalizedBearing
+            self.lastCompassVisible = visible
+
+            self.sendKeepCallback(
+                self.compassCallbackId,
+                payload: [
+                    "bearing": normalizedBearing,
+                    "visible": visible
+                ]
+            )
+        }
+
+        compassSubscription = cancellable
     }
 
     private func fireTrackingStatusChanged() {
@@ -980,10 +1670,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
-            if self.sendMarkerClickIfNear(context.coordinate) {
-                return
-            }
-
             guard self.waypointSelectionEnabled else {
                 return
             }
@@ -1010,7 +1696,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }.store(in: &cancelables)
     }
 
-    private func addMarkerInternal(id: String, latitude: Double, longitude: Double) {
+    private func addMarkerInternal(id: String, latitude: Double, longitude: Double, style: MarkerStyle = .default, publish: Bool = true) {
+        guard !id.isEmpty, id.utf8.count <= 256,
+              markers[id] != nil || markers.count < maxMarkers else { return }
         guard var manager = annotations else {
             return
         }
@@ -1018,29 +1706,82 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         var marker = PointAnnotation(
             coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
         )
-        marker.image = .init(image: createWaypointMarkerImage(), name: "waypoint-marker")
+        marker.image = style.photo
+            ? markerIcons.photoPin(color: style.color, source: style.imageUrl)
+            : markerIcons.pin(color: style.color, isFind: style.isFind, source: style.imageUrl)
         marker.iconAnchor = .bottom
+        marker.iconSize = 0.5
         marker.tapHandler = { [weak self, id] context in
             guard let self = self else { return true }
             let now = ProcessInfo.processInfo.systemUptime
             guard now - self.lastKeepCallbackMarkerTs >= self.callbackRateLimit else { return true }
             self.lastKeepCallbackMarkerTs = now
             self.sendKeepCallback(self.markerClickCallbackId, payload: [
-                "type": "markerClicked",
-                "id": id,
-                "latitude": context.coordinate.latitude,
-                "longitude": context.coordinate.longitude
+                "type": self.markerType(for: id),
+                "id": id
             ])
             return true
         }
 
         markers[id] = marker
-        manager.annotations = Array(markers.values)
+        markerStyles[id] = style
+        if publish { manager.annotations = Array(markers.values) }
         annotations = manager
+
+        if let imageUrl = style.imageUrl, !markerIcons.hasImage(imageUrl) {
+            requestMarkerImage(id: id, imageUrl: imageUrl)
+        }
+    }
+
+    /// Returns nil when imageUrl is not an allowed image source.
+    private func markerStyle(isFind: Bool, pinColor: Any?, imageUrl rawImageUrl: Any?, pinStyle: Any? = nil) -> MarkerStyle? {
+        let photo = (pinStyle as? String) == "photo"
+        let defaultColor = isFind ? MarkerIcons.findPinColor : photo ? MarkerIcons.photoPinColor : MarkerIcons.defaultPinColor
+        let color = colorOption(pinColor, defaultColor: defaultColor)
+        let imageUrl = (rawImageUrl as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if imageUrl.isEmpty {
+            return MarkerStyle(color: color, isFind: isFind, imageUrl: nil, photo: photo)
+        }
+        guard MapboxSecurity.markerImageAllowed(imageUrl, hosts: preferenceValue("MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS")) else {
+            return nil
+        }
+        return MarkerStyle(color: color, isFind: isFind, imageUrl: imageUrl, photo: photo)
+    }
+
+    // Markers show a plain pin until their image arrives; one download serves every marker using it.
+    private func requestMarkerImage(id: String, imageUrl: String) {
+        if pendingMarkerImages[imageUrl] != nil {
+            pendingMarkerImages[imageUrl]?.append(id)
+            return
+        }
+        pendingMarkerImages[imageUrl] = [id]
+
+        let generation = sessionGeneration
+        markerIcons.load(imageUrl, hosts: preferenceValue("MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS")) { [weak self] image in
+            self?.runForGeneration(generation) {
+                self?.applyMarkerImage(imageUrl, image: image)
+            }
+        }
+    }
+
+    private func applyMarkerImage(_ imageUrl: String, image: UIImage?) {
+        guard let ids = pendingMarkerImages.removeValue(forKey: imageUrl), let image = image else { return }
+
+        var changed = false
+        for id in ids {
+            guard var marker = markers[id], let style = markerStyles[id], style.imageUrl == imageUrl else { continue }
+            marker.image = style.photo
+                ? markerIcons.photoPin(color: style.color, source: imageUrl, image: image)
+                : markerIcons.pin(color: style.color, isFind: style.isFind, source: imageUrl, image: image)
+            markers[id] = marker
+            changed = true
+        }
+        if changed { annotations?.annotations = Array(markers.values) }
     }
 
     private func clearMarkersInternal() {
         markers.removeAll()
+        markerStyles.removeAll()
         annotations?.annotations = []
     }
 
@@ -1126,69 +1867,21 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         guard now - lastKeepCallbackMarkerTs >= callbackRateLimit else { return true }
         lastKeepCallbackMarkerTs = now
         sendKeepCallback(markerClickCallbackId, payload: [
-            "type": "markerClicked",
-            "id": nearestId,
-            "latitude": marker.point.coordinates.latitude,
-            "longitude": marker.point.coordinates.longitude
+            "type": markerType(for: nearestId),
+            "id": nearestId
         ])
         return true
     }
 
-    private func createWaypointMarkerImage() -> UIImage {
-        let size = CGSize(width: 72, height: 96)
-        let renderer = UIGraphicsImageRenderer(size: size)
-
-        return renderer.image { context in
-            let cg = context.cgContext
-            let centerX = size.width / 2
-            let circleCenterY: CGFloat = 32
-            let circleRadius: CGFloat = 25
-
-            cg.setFillColor(UIColor.black.withAlphaComponent(0.24).cgColor)
-            cg.fillEllipse(in: CGRect(x: centerX - 16, y: size.height - 16, width: 32, height: 8))
-
-            let path = UIBezierPath()
-            path.addArc(
-                withCenter: CGPoint(x: centerX, y: circleCenterY),
-                radius: circleRadius,
-                startAngle: 0,
-                endAngle: CGFloat.pi * 2,
-                clockwise: true
-            )
-            path.move(to: CGPoint(x: centerX - 14, y: circleCenterY + 19))
-            path.addQuadCurve(
-                to: CGPoint(x: centerX, y: size.height - 10),
-                controlPoint: CGPoint(x: centerX - 5, y: circleCenterY + 52)
-            )
-            path.addQuadCurve(
-                to: CGPoint(x: centerX + 14, y: circleCenterY + 19),
-                controlPoint: CGPoint(x: centerX + 5, y: circleCenterY + 52)
-            )
-            path.close()
-
-            UIColor(red: 220 / 255, green: 38 / 255, blue: 38 / 255, alpha: 1).setFill()
-            path.fill()
-            UIColor.white.setStroke()
-            path.lineWidth = 3
-            path.stroke()
-
-            UIColor.white.setFill()
-            UIBezierPath(
-                ovalIn: CGRect(x: centerX - 10, y: circleCenterY - 10, width: 20, height: 20)
-            ).fill()
-
-            UIColor.black.withAlphaComponent(0.16).setStroke()
-            let innerRing = UIBezierPath(
-                ovalIn: CGRect(x: centerX - 10, y: circleCenterY - 10, width: 20, height: 20)
-            )
-            innerRing.lineWidth = 2
-            innerRing.stroke()
-        }
+    private func markerType(for id: String) -> String {
+        let isFind = markerStyles[id]?.isFind ?? false
+        return isFind ? "Find" : "Waypoint"
     }
 
     @objc(getCamera:)
     func getCamera(command: CDVInvokedUrlCommand) {
-        DispatchQueue.main.async {
+        rememberCommand(command)
+        runForSession {
             guard let mapView = self.mapView else {
                 self.sendError("Map is not initialized.", command)
                 return
@@ -1213,6 +1906,31 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
+    @objc(setMapStyle:)
+    func setMapStyle(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let mapView = self.mapView else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
+            guard let styleUrl = options["styleUrl"] as? String, !styleUrl.isEmpty else {
+                self.sendError("styleUrl is required", command)
+                return
+            }
+
+            guard self.styleAllowed(styleUrl) else {
+                self.sendError("Style URL is not allowed.", command); return
+            }
+            let styleURI = StyleURI(rawValue: styleUrl) ?? StyleURI.streets
+            mapView.mapboxMap.loadStyle(styleURI)
+            self.sendSuccess(["status": "styleChanged"], command)
+        }
+    }
+
     private func cancelCurrentDownload() {
         activeStylePackDownload?.cancel()
         activeTileRegionDownload?.cancel()
@@ -1220,16 +1938,78 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         activeTileRegionDownload = nil
     }
 
-    private func closeInternal() {
+    func closeInternal() {
+        sessionGeneration &+= 1
+        if let id = closeCallbackId {
+            closeCallbackId = nil
+            sendSuccess(["closed": true], callbackId: id)
+        }
+        let pending = sessionCallbacks
+        sessionCallbacks.removeAll()
+        streamCallbacks.removeAll()
+        for (id, stream) in pending {
+            if stream { releaseCallback(id) }
+            else { sendError("Map closed; operation cancelled.", callbackId: id) }
+        }
+        cancelCurrentDownload()
+        markerIcons.cancelAll()
+        compassSubscription?.cancel()
+        compassSubscription = nil
+        cancelables.forEach { $0.cancel() }
+        cancelables.removeAll()
+        mapView?.camera.cancelAnimations()
+        mapView?.gestures.panGestureRecognizer.removeTarget(self, action: #selector(pauseCameraFollowForGesture(_:)))
+        mapView?.gestures.pinchGestureRecognizer.removeTarget(self, action: #selector(pauseCameraFollowForGesture(_:)))
+        if let overlay = mapTouchOverlay {
+            overlay.isUserInteractionEnabled = false
+            for gesture in overlay.gestureRecognizers ?? [] {
+                gesture.isEnabled = false
+                gesture.removeTarget(self, action: nil)
+                gesture.delegate = nil
+                overlay.removeGestureRecognizer(gesture)
+            }
+            overlay.touchableRects.removeAll()
+            overlay.coordinateView = nil
+        }
+        if let saved = savedWebViewAppearance {
+            if webView.backgroundColor == UIColor.clear { webView.backgroundColor = saved.1 }
+            if webView.scrollView.backgroundColor == UIColor.clear { webView.scrollView.backgroundColor = saved.2 }
+            if !webView.isOpaque { webView.isOpaque = saved.0 }
+            savedWebViewAppearance = nil
+        }
+        trackingStatusCallbackId = nil
+        headingLocationManager?.stopUpdatingLocation()
+        headingLocationManager?.stopUpdatingHeading()
+        headingLocationManager?.delegate = nil
+        headingLocationManager = nil
         stopHeadingFollowMode()
         stopUserTracking()
         markers.removeAll()
+        markerStyles.removeAll()
+        pendingMarkerImages.removeAll()
         annotations = nil
         clearBoundariesInternal()
         boundaryAnnotationManager = nil
+        lineAnnotationManager?.annotations.removeAll()
+        lineAnnotationManager = nil
+        pathAnnotations.removeAll()
+        currentSegmentAnnotation = nil
+        pathPoints.removeAll()
+        isPathTrackingActive = false
+        isPathTrackingPaused = false
+        pathTrackingStartTime = 0
+        isPathVisible = true
+        pathLineColor = "#FF0000"
+        pathLineWidth = 3.0
+        pathLineOpacity = 1.0
+        pathSegments.removeAll()
+        currentSegment.removeAll()
         waypointSelectedCallbackId = nil
         markerClickCallbackId = nil
         offlineDownloadProgressCallbackId = nil
+        compassCallbackId = nil
+        lastCompassBearing = -1
+        lastCompassVisible = false
         trackingStatusCallbackId = nil
         moveToCurrentLocationCallbackId = nil
         moveToCurrentLocationZoom = nil
@@ -1255,68 +2035,47 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         closeInternal()
     }
 
+    override func dispose() {
+        if Thread.isMainThread { closeInternal() }
+        else { DispatchQueue.main.sync { self.closeInternal() } }
+        super.dispose()
+    }
+
+    override func onAppTerminate() {
+        closeInternal()
+        super.onAppTerminate()
+    }
+
     override func onReset() {
-        waypointSelectedCallbackId = nil
-        markerClickCallbackId = nil
-        offlineDownloadProgressCallbackId = nil
-        trackingStatusCallbackId = nil
-        moveToCurrentLocationCallbackId = nil
-        lastKeepCallbackOfflineTs = 0
-        lastKeepCallbackWaypointTs = 0
-        lastKeepCallbackMarkerTs = 0
-        isUserLocationEnabled = false
-        isUserTrackingEnabled = false
-        isDeviceHeadingEnabled = false
-        isHeadingFollowModeEnabled = false
+        closeInternal()
+        super.onReset()
     }
 
     private func getAccessToken() -> String {
-        if let token = getTokenFromKeychain(), !token.isEmpty {
-            return token
-        }
-
-        let token = preferenceValue("MAPBOX_ACCESS_TOKEN")
-        if !token.isEmpty {
-            saveTokenToKeychain(token)
-        }
-        return token
-    }
-
-    private let keychainService = "com.outsystems.mapbox"
-    private let keychainAccount = "mapbox_access_token"
-
-    private func getTokenFromKeychain() -> String? {
+        // Erase the obsolete cache; the bundled public token is authoritative.
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: keychainAccount,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
+            kSecAttrService as String: "com.outsystems.mapbox",
+            kSecAttrAccount as String: "mapbox_access_token"
         ]
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-        guard status == errSecSuccess, let data = result as? Data else {
-            return nil
-        }
-
-        return String(data: data, encoding: .utf8)
-    }
-
-    private func saveTokenToKeychain(_ token: String) {
-        guard let data = token.data(using: .utf8) else { return }
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: keychainAccount,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        ]
-
         SecItemDelete(query as CFDictionary)
-        SecItemAdd(query as CFDictionary, nil)
+        let token = preferenceValue("MAPBOX_ACCESS_TOKEN").trimmingCharacters(in: .whitespacesAndNewlines)
+        return MapboxSecurity.publicToken(token) ? token : ""
+    }
+
+    private func styleAllowed(_ style: String) -> Bool {
+        let hosts = preferenceValue("MAPBOX_ALLOWED_STYLE_HOSTS")
+        return MapboxSecurity.styleAllowed(style, hosts: hosts.isEmpty ? "api.mapbox.com" : hosts)
+    }
+
+    private func validInput(_ options: [String: Any], _ command: CDVInvokedUrlCommand) -> Bool {
+        guard JSONSerialization.isValidJSONObject(options),
+              let data = try? JSONSerialization.data(withJSONObject: options),
+              data.count <= MapboxSecurity.maxInputBytes else {
+            sendError("Map input exceeds the 4 MiB limit or is invalid.", command)
+            return false
+        }
+        return true
     }
 
     private func preferenceValue(_ key: String) -> String {
@@ -1331,27 +2090,22 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func frameFromOptions(_ options: [String: Any]) -> CGRect {
-        var x = doubleOption(options["x"], defaultValue: 0)
-        var y = doubleOption(options["y"], defaultValue: 0)
-        var width = doubleOption(options["width"], defaultValue: Double(webView.bounds.width))
-        var height = doubleOption(options["height"], defaultValue: Double(webView.bounds.height))
-
         let scale = Double(UIScreen.main.scale)
-        let bounds = webView.bounds
-        let appearsDevicePixelScaled = scale > 1
-            && (width > Double(bounds.width) + 1 || height > Double(bounds.height) + 1)
-
-        if appearsDevicePixelScaled {
-            x /= scale
-            y /= scale
-            width /= scale
-            height /= scale
-        }
+        let x = doubleOption(options["x"], defaultValue: 0) / scale
+        let y = doubleOption(options["y"], defaultValue: 0) / scale
+        let width = doubleOption(
+            options["width"],
+            defaultValue: Double(webView.bounds.width) * scale
+        ) / scale
+        let height = doubleOption(
+            options["height"],
+            defaultValue: Double(webView.bounds.height) * scale
+        ) / scale
 
         return CGRect(x: x, y: y, width: max(width, 1), height: max(height, 1))
     }
 
-    private func touchRectFromOptions(_ options: [String: Any], mapViewFrame: CGRect) -> CGRect {
+    private func touchRectFromOptions(_ options: [String: Any]) -> CGRect {
         var x = doubleOption(options["x"], defaultValue: 0)
         var y = doubleOption(options["y"], defaultValue: 0)
         var width = doubleOption(options["width"], defaultValue: 0)
@@ -1367,11 +2121,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
         let rect = CGRect(x: x, y: y, width: max(width, 0), height: max(height, 0))
         guard rect.width > 0, rect.height > 0 else { return .null }
-        return rect.intersection(mapViewFrame)
+        // Keep WebView-local points; convert the hit-test point at touch time.
+        // Pre-clipping to the map frame would leave stale exclusions after resize.
+        return rect
     }
 
     private func installMapTouchOverlay(in superview: UIView, frame: CGRect) {
         let overlay = MapTouchOverlayView(frame: frame)
+        overlay.coordinateView = self.webView
         overlay.backgroundColor = UIColor.clear
         overlay.autoresizingMask = []
 
@@ -1397,6 +2154,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     @objc private func handleMapOverlayPan(_ recognizer: UIPanGestureRecognizer) {
+        pauseCameraFollowForGesture(recognizer)
         guard let mapView = mapView, let overlay = mapTouchOverlay else {
             return
         }
@@ -1415,6 +2173,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     @objc private func handleMapOverlayPinch(_ recognizer: UIPinchGestureRecognizer) {
+        pauseCameraFollowForGesture(recognizer)
         guard let mapView = mapView else {
             return
         }
@@ -1450,14 +2209,20 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     @objc private func handleMapOverlayTap(_ recognizer: UITapGestureRecognizer) {
-        guard let mapView = mapView, let overlay = mapTouchOverlay else {
+        guard recognizer.state == .ended,
+              let mapView = mapView,
+              let overlay = mapTouchOverlay else {
             return
         }
 
-        let point = recognizer.location(in: overlay)
-        let coordinate = mapView.mapboxMap.coordinate(for: point)
+        let overlayPoint = recognizer.location(in: overlay)
+        let tapPoint = overlay.convert(overlayPoint, to: mapView)
 
-        if sendMarkerClickIfNear(coordinate) {
+        if let markerId = hitMarkerAtScreenPoint(tapPoint, mapView: mapView) {
+            sendKeepCallback(markerClickCallbackId, payload: [
+                "type": markerType(for: markerId),
+                "id": markerId
+            ])
             return
         }
 
@@ -1465,15 +2230,25 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             return
         }
 
+        let coordinate = mapView.mapboxMap.coordinate(for: tapPoint)
         var id = ""
+
         if autoAddWaypointMarker {
             id = String(Int(Date().timeIntervalSince1970 * 1000))
-            addMarkerInternal(id: id, latitude: coordinate.latitude, longitude: coordinate.longitude)
+            addMarkerInternal(
+                id: id,
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            )
         }
 
         let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastKeepCallbackWaypointTs >= callbackRateLimit else { return }
+        guard now - lastKeepCallbackWaypointTs >= callbackRateLimit else {
+            return
+        }
+
         lastKeepCallbackWaypointTs = now
+
         sendKeepCallback(waypointSelectedCallbackId, payload: [
             "type": "waypointSelected",
             "id": id,
@@ -1482,24 +2257,26 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         ])
     }
 
-    private func uint8Option(_ value: Any?, defaultValue: UInt8) -> UInt8 {
-        if let value = value as? UInt8 {
-            return value
+    private func hitMarkerAtScreenPoint(_ tapPoint: CGPoint, mapView: MapView) -> String? {
+        let markerWidth: CGFloat = 44
+        let markerHeight: CGFloat = 48
+
+        for (id, marker) in markers {
+            let coordinate = marker.point.coordinates
+            let markerPoint = mapView.mapboxMap.point(for: coordinate)
+            let markerRect = CGRect(
+                x: markerPoint.x - markerWidth / 2,
+                y: markerPoint.y - markerHeight,
+                width: markerWidth,
+                height: markerHeight
+            )
+
+            if markerRect.contains(tapPoint) {
+                return id
+            }
         }
 
-        if let value = value as? Int {
-            return UInt8(clamping: value)
-        }
-
-        if let value = value as? Double {
-            return UInt8(clamping: Int(value))
-        }
-
-        if let value = value as? NSNumber {
-            return UInt8(clamping: value.intValue)
-        }
-
-        return defaultValue
+        return nil
     }
 
     private func doubleOption(_ value: Any?, defaultValue: Double) -> Double {
@@ -1526,6 +2303,22 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         return defaultValue
     }
 
+    private func boolOption(_ value: Any?, defaultValue: Bool) -> Bool {
+        if let value = value as? Bool { return value }
+        if let value = value as? String {
+            if value.caseInsensitiveCompare("true") == .orderedSame { return true }
+            if value.caseInsensitiveCompare("false") == .orderedSame { return false }
+        }
+        return defaultValue
+    }
+
+    private func stringOption(_ value: Any) -> String? {
+        if let value = value as? String { return value }
+        if let value = value as? Bool { return value ? "true" : "false" }
+        if let value = value as? NSNumber { return value.stringValue }
+        return nil
+    }
+
     private func isValidLatitude(_ lat: Double) -> Bool {
         lat.isFinite && lat >= -90 && lat <= 90
     }
@@ -1535,7 +2328,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func sanitizeError(contextMessage: String, error: Error) -> String {
-        NSLog("MapboxPlugin: %@ - %@", contextMessage, error.localizedDescription)
+        NSLog("MapboxPlugin: %@", contextMessage)
         return contextMessage
     }
 
@@ -1574,6 +2367,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func makeWebViewTransparent() {
+        savedWebViewAppearance = (webView.isOpaque, webView.backgroundColor, webView.scrollView.backgroundColor)
         webView.isOpaque = false
         webView.backgroundColor = UIColor.clear
         webView.scrollView.backgroundColor = UIColor.clear
@@ -1581,16 +2375,19 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     private func sendSuccess(_ command: CDVInvokedUrlCommand) {
         let result = CDVPluginResult(status: CDVCommandStatus_OK)
+        forgetCallback(command.callbackId)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
     private func sendSuccess(_ payload: [String: Any], _ command: CDVInvokedUrlCommand) {
         let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
+        forgetCallback(command.callbackId)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
     private func sendSuccess(_ payload: [String: Any], callbackId: String) {
         let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
+        forgetCallback(callbackId)
         commandDelegate.send(result, callbackId: callbackId)
     }
 
@@ -1612,31 +2409,41 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     private func sendError(_ message: String, _ command: CDVInvokedUrlCommand) {
         let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: message)
+        forgetCallback(command.callbackId)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
     private func sendError(_ message: String, callbackId: String) {
         let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: message)
+        forgetCallback(callbackId)
         commandDelegate.send(result, callbackId: callbackId)
     }
 }
 
 private class MapTouchOverlayView: UIView {
     var touchableRects: [CGRect] = []
+    weak var coordinateView: UIView?
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        guard let superview = superview else {
-            return true
-        }
-
-        let superviewPoint = convert(point, to: superview)
+        guard super.point(inside: point, with: event) else { return false }
+        guard let coordinateView = coordinateView else { return false }
+        let webViewPoint = convert(point, to: coordinateView)
 
         for rect in touchableRects {
-            if rect.contains(superviewPoint) {
+            if rect.contains(webViewPoint) {
                 return false
             }
         }
 
         return true
     }
+}
+
+private struct MarkerStyle {
+    static let `default` = MarkerStyle(color: MarkerIcons.defaultPinColor, isFind: false, imageUrl: nil)
+
+    let color: UIColor
+    let isFind: Bool
+    let imageUrl: String?
+    var photo = false
 }

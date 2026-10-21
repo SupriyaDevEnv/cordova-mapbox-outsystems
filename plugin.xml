@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <plugin id="cordova-plugin-outsystems-mapbox"
-        version="1.0.2"
+        version="1.0.4-close-cleanup.1"
         xmlns="http://apache.org/cordova/ns/plugins/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -12,27 +12,35 @@
     <js-module name="MapboxPlugin" src="www/MapboxPlugin.js">
         <clobbers target="MapboxPlugin" />
     </js-module>
+    <js-module name="AndroidTouchRegions" src="www/AndroidTouchRegions.js" />
 
     <!-- Runtime public token. Configured only via OutSystems Extensibility Configuration. Token must NOT be passed from JavaScript. -->
     <preference name="MAPBOX_ACCESS_TOKEN" default="__MAPBOX_ACCESS_TOKEN_NOT_SET__" />
 
     <!-- Mapbox Android SDK artifact. Use 11.x unless your project needs another pinned version. -->
-    <preference name="MAPBOX_ANDROID_VERSION" default="11.20.2" />
+    <preference name="MAPBOX_ANDROID_VERSION" default="11.30.0" />
 
     <!-- Comma-separated Android CPU architectures to package. Add x86_64 only for emulator builds. -->
     <preference name="MAPBOX_ANDROID_ABIS" default="arm64-v8a,armeabi-v7a" />
+
+    <hook type="after_prepare" src="hooks/verify-runtime-token.js" />
+    <preference name="MAPBOX_ALLOWED_STYLE_HOSTS" default="api.mapbox.com" />
+    <!-- A comma represents an empty host list (any HTTPS host); Cordova treats default="" as a required variable. -->
+    <preference name="MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" default="," />
 
     <platform name="android">
         <hook type="after_prepare" src="hooks/android/verify-mapbox-feature.js" />
 
         <config-file parent="/*" target="res/xml/config.xml">
             <feature name="MapboxPlugin">
-                <param name="android-package" value="com.outsystems.mapbox.MapboxPluginEntry" />
+                <param name="android-package" value="com.outsystems.mapbox.MapboxPluginPermissionEntry" />
                 <param name="onload" value="true" />
             </feature>
         </config-file>
         <config-file parent="/*" target="res/xml/config.xml">
             <preference name="MAPBOX_ACCESS_TOKEN" value="$MAPBOX_ACCESS_TOKEN" />
+            <preference name="MAPBOX_ALLOWED_STYLE_HOSTS" value="$MAPBOX_ALLOWED_STYLE_HOSTS" />
+            <preference name="MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" value="$MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" />
         </config-file>
 
         <config-file parent="/manifest" target="AndroidManifest.xml">
@@ -42,34 +50,42 @@
             <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
         </config-file>
 
-
         <framework src="src/android/mapbox-plugin.gradle" custom="true" type="gradleReference" />
+        <source-file src="src/android/MapboxSecurity.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
+        <source-file src="src/android/MarkerIcons.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
         <source-file src="src/android/MapboxPluginEntry.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
+        <source-file src="src/android/MapboxPluginPermissionEntry.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
     </platform>
 
     <platform name="ios">
         <config-file parent="/*" target="config.xml">
             <feature name="MapboxPlugin">
-                <param name="ios-package" value="MapboxPlugin" />
+                <param name="ios-package" value="MapboxPluginPermissionParity" />
                 <param name="onload" value="true" />
             </feature>
         </config-file>
 
         <config-file parent="/*" target="config.xml">
             <preference name="MAPBOX_ACCESS_TOKEN" value="$MAPBOX_ACCESS_TOKEN" />
+            <preference name="MAPBOX_ALLOWED_STYLE_HOSTS" value="$MAPBOX_ALLOWED_STYLE_HOSTS" />
+            <preference name="MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" value="$MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" />
         </config-file>
 
         <config-file parent="NSLocationWhenInUseUsageDescription" target="*-Info.plist">
-            <string>This app uses your location to show your position on the map.</string>
+            <string>Realm Mapping uses your location to show your position on the map.</string>
         </config-file>
 
         <preference name="deployment-target" default="14.0" />
         <podspec>
             <pods use-frameworks="true">
-                <pod name="MapboxMaps" spec="~> 11.0" />
+                <pod name="MapboxMaps" spec="11.30.0" />
             </pods>
         </podspec>
 
+        <source-file src="src/ios/MapboxSecurity.swift" />
+        <source-file src="src/ios/MarkerIcons.swift" />
         <source-file src="src/ios/MapboxPlugin.swift" />
+        <source-file src="src/ios/MapboxPluginParity.swift" />
+        <source-file src="src/ios/MapboxPluginPermissionParity.swift" />
     </platform>
 </plugin>

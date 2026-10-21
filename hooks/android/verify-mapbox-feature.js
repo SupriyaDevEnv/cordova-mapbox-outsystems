@@ -24,7 +24,7 @@ module.exports = function (context) {
 
   const config = fs.readFileSync(configPath, 'utf8');
   const hasService = config.indexOf('feature name="MapboxPlugin"') >= 0;
-  const hasClass = config.indexOf('com.outsystems.mapbox.MapboxPluginEntry') >= 0;
+  const hasClass = config.indexOf('com.outsystems.mapbox.MapboxPluginPermissionEntry') >= 0;
 
   console.log('[MapboxPlugin] Android config.xml feature present: ' + hasService);
   console.log('[MapboxPlugin] Android config.xml class present: ' + hasClass);
@@ -32,9 +32,27 @@ module.exports = function (context) {
   if (!hasService || !hasClass) {
     console.log('[MapboxPlugin] Expected feature entry was not generated:');
     console.log('<feature name="MapboxPlugin">');
-    console.log('  <param name="android-package" value="com.outsystems.mapbox.MapboxPluginEntry" />');
+    console.log('  <param name="android-package" value="com.outsystems.mapbox.MapboxPluginPermissionEntry" />');
     console.log('</feature>');
   }
-  var hasTokenPref = config.indexOf('name="MAPBOX_ACCESS_TOKEN"') >= 0;
+
+  const tokenPreference = config.match(
+    /<preference\b[^>]*\bname=["']MAPBOX_ACCESS_TOKEN["'][^>]*\/?>/i
+  );
+  const hasTokenPref = Boolean(tokenPreference);
   console.log('[MapboxPlugin] Android config.xml MAPBOX_ACCESS_TOKEN present: ' + hasTokenPref);
+
+  if (!tokenPreference) {
+    return;
+  }
+
+  const tokenValueMatch = tokenPreference[0].match(/\bvalue=["']([^"']*)["']/i);
+  const tokenValue = tokenValueMatch ? tokenValueMatch[1].trim() : '';
+
+  if (tokenValue.startsWith('sk.')) {
+    throw new Error(
+      '[MapboxPlugin] Refusing to package a Mapbox secret token (sk.*). ' +
+      'Use a public pk.* access token for mobile applications and rotate any secret token that was previously embedded.'
+    );
+  }
 };

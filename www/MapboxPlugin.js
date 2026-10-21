@@ -1,14 +1,117 @@
-var exec = require('cordova/exec');
+var nativeExec = require('cordova/exec');
+var callbacks = new Set();
+var lifecycleGeneration = 0;
+function isCancellationError(error) {
+  var message = typeof error === 'string' ? error : error && error.message;
+  return !!(error && error.code === 'MAPBOX_OPERATION_CANCELLED') ||
+    message === 'Map closed; operation cancelled.' ||
+    message === 'Location request was cancelled.' ||
+    message === 'Location request superseded.';
+}
+function cancellationError(action, message) {
+  var error = new Error(message || 'Map closed; operation cancelled.');
+  error.name = 'MapboxCancellationError';
+  error.code = 'MAPBOX_OPERATION_CANCELLED';
+  error.action = action;
+  return error;
+}
+function exec(success, error, service, action, args) {
+  callbacks.forEach(function (previous) {
+    if (previous.stream && previous.action === action) {
+      previous.active = false; callbacks.delete(previous);
+    }
+  });
+  var record = { action: action, error: error, active: true, stream: action.indexOf('register') === 0 };
+  callbacks.add(record);
+  function finish(handler, value) {
+    if (!record.active) return;
+    if (!record.stream) { record.active = false; callbacks.delete(record); }
+    if (handler) handler(value);
+  }
+  try {
+    nativeExec(function (value) { finish(success, value); }, function (value) {
+      if (isCancellationError(value)) {
+        value = cancellationError(action, typeof value === 'string' ? value : value.message);
+      }
+      record.stream = false; finish(error, value);
+    }, service, action, args);
+  } catch (e) { record.stream = false; finish(error, e); }
+}
+function cancelCallbacks() {
+  var old = Array.from(callbacks);
+  old.forEach(function (record) {
+    if (record.action === 'close') return;
+    callbacks.delete(record);
+    record.active = false;
+    if (!record.stream && record.error) {
+      try { record.error(cancellationError(record.action)); }
+      catch (e) { if (typeof console !== 'undefined') console.warn('Mapbox cancellation callback failed.', e); }
+    }
+  });
+}
+function observeNativeClose(generation) {
+  nativeExec(function () {
+    if (generation !== lifecycleGeneration) return;
+    lifecycleGeneration++;
+    stopTouchRegions();
+    cancelCallbacks();
+  }, function () {}, SERVICE, 'registerCloseCallback', []);
+}
 
 var SERVICE = 'MapboxPlugin';
+var touchRegions = null;
+var touchGeneration = 0;
+
+function validateCameraZoomBounds(options) {
+  ['minZoom', 'maxZoom'].forEach(function (key) {
+    var value = options[key];
+    if (value != null && (typeof value !== 'number' || !isFinite(value) || value < 0 || value > 25.5)) {
+      throw new Error(key + ' must be a finite number between 0 and 25.5.');
+    }
+  });
+  if (options.minZoom != null && options.maxZoom != null && options.minZoom > options.maxZoom) {
+    throw new Error('minZoom must be less than or equal to maxZoom.');
+  }
+}
+
+function stopTouchRegions() {
+  touchGeneration++;
+  var previous = touchRegions;
+  touchRegions = null;
+  if (previous) previous.stop();
+  // Only the documented Mapbox legacy bridge owns these listeners.
+  if (typeof window !== 'undefined' && window.__mapboxTouchBridge &&
+      typeof window.__mapboxTouchBridge.stop === 'function') {
+    try { window.__mapboxTouchBridge.stop(); } catch (e) {
+      if (window.console) window.console.warn('Mapbox legacy touch bridge cleanup failed.', e);
+    }
+  }
+}
 
 function call(action, args) {
   return new Promise(function (resolve, reject) {
+    try {
+      var json = JSON.stringify(args || []);
+      if (json.length > 4 * 1024 * 1024) throw new Error('Map input exceeds the 4 MiB limit.');
+      var options = (args || [])[0] || {};
+      if (action === 'downloadOfflineRegion' || action === 'downloadOfflineRegionForRect') {
+        var minZoom = options.minZoom === undefined ? 10 : Number(options.minZoom);
+        var maxZoom = options.maxZoom === undefined ? 16 : Number(options.maxZoom);
+        if (!isFinite(minZoom) || !isFinite(maxZoom) || minZoom < 2 || maxZoom > 18 || minZoom > maxZoom) {
+          throw new Error('Offline zoom must be between 2 and 18 with minZoom <= maxZoom.');
+        }
+      }
+    } catch (error) {
+      reject(error);
+      return;
+    }
     exec(resolve, reject, SERVICE, action, args || []);
   });
 }
 
 var api = {
+  // Cancellation settles the old request; it does not mean the next map failed.
+  isCancellationError: isCancellationError,
   diagnostic: function () {
     var result = {
       cordova: !!window.cordova,
@@ -35,16 +138,47 @@ var api = {
 
   initialize: function (options) {
     options = options || {};
+    // Validate before serialization (which turns NaN/Infinity into null) or changing touch routing.
+    try {
+      validateCameraZoomBounds(options);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     delete options.token;
-    return call('initialize', [options]);
+    stopTouchRegions();
+    cancelCallbacks();
+    var lifecycle = ++lifecycleGeneration;
+    var generation = touchGeneration;
+    var automatic = typeof window !== 'undefined' && window.cordova &&
+      (window.cordova.platformId === 'android' || window.cordova.platformId === 'ios') &&
+      options.behindWebView === true;
+    var controlsOnly = options.autoTouchRouting === false;
+    return call('initialize', [options]).then(function (result) {
+      if (lifecycle !== lifecycleGeneration) return result;
+      if (typeof window !== 'undefined' && window.cordova &&
+          /^(android|ios)$/.test(window.cordova.platformId)) observeNativeClose(lifecycle);
+      if (!automatic || generation !== touchGeneration) return result;
+      var start = require('./AndroidTouchRegions');
+      touchRegions = start(window, function (rects) { return call('setTouchableRects', [rects]); },
+        { controlsOnly: controlsOnly });
+      return touchRegions.ready.then(function () { return result; });
+    });
   },
 
   ping: function () {
     return call('ping', []);
   },
 
+  getMapboxVersion: function (success, error) {
+    exec(success, error, SERVICE, 'getMapboxVersion', []);
+  },
+
   setCamera: function (options) {
     return call('setCamera', [options || {}]);
+  },
+
+  resetMapBearing: function () {
+    return call('resetMapBearing', []);
   },
 
   flyTo: function (options) {
@@ -55,7 +189,13 @@ var api = {
     return call('setViewport', [options || {}]);
   },
 
+  resizeMap: function (options) {
+    return call('resizeMap', [options || {}]);
+  },
+
   setTouchableRects: function (rects) {
+    // An explicit caller takes ownership until the next initialize.
+    stopTouchRegions();
     return call('setTouchableRects', [rects || []]);
   },
 
@@ -115,6 +255,26 @@ var api = {
     exec(callback, errorCallback || function () {}, SERVICE, 'registerTrackingStatusCallback', []);
   },
 
+  onLocationAccuracyChanged: function (callback, errorCallback) {
+    exec(
+      callback,
+      errorCallback || function () {},
+      SERVICE,
+      'registerLocationAccuracyCallback',
+      []
+    );
+  },
+
+  onCompassChanged: function (callback, errorCallback) {
+    exec(
+      callback,
+      errorCallback || function () {},
+      SERVICE,
+      'registerCompassCallback',
+      []
+    );
+  },
+
   addMarker: function (options) {
     return call('addMarker', [options || {}]);
   },
@@ -140,6 +300,7 @@ var api = {
   loadBoundaries: function (boundaries, options) {
     options = options || {};
     if (typeof boundaries === 'string') {
+      if (boundaries.length > 4 * 1024 * 1024) return Promise.reject(new Error('Boundary input is too large.'));
       try {
         boundaries = JSON.parse(boundaries);
       } catch (error) {
@@ -155,12 +316,26 @@ var api = {
     if (boundaries.length > MAX_BOUNDARIES) {
       return Promise.reject(new Error('Too many boundaries: maximum allowed is ' + MAX_BOUNDARIES + '.'));
     }
+    var vertices = 0;
+    for (var i = 0; i < boundaries.length; i++) {
+      var geometry = boundaries[i] && boundaries[i].geometry;
+      vertices += Array.isArray(geometry) ? geometry.length : 0;
+      if (vertices > 20000) return Promise.reject(new Error('Too many boundary vertices: maximum total is 20000.'));
+    }
     options.boundaries = boundaries;
     return call('loadBoundaries', [options]);
   },
 
   setBoundaryVisibility: function (options) {
     return call('setBoundaryVisibility', [options || {}]);
+  },
+
+  setLayerVisibility: function (options) {
+    return call('setLayerVisibility', [options || {}]);
+  },
+
+  getLayerIds: function () {
+    return call('getLayerIds', []);
   },
 
   clearBoundaries: function () {
@@ -171,8 +346,65 @@ var api = {
     return call('getCamera', []);
   },
 
+  getCurrentLocationAccuracy: function () {
+    return call('getCurrentLocationAccuracy', []);
+  },
+
   close: function () {
+    lifecycleGeneration++;
+    stopTouchRegions();
+    cancelCallbacks();
     return call('close', []);
+  },
+
+  setMapStyle: function (options) {
+    return call('setMapStyle', [options || {}]);
+  },
+
+  startPathTracking: function (options) {
+    return call('startPathTracking', [options || {}]);
+  },
+
+  stopPathTracking: function () {
+    return call('stopPathTracking', []);
+  },
+
+  pausePathTracking: function () {
+    return call('pausePathTracking', []);
+  },
+
+  continuePathTracking: function () {
+    return call('continuePathTracking', []);
+  },
+
+  loadPath: function (pathData, options) {
+    options = options || {};
+    if (typeof pathData === 'string') {
+      if (pathData.length > 4 * 1024 * 1024) return Promise.reject(new Error('Path input is too large.'));
+      try {
+        pathData = JSON.parse(pathData);
+      } catch (error) {
+        return Promise.reject(new Error(
+          'Failed to parse path data: ' + (error.message || 'Invalid JSON.')
+        ));
+      }
+    }
+    if (!pathData || !Array.isArray(pathData.points)) {
+      return Promise.reject(new Error('Path data must have a "points" array.'));
+    }
+    if (pathData.points.length < 2 || pathData.points.length > 20000) {
+      return Promise.reject(new Error('A path requires between 2 and 20000 points.'));
+    }
+    options.points = pathData.points;
+    return call('loadPath', [options]);
+  },
+
+  clearPaths: function () {
+    return call('clearPaths', []);
+  },
+
+  setPathVisibility: function (options) {
+    return call('setPathVisibility', [options || {}]);
   }
 };
 
