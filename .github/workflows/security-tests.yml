@@ -104,6 +104,6 @@ jobs:
         if: matrix.platform == 'ios'
         run: |
           cd "$RUNNER_TEMP/mapbox-smoke"
-          xcodebuild -workspace platforms/ios/MapboxSmoke.xcworkspace \
-            -scheme MapboxSmoke -configuration Debug -sdk iphonesimulator \
+          xcodebuild -workspace platforms/ios/App.xcworkspace \
+            -scheme App -configuration Debug -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
