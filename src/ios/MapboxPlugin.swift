@@ -1664,9 +1664,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func installMapTapHandler(on mapView: MapView) {
+        cancelables.forEach { $0.cancel() }
         cancelables.removeAll()
+        let generation = sessionGeneration
         mapView.gestures.onMapTap.observe { [weak self] context in
-            guard let self = self else {
+            guard let self = self, self.sessionGeneration == generation else {
                 return
             }
 
@@ -1709,8 +1711,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         marker.image = markerIcons.pin(color: style.color, isFind: style.isFind, source: style.imageUrl)
         marker.iconAnchor = .bottom
         marker.iconSize = 0.5
+        let generation = sessionGeneration
+        let annotationId = marker.id
         marker.tapHandler = { [weak self, id] context in
-            guard let self = self else { return true }
+            guard let self = self, self.sessionGeneration == generation,
+                  self.markers[id]?.id == annotationId else { return true }
             let now = ProcessInfo.processInfo.systemUptime
             guard now - self.lastKeepCallbackMarkerTs >= self.callbackRateLimit else { return true }
             self.lastKeepCallbackMarkerTs = now
@@ -1951,6 +1956,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         compassSubscription = nil
         cancelables.forEach { $0.cancel() }
         cancelables.removeAll()
+        // Detach immediately, even while SDK cancellation callbacks are draining.
+        mapView?.isUserInteractionEnabled = false
+        mapView?.removeFromSuperview()
         mapView?.camera.cancelAnimations()
         mapView?.gestures.panGestureRecognizer.removeTarget(self, action: #selector(pauseCameraFollowForGesture(_:)))
         mapView?.gestures.pinchGestureRecognizer.removeTarget(self, action: #selector(pauseCameraFollowForGesture(_:)))
@@ -1978,13 +1986,20 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         headingLocationManager = nil
         stopHeadingFollowMode()
         stopUserTracking()
+        annotations?.annotations.removeAll()
+        clearBoundariesInternal()
+        lineAnnotationManager?.annotations.removeAll()
+        if let mapView = mapView {
+            let managerIds = [annotations?.id, boundaryAnnotationManager?.id, lineAnnotationManager?.id]
+            for id in managerIds.compactMap({ $0 }) {
+                mapView.annotations.removeAnnotationManager(withId: id)
+            }
+        }
         markers.removeAll()
         markerStyles.removeAll()
         pendingMarkerImages.removeAll()
         annotations = nil
-        clearBoundariesInternal()
         boundaryAnnotationManager = nil
-        lineAnnotationManager?.annotations.removeAll()
         lineAnnotationManager = nil
         pathAnnotations.removeAll()
         currentSegmentAnnotation = nil
