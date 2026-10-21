@@ -110,7 +110,7 @@ class MapboxPluginParity: MapboxPlugin {
     override func setUserTrackingEnabled(command: CDVInvokedUrlCommand) {
         rememberCommand(command)
         let options = command.argument(at: 0) as? [String: Any] ?? [:]
-        let enabled = options["enabled"] as? Bool ?? true
+        let enabled = boolOption(options["enabled"], defaultValue: true)
         resetTrackingSmoothing()
         if !enabled {
             parityPathTrackingActive = false
@@ -150,6 +150,7 @@ class MapboxPluginParity: MapboxPlugin {
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             self.moveLocationZoom = options["zoom"] == nil
                 ? nil
                 : self.doubleValue(options["zoom"], defaultValue: 0)
@@ -177,9 +178,10 @@ class MapboxPluginParity: MapboxPlugin {
         rememberCommand(command)
         runForSession {
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
             let layerId = (options["layerId"] as? String ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let visible = options["visible"] as? Bool ?? true
+            let visible = self.boolOption(options["visible"], defaultValue: true)
 
             guard !layerId.isEmpty else {
                 self.sendParityError("layerId is required", command: command)

@@ -666,8 +666,8 @@ if (gestures != null) {
     }
 
     private boolean styleAllowed(String style) {
-        return MapboxSecurity.styleAllowed(style,
-            preferences.getString("MAPBOX_ALLOWED_STYLE_HOSTS", "api.mapbox.com"));
+        String hosts = preferences.getString("MAPBOX_ALLOWED_STYLE_HOSTS", "api.mapbox.com");
+        return MapboxSecurity.styleAllowed(style, hosts.isEmpty() ? "api.mapbox.com" : hosts);
     }
 
     private void setViewport(JSONObject options, CallbackContext callback) {
@@ -734,21 +734,21 @@ if (gestures != null) {
 
    private void setTouchableRects(JSONArray args, CallbackContext callback) {
     runForSession(() -> {
-        touchableRects.clear();
-
         JSONArray rects = args.optJSONArray(0);
-
-        if (rects == null || rects.length() == 0) {
-            callback.success();
-            return;
-        }
 
         int maxRects = 50;
 
-        if (rects.length() > maxRects) {
+        if (rects != null && rects.length() > maxRects) {
             callback.error(
                 "Too many touchable rects. Maximum is " + maxRects + "."
             );
+            return;
+        }
+
+        touchableRects.clear();
+
+        if (rects == null || rects.length() == 0) {
+            callback.success();
             return;
         }
 
@@ -2025,10 +2025,12 @@ private void startUserTracking(CallbackContext callback) {
             callback.error("An offline region download is already in progress.");
             return;
         }
+        if (!MapboxSecurity.validZoom(minZoom) || !MapboxSecurity.validZoom(maxZoom) || minZoom > maxZoom) {
+            callback.error("Offline zoom must be between 2 and 18 with minZoom <= maxZoom."); return;
+        }
         if (!Double.isFinite(radiusKm) || radiusKm < 0 || radiusKm > MAX_OFFLINE_RADIUS_KM
-                || !MapboxSecurity.validZoom(minZoom) || !MapboxSecurity.validZoom(maxZoom)
-                || minZoom > maxZoom || regionId.isEmpty() || regionId.length() > 256) {
-            callback.error("Invalid offline radius, zoom range, or region id."); return;
+                || regionId.isEmpty() || regionId.length() > 256) {
+            callback.error("Invalid offline radius or region id."); return;
         }
         Polygon downloadGeometry = geometry == null ? createCirclePolygon(longitude, latitude, radiusKm) : geometry;
         double south = 90, west = 180, north = -90, east = -180;
@@ -3066,12 +3068,12 @@ private boolean addMarkerInternal(
         final String layerId = options.optString("layerId", "").trim();
         final boolean visible = options.optBoolean("visible", true);
 
-        if (layerId.isEmpty()) {
-            callback.error("layerId is required");
-            return;
-        }
-
         runForSession(() -> {
+            if (layerId.isEmpty()) {
+                callback.error("layerId is required");
+                return;
+            }
+
             if (mapView == null) {
                 callback.error("Map is not initialized.");
                 return;
@@ -3098,10 +3100,7 @@ private boolean addMarkerInternal(
 
                 callback.success();
             } catch (Throwable e) {
-                callback.error(
-                    "Failed to change layer visibility: " +
-                    (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())
-                );
+                callback.error(sanitizeError("Failed to change layer visibility.", e));
             }
         });
     }
@@ -3127,10 +3126,7 @@ private boolean addMarkerInternal(
                 }
                 callback.success(ids);
             } catch (Throwable e) {
-                callback.error(
-                    "Failed to list layers: " +
-                    (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())
-                );
+                callback.error(sanitizeError("Failed to list layers.", e));
             }
         });
     }
@@ -3312,8 +3308,7 @@ private boolean addMarkerInternal(
             pathLineWidth = (float) options.optDouble("lineWidth", 3.0);
             pathLineOpacity = (float) options.optDouble("lineOpacity", 1.0);
 
-            String trackCamera = options.optString("trackCamera", "true");
-            if ("true".equals(trackCamera)) {
+            if (options.optBoolean("trackCamera", true)) {
                 startUserTracking(callback);
             } else {
                 try {
@@ -3766,12 +3761,12 @@ private boolean addMarkerInternal(
             }
 
             String styleUrl = options.optString("styleUrl", "");
-            if (!styleAllowed(styleUrl)) {
-                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
-                return;
-            }
             if (styleUrl.isEmpty()) {
                 callback.error("styleUrl is required");
+                return;
+            }
+            if (!styleAllowed(styleUrl)) {
+                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
                 return;
             }
 
@@ -3809,7 +3804,14 @@ private boolean addMarkerInternal(
 
     protected void closeInternal() {
         sessionGeneration++;
-        if (closeCallback != null) { closeCallback.success(); closeCallback = null; }
+        if (closeCallback != null) {
+            try {
+                closeCallback.success(new JSONObject().put("closed", true));
+            } catch (JSONException e) {
+                closeCallback.success();
+            }
+            closeCallback = null;
+        }
         for (CallbackContext pending : sessionCallbacks) {
             if (!pending.isFinished()) {
                 boolean stream = pending == waypointSelectedCallback || pending == markerClickCallback

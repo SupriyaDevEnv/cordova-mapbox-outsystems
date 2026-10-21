@@ -1,6 +1,7 @@
 package com.outsystems.mapbox;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 
 /** Input policy shared by every native entry point. No Android dependencies. */
 final class MapboxSecurity {
@@ -13,7 +14,7 @@ final class MapboxSecurity {
     }
 
     static boolean styleAllowed(String value, String hosts) {
-        if (value == null || value.length() > 4096) return false;
+        if (value == null || value.getBytes(StandardCharsets.UTF_8).length > 4096) return false;
         if (value.matches("mapbox://styles/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+")) return true;
         try {
             URI uri = new URI(value);
@@ -42,7 +43,7 @@ final class MapboxSecurity {
             }
             return comma + 1 < value.length();
         }
-        if (value.length() > 4096) return false;
+        if (value.getBytes(StandardCharsets.UTF_8).length > 4096) return false;
         try {
             URI uri = new URI(value);
             if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null

@@ -24,6 +24,11 @@ public class MapboxSecurityTest {
         check(!MapboxSecurity.validZoom(1e100));
         check(!MapboxSecurity.validZoom(Double.NaN));
         check(!MapboxSecurity.validZoom(Double.POSITIVE_INFINITY));
+        check(!MapboxSecurity.validZoom(-1e100));
+        check(!MapboxSecurity.validZoom(Double.NEGATIVE_INFINITY));
+        check(!MapboxSecurity.validZoom(1));
+        check(!MapboxSecurity.validZoom(19));
+        check(MapboxSecurity.validZoom(2));
         check(MapboxSecurity.validZoom(18));
         check(MapboxSecurity.offlineBounds(0, 0, .01, .01, 18));
         check(!MapboxSecurity.offlineBounds(-30, -30, 30, 30, 18));

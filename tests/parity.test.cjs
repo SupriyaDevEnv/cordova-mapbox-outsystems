@@ -100,6 +100,28 @@ test('markers accept imageUrl and pinColor on both platforms and reject disallow
   assert.match(ios, /MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS/);
 });
 
+test('Mapbox SDK version strings agree across plugin.xml, Gradle and iOS', () => {
+  const pluginXml = fs.readFileSync('plugin.xml', 'utf8');
+  const gradle = fs.readFileSync('src/android/mapbox-plugin.gradle', 'utf8');
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const pod = pluginXml.match(/<pod name="MapboxMaps" spec="([^"]+)"/)[1];
+  const androidDefault = pluginXml.match(/name="MAPBOX_ANDROID_VERSION" default="([^"]+)"/)[1];
+  const gradleDefault = gradle.match(/\?:\s*"(\d+\.\d+\.\d+)"/)[1];
+  const iosReported = parity.match(/mapboxSdkVersion = "([^"]+)"/)[1];
+  assert.equal(androidDefault, pod);
+  assert.equal(gradleDefault, pod);
+  assert.equal(iosReported, pod);
+});
+
+test('boolean and numeric options use the same tolerant parsing on both platforms', () => {
+  assert.doesNotMatch(ios, /options\["(enabled|visible|replace|isFind|autoAddMarker|deleteStylePack|inline|behindWebView)"\] as\? Bool/);
+  assert.doesNotMatch(ios, /marker\["IsFind"\] as\? Bool/);
+  assert.doesNotMatch(ios, /options\["(lineWidth|lineOpacity|duration)"\] as\? Double/);
+  assert.match(ios, /CFGetTypeID\(number\) == CFBooleanGetTypeID\(\)/);
+  assert.match(android, /options\.optBoolean\("trackCamera", true\)/);
+  assert.doesNotMatch(android, /optString\("trackCamera"/);
+});
+
 test('location accuracy subscriptions actively monitor and clean up on both platforms', () => {
   const androidRegistration = javaMethod('registerLocationAccuracyCallback', 'stopLocationAccuracyMonitoring');
   assert.match(androidRegistration, /requestLocationUpdates/);

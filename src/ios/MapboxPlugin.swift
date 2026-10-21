@@ -186,7 +186,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 self.sendError("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.", command)
                 return
             }
-            let behindWebView = options["behindWebView"] as? Bool ?? false
+            let behindWebView = self.boolOption(options["behindWebView"], defaultValue: false)
 
             self.closeInternal()
             self.rememberCommand(command)
@@ -203,7 +203,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let styleURI = StyleURI(rawValue: styleUrl) ?? .streets
             let initOptions = MapInitOptions(cameraOptions: camera, styleURI: styleURI)
 
-            let isInline = options["inline"] as? Bool ?? false
+            let isInline = self.boolOption(options["inline"], defaultValue: false)
             let mapView = MapView(
                 frame: isInline ? self.frameFromOptions(options) : self.webView.bounds,
                 mapInitOptions: initOptions
@@ -358,7 +358,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 pitch: pitch
             )
 
-            let duration = (options["duration"] as? Double).map { $0 / 1000.0 }
+            let duration = options["duration"] == nil
+                ? nil
+                : self.doubleOption(options["duration"], defaultValue: 2000) / 1000.0
             mapView.camera.fly(to: camera, duration: duration)
 
             self.sendSuccess(command)
@@ -402,6 +404,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         rememberCommand(command)
         runForSession {
             let rects = command.argument(at: 0) as? [[String: Any]] ?? []
+            guard self.validInput(["rects": rects], command) else { return }
 
             let maxRects = 20
             guard rects.count <= maxRects else {
@@ -445,7 +448,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let enabled = options["enabled"] as? Bool ?? true
+            let enabled = self.boolOption(options["enabled"], defaultValue: true)
 
             if enabled {
                 mapView.location.options.puckType = .puck2D(.makeDefault(showBearing: true))
@@ -470,7 +473,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let enabled = options["enabled"] as? Bool ?? true
+            let enabled = self.boolOption(options["enabled"], defaultValue: true)
 
             if !enabled {
                 self.stopHeadingFollowMode()
@@ -497,7 +500,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let enabled = options["enabled"] as? Bool ?? true
+            let enabled = self.boolOption(options["enabled"], defaultValue: true)
 
             if !enabled {
                 self.stopUserTracking()
@@ -779,7 +782,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             guard self.markers[id] != nil || self.markers.count < self.maxMarkers,
                   id.utf8.count <= 256 else { self.sendError("Marker/id limit exceeded.", command); return }
-            let isFind = options["isFind"] as? Bool ?? false
+            let isFind = self.boolOption(options["isFind"], defaultValue: false)
             guard let style = self.markerStyle(isFind: isFind, pinColor: options["pinColor"], imageUrl: options["imageUrl"]) else {
                 self.sendError(self.markerImageNotAllowed, command)
                 return
@@ -800,14 +803,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let replace = options["replace"] as? Bool ?? true
+            let replace = self.boolOption(options["replace"], defaultValue: true)
             let markers = options["markers"] as? [[String: Any]] ?? []
             var ids = replace ? Set<String>() : Set(self.markers.keys)
             var styles: [MarkerStyle] = []
             for (index, marker) in markers.enumerated() {
                 let id = marker["Id"].flatMap(self.stringOption) ?? String(index)
                 guard !id.isEmpty, id.utf8.count <= 256 else { self.sendError("Invalid marker id.", command); return }
-                let isFind = marker["IsFind"] as? Bool ?? false
+                let isFind = self.boolOption(marker["IsFind"], defaultValue: false)
                 guard let style = self.markerStyle(isFind: isFind, pinColor: marker["PinColor"], imageUrl: marker["ImageUrl"]) else {
                     self.sendError(self.markerImageNotAllowed, command); return
                 }
@@ -877,7 +880,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 vertices += (boundary["geometry"] as? [Any])?.count ?? 0
                 guard vertices <= MapboxSecurity.maxPoints else { self.sendError("Too many boundary vertices.", command); return }
             }
-            self.boundaryVisible = options["visible"] as? Bool ?? true
+            self.boundaryVisible = self.boolOption(options["visible"], defaultValue: true)
             self.boundaryAnnotations = self.boundaryAnnotationsFromOptions(options, boundaries: boundaries)
             self.applyBoundaryVisibility()
             self.sendSuccess(["count": self.boundaryAnnotations.count], command)
@@ -890,7 +893,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         runForSession {
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            self.boundaryVisible = options["visible"] as? Bool ?? true
+            self.boundaryVisible = self.boolOption(options["visible"], defaultValue: true)
             self.applyBoundaryVisibility()
             self.sendSuccess(command)
         }
@@ -960,8 +963,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.currentSegment.removeAll()
 
             self.pathLineColor = options["lineColor"] as? String ?? "#FF0000"
-            self.pathLineWidth = options["lineWidth"] as? Double ?? 3.0
-            self.pathLineOpacity = options["lineOpacity"] as? Double ?? 1.0
+            self.pathLineWidth = self.doubleOption(options["lineWidth"], defaultValue: 3.0)
+            self.pathLineOpacity = self.doubleOption(options["lineOpacity"], defaultValue: 1.0)
 
             if self.boolOption(options["trackCamera"], defaultValue: true) {
                 self.startUserTracking(command)
@@ -1107,8 +1110,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             let lineColorHex = options["lineColor"] as? String ?? "#FF0000"
-            let lineWidth = options["lineWidth"] as? Double ?? 3.0
-            let lineOpacity = options["lineOpacity"] as? Double ?? 1.0
+            let lineWidth = self.doubleOption(options["lineWidth"], defaultValue: 3.0)
+            let lineOpacity = self.doubleOption(options["lineOpacity"], defaultValue: 1.0)
 
             self.pathLineColor = lineColorHex
             self.pathLineWidth = lineWidth
@@ -1176,7 +1179,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let visible = options["visible"] as? Bool ?? true
+            let visible = self.boolOption(options["visible"], defaultValue: true)
 
             self.isPathVisible = visible
 
@@ -1519,7 +1522,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.sendError("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.", command)
             return
         }
-        let deleteStylePack = options["deleteStylePack"] as? Bool ?? true
+        let deleteStylePack = boolOption(options["deleteStylePack"], defaultValue: true)
 
         guard !regionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             sendError("regionId is required.", command)
@@ -1540,8 +1543,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         rememberCommand(command)
         let options = command.argument(at: 0) as? [String: Any] ?? [:]
         guard self.validInput(options, command) else { return }
-        waypointSelectionEnabled = options["enabled"] as? Bool ?? true
-        autoAddWaypointMarker = options["autoAddMarker"] as? Bool ?? false
+        waypointSelectionEnabled = boolOption(options["enabled"], defaultValue: true)
+        autoAddWaypointMarker = boolOption(options["autoAddMarker"], defaultValue: false)
         sendSuccess(command)
     }
 
@@ -1917,7 +1920,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             guard self.styleAllowed(styleUrl) else {
-                self.sendError("Style URL is not allowed.", command); return
+                self.sendError("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.", command); return
             }
             let styleURI = StyleURI(rawValue: styleUrl) ?? StyleURI.streets
             mapView.mapboxMap.loadStyle(styleURI)
@@ -2062,7 +2065,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         return MapboxSecurity.styleAllowed(style, hosts: hosts.isEmpty ? "api.mapbox.com" : hosts)
     }
 
-    private func validInput(_ options: [String: Any], _ command: CDVInvokedUrlCommand) -> Bool {
+    func validInput(_ options: [String: Any], _ command: CDVInvokedUrlCommand) -> Bool {
         guard JSONSerialization.isValidJSONObject(options),
               let data = try? JSONSerialization.data(withJSONObject: options),
               data.count <= MapboxSecurity.maxInputBytes else {
@@ -2297,8 +2300,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         return defaultValue
     }
 
-    private func boolOption(_ value: Any?, defaultValue: Bool) -> Bool {
-        if let value = value as? Bool { return value }
+    func boolOption(_ value: Any?, defaultValue: Bool) -> Bool {
+        if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() { return number.boolValue }
         if let value = value as? String {
             if value.caseInsensitiveCompare("true") == .orderedSame { return true }
             if value.caseInsensitiveCompare("false") == .orderedSame { return false }

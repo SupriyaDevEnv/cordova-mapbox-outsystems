@@ -13,6 +13,7 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
         case setUserTrackingEnabled(CDVInvokedUrlCommand)
         case moveToCurrentLocation(CDVInvokedUrlCommand)
         case startPathTracking(CDVInvokedUrlCommand)
+        case registerLocationAccuracyCallback(CDVInvokedUrlCommand)
     }
 
     private let permissionLocationManager = CLLocationManager()
@@ -53,6 +54,12 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
     override func startPathTracking(command: CDVInvokedUrlCommand) {
         rememberCommand(command)
         runWhenLocationAuthorized(.startPathTracking(command))
+    }
+
+    @objc(registerLocationAccuracyCallback:)
+    override func registerLocationAccuracyCallback(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runWhenLocationAuthorized(.registerLocationAccuracyCallback(command))
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
@@ -130,6 +137,8 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
             super.moveToCurrentLocation(command: command)
         case .startPathTracking(let command):
             super.startPathTracking(command: command)
+        case .registerLocationAccuracyCallback(let command):
+            super.registerLocationAccuracyCallback(command: command)
         }
     }
 
@@ -141,7 +150,8 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
              .setHeadingFollowMode(let command),
              .setUserTrackingEnabled(let command),
              .moveToCurrentLocation(let command),
-             .startPathTracking(let command):
+             .startPathTracking(let command),
+             .registerLocationAccuracyCallback(let command):
             callbackId = command.callbackId
         }
 

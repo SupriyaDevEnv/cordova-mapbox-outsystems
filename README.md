@@ -146,7 +146,7 @@ the separate 2â€“18 range and existing defaults of 10/16.
 
 Map viewport, resize, touch-region, and offline-selection rectangles use WebView-local native pixels on both platforms. Convert CSS viewport coordinates by multiplying them by `window.devicePixelRatio`; iOS converts those values to UIKit points internally without guessing from the rectangle size.
 
-`trackCamera` accepts either a boolean or the strings `"true"`/`"false"` on both platforms. Marker IDs may be strings or JSON numbers and are returned as strings. `setPathVisibility` is idempotent when no path has been loaded.
+Boolean options (for example `enabled`, `visible`, `replace`, `isFind`, `trackCamera`) accept a boolean or the strings `"true"`/`"false"` (any case) on both platforms; any other value uses the option's default. Numeric options such as `lineWidth`, `lineOpacity` and `duration` accept numbers or numeric strings on both platforms. Marker IDs may be strings or JSON numbers and are returned as strings. `setPathVisibility` is idempotent when no path has been loaded.
 
 Registering `onLocationAccuracyChanged` requests location permission when needed and starts an independent accuracy monitor on both platforms. The monitor stops when the map plugin closes; user tracking and path tracking may be enabled or disabled independently.
 
@@ -737,7 +737,7 @@ By default, any HTTPS host is allowed. To allow only specific hosts, set the `MA
 
 ### Marker platform differences
 
-- **Pin size.** The pin is drawn 72 Ã— 96 on both platforms, but Android uses physical pixels and iOS uses points. On a typical 3Ã— Android phone the pin appears about one third the size of the iOS pin, so images inside it are smaller too.
+- **Pin size.** Both platforms draw the pin on a logical 72 x 96 canvas shown at the same logical size (36 x 48). Android renders it at the device density. iOS renders it at 1x (`format.scale = 1`), so it may look slightly softer on high-density iOS screens.
 - **Tap area.** Android also reports taps on the map within 150 m of a marker. iOS reports only taps on the pin.
 - **Numeric IDs in `removeMarker`.** Android accepts them; iOS ignores them. Pass strings.
 - **Non-object items in `loadMarkers`.** Android skips `null` items. On iOS, one non-object item makes the whole array read as empty, so with `replace: true` all markers are cleared.
