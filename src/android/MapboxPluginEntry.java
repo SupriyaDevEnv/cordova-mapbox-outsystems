@@ -2744,7 +2744,8 @@ private void startUserTracking(CallbackContext callback) {
             MarkerStyle style = markerStyle(
                 options.optBoolean("isFind", false),
                 options.optString("pinColor", null),
-                options.optString("imageUrl", "")
+                options.optString("imageUrl", ""),
+                "photo".equals(options.optString("pinStyle", ""))
             );
 
             if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
@@ -2797,7 +2798,8 @@ private void startUserTracking(CallbackContext callback) {
                 styles[i] = markerStyle(
                     marker.optBoolean("IsFind", false),
                     marker.optString("PinColor", null),
-                    marker.optString("ImageUrl", "")
+                    marker.optString("ImageUrl", ""),
+                    "photo".equals(marker.optString("PinStyle", ""))
                 );
                 if (styles[i] == null) { callback.error(MARKER_IMAGE_NOT_ALLOWED); return; }
                 ids.add(id);
@@ -2860,8 +2862,11 @@ private boolean addMarkerInternal(
 
     PointAnnotationOptions markerOptions = new PointAnnotationOptions()
         .withPoint(Point.fromLngLat(longitude, latitude))
-        .withIconImage(markerIcons.pin(style.color, style.isFind, style.imageUrl,
-            cordova.getActivity().getResources().getDisplayMetrics().density))
+        .withIconImage(style.photo
+            ? markerIcons.photoPin(style.color, style.imageUrl,
+                cordova.getActivity().getResources().getDisplayMetrics().density)
+            : markerIcons.pin(style.color, style.isFind, style.imageUrl,
+                cordova.getActivity().getResources().getDisplayMetrics().density))
         .withIconAnchor(IconAnchor.BOTTOM)
         .withIconSize(0.5);
 
@@ -2885,16 +2890,21 @@ private boolean addMarkerInternal(
 
     /** Returns null when imageUrl is not an allowed image source. */
     private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl) {
-        int defaultColor = isFind ? MarkerIcons.FIND_PIN_COLOR : MarkerIcons.DEFAULT_PIN_COLOR;
+        return markerStyle(isFind, pinColor, rawImageUrl, false);
+    }
+
+    private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl, boolean photo) {
+        int defaultColor = isFind ? MarkerIcons.FIND_PIN_COLOR
+            : photo ? MarkerIcons.PHOTO_PIN_COLOR : MarkerIcons.DEFAULT_PIN_COLOR;
         int color = MarkerIcons.parseColor(pinColor, defaultColor);
         String imageUrl = rawImageUrl == null ? "" : rawImageUrl.trim();
         if (imageUrl.isEmpty()) {
-            return new MarkerStyle(color, isFind, null);
+            return new MarkerStyle(color, isFind, null, photo);
         }
         if (!MapboxSecurity.markerImageAllowed(imageUrl, allowedMarkerImageHosts())) {
             return null;
         }
-        return new MarkerStyle(color, isFind, imageUrl);
+        return new MarkerStyle(color, isFind, imageUrl, photo);
     }
 
     private String allowedMarkerImageHosts() {
@@ -2931,8 +2941,10 @@ private boolean addMarkerInternal(
             if (annotation == null || style == null || !imageUrl.equals(style.imageUrl)) {
                 continue;
             }
-            annotation.setIconImageBitmap(markerIcons.pin(style.color, style.isFind, imageUrl, image,
-                cordova.getActivity().getResources().getDisplayMetrics().density));
+            float density = cordova.getActivity().getResources().getDisplayMetrics().density;
+            annotation.setIconImageBitmap(style.photo
+                ? markerIcons.photoPin(style.color, imageUrl, image, density)
+                : markerIcons.pin(style.color, style.isFind, imageUrl, image, density));
             changed.add(annotation);
         }
 
@@ -2947,11 +2959,17 @@ private boolean addMarkerInternal(
         final int color;
         final boolean isFind;
         final String imageUrl;
+        final boolean photo;
 
         MarkerStyle(int color, boolean isFind, String imageUrl) {
+            this(color, isFind, imageUrl, false);
+        }
+
+        MarkerStyle(int color, boolean isFind, String imageUrl, boolean photo) {
             this.color = color;
             this.isFind = isFind;
             this.imageUrl = imageUrl;
+            this.photo = photo;
         }
     }
 
