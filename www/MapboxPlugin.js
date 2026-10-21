@@ -78,14 +78,50 @@ function stopTouchRegions() {
   touchGeneration++;
   var previous = touchRegions;
   touchRegions = null;
-  if (previous) previous.stop();
-  // Only the documented Mapbox legacy bridge owns these listeners.
-  if (typeof window !== 'undefined' && window.__mapboxTouchBridge &&
-      typeof window.__mapboxTouchBridge.stop === 'function') {
-    try { window.__mapboxTouchBridge.stop(); } catch (e) {
-      if (window.console) window.console.warn('Mapbox legacy touch bridge cleanup failed.', e);
-    }
+  if (previous) cleanup(function () { previous.stop(); });
+  stopLegacyTouchBridge();
+}
+
+function cleanup(work) {
+  try { work(); } catch (e) {
+    if (typeof console !== 'undefined') console.warn('Mapbox cleanup failed.', e);
   }
+}
+
+function stopLegacyTouchBridge() {
+  if (typeof window === 'undefined') return;
+  var win = window;
+  var bridge = win.__mapboxTouchBridge;
+  var handlers = win.__mapboxTouchHandlers;
+  // Snapshot before stop(): older implementations clear their own globals.
+  var observers = [win.__mapboxTouchObserver, win.__mapboxResizeObserver];
+  var frame = bridge && bridge.frame;
+  var retry = bridge && bridge.retry;
+  if (bridge) {
+    if (typeof bridge.stop === 'function') cleanup(function () { bridge.stop(); });
+    cleanup(function () { bridge.stopped = true; });
+    if (frame != null) cleanup(function () { win.cancelAnimationFrame(frame); });
+    if (retry != null) cleanup(function () { win.clearTimeout(retry); });
+  }
+  observers.forEach(function (observer) {
+    if (observer && typeof observer.disconnect === 'function') cleanup(function () { observer.disconnect(); });
+  });
+  function remove(target, names, handler, capture) {
+    if (!target || typeof handler !== 'function') return;
+    names.forEach(function (name) {
+      cleanup(function () { target.removeEventListener(name, handler, capture); });
+    });
+  }
+  if (handlers) {
+    remove(win, ['resize'], handlers.schedule, false);
+    remove(win, ['scroll'], handlers.schedule, true);
+    remove(win.document, ['transitionrun', 'transitionend', 'transitioncancel',
+      'animationstart', 'animationend', 'animationcancel', 'load'], handlers.schedule, true);
+    remove(win, ['pagehide'], handlers.pagehide, false);
+  }
+  ['__mapboxTouchBridge', '__mapboxTouchHandlers', '__mapboxTouchObserver', '__mapboxResizeObserver'].forEach(function (key) {
+    cleanup(function () { win[key] = null; });
+  });
 }
 
 function call(action, args) {

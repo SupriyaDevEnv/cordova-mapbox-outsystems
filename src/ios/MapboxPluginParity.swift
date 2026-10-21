@@ -51,7 +51,7 @@ class MapboxPluginParity: MapboxPlugin {
         locationAccuracyCallbackId = command.callbackId
         lastLocationAccuracyUpdate = 0
 
-        let result = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
+        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
         result?.setKeepCallbackAs(true)
         commandDelegate.send(result, callbackId: command.callbackId)
 
@@ -411,7 +411,7 @@ class MapboxPluginParity: MapboxPlugin {
             "timestamp": Int(Date().timeIntervalSince1970 * 1000)
         ]
 
-        let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
+        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
         result?.setKeepCallbackAs(true)
         commandDelegate.send(result, callbackId: callbackId)
     }

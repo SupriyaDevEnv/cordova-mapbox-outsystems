@@ -1,14 +1,54 @@
 # OutSystems Mapbox Native Plugin
 
-## Close cleanup build: 1.0.4-close-cleanup.1
+## Close cleanup build: 1.0.4-close-cleanup.2
 
-This cleanup release is based on commit `b7ed11a314f4c4085faba61667d8861766f7b882`.
+This cleanup release extends the existing teardown on `913103a`, retaining the behind-WebView transparency fix.
 
 `MapboxPlugin.close()` stops the owned DOM observer/animation/retry bridge, releases native Cordova callback registrations, cancels pending operations and downloads, stops GPS/tracking/heading/compass work, and removes native touch routing. Android uses a removable routing container without replacing the WebView's touch listener. iOS removes only the plugin-owned overlay recognizers and gesture targets. Previous WebView appearance is restored when still owned by this plugin.
 
 Await `MapboxPlugin.close()` before initializing the next map. Pending Promise operations reject with a cancellation error when the map closes; handle these rejections in your screen actions. Re-register event callbacks after a successful new `initialize()`. Repeated close calls are supported. Native Close buttons also notify JavaScript to stop its bridge. Completed offline regions remain stored; close cancels active transfers and clears the in-memory map session, not downloaded offline data. Retrieve a recorded path before close if it must be saved.
 
 The package has passed JavaScript regression checks and Java/Swift syntax parsing. It has **not** been compiled with the consuming OutSystems application's native dependencies or tested on devices. Perform Android/iOS builds and the supplied device checks before production deployment.
+
+### OutSystems screen OnDestroy
+
+In the map screen's **OnDestroy** client action, add a JavaScript node with this exact code (no input/output parameters needed):
+
+```javascript
+var plugin = window.MapboxPlugin;
+if (plugin && typeof plugin.close === "function") {
+    window.__mapboxScreenClose = plugin.close().catch(function (error) {
+        console.error("Mapbox screen cleanup failed", error);
+        throw error;
+    });
+    // Handle the rejection even when navigation does not wait for OnDestroy.
+    window.__mapboxScreenClose.catch(function () {});
+}
+```
+
+`close()` immediately stops JavaScript listeners/observers and invalidates pending callbacks. Its Promise resolves after the native map and native touch routing are removed. OutSystems navigation need not wait for a Promise started by a JavaScript node. Before initializing a map on the next screen, wait for that close:
+
+```javascript
+Promise.resolve(window.__mapboxScreenClose).then(function () {
+    return window.MapboxPlugin.initialize(/* your existing options */);
+}).catch(function (error) {
+    console.error("Mapbox initialization failed", error);
+});
+```
+
+Keep the existing initialization options in that call. Ensure OnDestroy of the old screen has run before starting the next map; this plugin owns one map at a time. Cancel any application-owned timers or pending screen actions that could call `initialize()` again after exit. Register marker, waypoint, compass, and tracking callbacks only after the new initialization succeeds.
+
+The close path explicitly unregisters Android marker clicks and map/gesture listeners, cancels camera animation, and destroys the map. iOS disables/detaches the map, removes its annotation managers and tap handlers, cancels subscriptions, and removes its touch overlay. Session guards discard delayed taps even after a new map opens. Android SDK cleanup steps are isolated so a runtime exception does not skip later cleanup or retain the visible map.
+
+Legacy scripts using `__mapboxTouchBridge`, `__mapboxTouchHandlers`, `__mapboxTouchObserver`, and `__mapboxResizeObserver` are cleaned even if `stop()` is absent or throws: known frame/retry handles, observer references, and registered DOM handlers are removed. Unrelated DOM listeners are preserved. Remove the obsolete custom bridge from the screen; anonymous listeners, timers, or closure-only state not exposed through those globals cannot be discovered or cancelled by the plugin.
+
+**Location and data caveats:** close stops this plugin's map-owned location, accuracy, heading, and path tracking. It does not stop another plugin's independent background-location service or clear its storage. This plugin does not implement a separate persistent background-location service. Save the path with `stopPathTracking()` before leaving if needed. Active offline downloads are cancelled; completed offline regions remain stored. Repeated close calls are safe. Screen exit does not mean application pause: do not use close for temporary backgrounding if the map session should resume.
+
+**Deploy and verify:** point the existing OutSystems plugin dependency at the updated commit/ref and generate/install new Android and iOS native builds; publishing screen JavaScript alone does not update native code. SDK pins remain Android/iOS Mapbox 11.30.0. CI checks native helpers and Swift syntax, and builds clean Cordova Android/iOS apps against the full SDK. On both physical platforms test: exit during initialization, permission prompts, marker downloads and pinch/pan; tap where the map used to be; reopen repeatedly with the same marker IDs; confirm no old events; confirm independent background tracking continues; and verify the rest of the WebView remains interactive.
+
+The smoke-build baseline uses Cordova CLI 12.0.0, cordova-android 14.0.1 (Java 17 / Android SDK 35), and cordova-ios 8.0.0. The iOS job uses an Xcode 26 toolchain: Mapbox 11.30.0 binary dependencies failed with the Xcode 16.4 compiler. Confirm your OutSystems MABS build stack supports these native dependencies. These clean-app builds do not certify every MABS version or other plugin combination.
+
+Set the consuming iOS application's minimum deployment target explicitly to **14.0 or later**. A plain Cordova app needs `<preference name="deployment-target" value="14.0" />` in its app `config.xml`; the plugin's `default="14.0"` declaration alone did not raise the generated CocoaPods target in the smoke app. This setting is required before installing/resolving the Mapbox pod.
 
 ## Security behavior in 1.0.3
 

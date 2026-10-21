@@ -3,6 +3,7 @@ import CoreFoundation
 import Security
 import CoreLocation
 import UIKit
+import WebKit
 import MapboxMaps
 import Turf
 
@@ -43,7 +44,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     func releaseCallback(_ id: String) {
         forgetCallback(id)
-        let result = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
+        // Cordova 7 imports this initializer as nullable; Cordova 8 as nonnull.
+        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
         result?.setKeepCallbackAs(false)
         commandDelegate.send(result, callbackId: id)
     }
@@ -1664,9 +1666,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func installMapTapHandler(on mapView: MapView) {
+        cancelables.forEach { $0.cancel() }
         cancelables.removeAll()
+        let generation = sessionGeneration
         mapView.gestures.onMapTap.observe { [weak self] context in
-            guard let self = self else {
+            guard let self = self, self.sessionGeneration == generation else {
                 return
             }
 
@@ -1709,8 +1713,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         marker.image = markerIcons.pin(color: style.color, isFind: style.isFind, source: style.imageUrl)
         marker.iconAnchor = .bottom
         marker.iconSize = 0.5
+        let generation = sessionGeneration
+        let annotationId = marker.id
         marker.tapHandler = { [weak self, id] context in
-            guard let self = self else { return true }
+            guard let self = self, self.sessionGeneration == generation,
+                  self.markers[id]?.id == annotationId else { return true }
             let now = ProcessInfo.processInfo.systemUptime
             guard now - self.lastKeepCallbackMarkerTs >= self.callbackRateLimit else { return true }
             self.lastKeepCallbackMarkerTs = now
@@ -1951,6 +1958,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         compassSubscription = nil
         cancelables.forEach { $0.cancel() }
         cancelables.removeAll()
+        // Detach immediately, even while SDK cancellation callbacks are draining.
+        mapView?.isUserInteractionEnabled = false
+        mapView?.removeFromSuperview()
         mapView?.camera.cancelAnimations()
         mapView?.gestures.panGestureRecognizer.removeTarget(self, action: #selector(pauseCameraFollowForGesture(_:)))
         mapView?.gestures.pinchGestureRecognizer.removeTarget(self, action: #selector(pauseCameraFollowForGesture(_:)))
@@ -1967,7 +1977,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
         if let saved = savedWebViewAppearance {
             if webView.backgroundColor == UIColor.clear { webView.backgroundColor = saved.1 }
-            if webView.scrollView.backgroundColor == UIColor.clear { webView.scrollView.backgroundColor = saved.2 }
+            if let scrollView = (webView as? WKWebView)?.scrollView,
+               scrollView.backgroundColor == UIColor.clear {
+                scrollView.backgroundColor = saved.2
+            }
             if !webView.isOpaque { webView.isOpaque = saved.0 }
             savedWebViewAppearance = nil
         }
@@ -1978,13 +1991,20 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         headingLocationManager = nil
         stopHeadingFollowMode()
         stopUserTracking()
+        annotations?.annotations.removeAll()
+        clearBoundariesInternal()
+        lineAnnotationManager?.annotations.removeAll()
+        if let mapView = mapView {
+            let managerIds = [annotations?.id, boundaryAnnotationManager?.id, lineAnnotationManager?.id]
+            for id in managerIds.compactMap({ $0 }) {
+                mapView.annotations.removeAnnotationManager(withId: id)
+            }
+        }
         markers.removeAll()
         markerStyles.removeAll()
         pendingMarkerImages.removeAll()
         annotations = nil
-        clearBoundariesInternal()
         boundaryAnnotationManager = nil
-        lineAnnotationManager?.annotations.removeAll()
         lineAnnotationManager = nil
         pathAnnotations.removeAll()
         currentSegmentAnnotation = nil
@@ -2361,10 +2381,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func makeWebViewTransparent() {
-        savedWebViewAppearance = (webView.isOpaque, webView.backgroundColor, webView.scrollView.backgroundColor)
+        let scrollView = (webView as? WKWebView)?.scrollView
+        savedWebViewAppearance = (webView.isOpaque, webView.backgroundColor, scrollView?.backgroundColor)
         webView.isOpaque = false
         webView.backgroundColor = UIColor.clear
-        webView.scrollView.backgroundColor = UIColor.clear
+        scrollView?.backgroundColor = UIColor.clear
     }
 
     private func sendSuccess(_ command: CDVInvokedUrlCommand) {
@@ -2386,7 +2407,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func sendNoResultKeepCallback(_ command: CDVInvokedUrlCommand) {
-        let result = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
+        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
         result?.setKeepCallbackAs(true)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
@@ -2396,7 +2417,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             return
         }
 
-        let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
+        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
         result?.setKeepCallbackAs(true)
         commandDelegate.send(result, callbackId: callbackId)
     }

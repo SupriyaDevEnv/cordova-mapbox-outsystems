@@ -66,6 +66,7 @@ import com.mapbox.maps.plugin.PuckBearing;
 import com.mapbox.maps.plugin.Plugin;
 import com.mapbox.maps.plugin.annotation.AnnotationPlugin;
 import com.mapbox.maps.plugin.annotation.generated.PointAnnotation;
+import com.mapbox.maps.plugin.annotation.generated.OnPointAnnotationClickListener;
 import com.mapbox.maps.plugin.annotation.generated.PointAnnotationManager;
 import com.mapbox.maps.plugin.annotation.generated.PointAnnotationManagerKt;
 import com.mapbox.maps.plugin.annotation.generated.PointAnnotationOptions;
@@ -201,6 +202,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private float currentLocationAccuracy = -1f;
     private String currentLocationAccuracyLabel = "Unknown";
     private PointAnnotationManager pointAnnotationManager;
+    private OnPointAnnotationClickListener markerTapListener;
     private PolygonAnnotationManager boundaryAnnotationManager;
     private final List<PolygonAnnotationOptions> boundaryAnnotationOptions = new ArrayList<>();
     private final List<PolygonAnnotation> boundaryAnnotations = new ArrayList<>();
@@ -554,12 +556,13 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     mapView.getPlugin(Plugin.MAPBOX_GESTURES_PLUGIN_ID);
 
 if (gestures != null) {
+    final long gestureGeneration = sessionGeneration;
 
     moveGestureListener = new com.mapbox.maps.plugin.gestures.OnMoveListener() {
         @Override
         public void onMoveBegin(
                 com.mapbox.android.gestures.MoveGestureDetector detector) {
-            isCameraFollowingUser = false;
+            if (gestureGeneration == sessionGeneration) isCameraFollowingUser = false;
         }
 
         @Override
@@ -579,7 +582,7 @@ if (gestures != null) {
                     @Override
                     public void onScaleBegin(
                             com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
-                        isCameraFollowingUser = false;
+                        if (gestureGeneration == sessionGeneration) isCameraFollowingUser = false;
                     }
             
                     @Override
@@ -2550,7 +2553,9 @@ private void startUserTracking(CallbackContext callback) {
             return;
         }
 
+        final long generation = sessionGeneration;
         mapClickListener = point -> {
+            if (generation != sessionGeneration || mapView == null) return false;
             return handleMapPointSelected(point);
         };
 
@@ -2635,7 +2640,9 @@ private void startUserTracking(CallbackContext callback) {
         }
 
         pointAnnotationManager = PointAnnotationManagerKt.createPointAnnotationManager(annotationPlugin, null);
-        pointAnnotationManager.addClickListener(annotation -> {
+        final long generation = sessionGeneration;
+        markerTapListener = annotation -> {
+            if (generation != sessionGeneration || mapView == null) return true;
             String markerId = markerRecordIds.get(annotation.getId());
             if (markerId == null || markerClickCallback == null) {
                 return true;
@@ -2659,7 +2666,8 @@ private void startUserTracking(CallbackContext callback) {
             }
 
             return true;
-        });
+        };
+        pointAnnotationManager.addClickListener(markerTapListener);
 
         return true;
     }
@@ -3807,6 +3815,13 @@ private boolean addMarkerInternal(
         activeOfflineTileStore = null;
     }
 
+    private void cleanupStep(Runnable work) {
+        try { work.run(); }
+        catch (RuntimeException error) {
+            Log.w("MapboxPlugin", "Map cleanup step failed; continuing teardown.", error);
+        }
+    }
+
     protected void closeInternal() {
         sessionGeneration++;
         if (closeCallback != null) { closeCallback.success(); closeCallback = null; }
@@ -3820,47 +3835,56 @@ private boolean addMarkerInternal(
             }
         }
         sessionCallbacks.clear();
-        cancelPendingLocationActions();
+        cleanupStep(this::cancelPendingLocationActions);
         compassCallback = null;
         if (compassCameraSubscription != null) {
-            compassCameraSubscription.cancel();
+            cleanupStep(() -> compassCameraSubscription.cancel());
             compassCameraSubscription = null;
         }
-        cancelCurrentDownload();
-        markerIcons.cancelAll();
-        if (bootstrapLocationToken != null) { bootstrapLocationToken.cancel(); bootstrapLocationToken = null; }
+        cleanupStep(this::cancelCurrentDownload);
+        cleanupStep(markerIcons::cancelAll);
+        if (bootstrapLocationToken != null) { cleanupStep(() -> bootstrapLocationToken.cancel()); bootstrapLocationToken = null; }
         recenterAnimationGeneration++;
         isCameraFollowingUser = true;
         if (mapView != null) {
             MotionEvent cancel = MotionEvent.obtain(android.os.SystemClock.uptimeMillis(),
                 android.os.SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, 0, 0, 0);
-            try { mapView.dispatchTouchEvent(cancel); } finally { cancel.recycle(); }
+            try { cleanupStep(() -> mapView.dispatchTouchEvent(cancel)); } finally { cancel.recycle(); }
+            mapView.setEnabled(false);
         }
-        removeTouchRouter();
-        // Clear callbacks before stopping services so cleanup emits no stale events.
-        trackingStatusCallback = null;
-        stopLocationAccuracyMonitoring();
-        locationAccuracyCallback = null;
-        stopHeadingFollowMode();
-        stopUserTracking();
-        cancelMoveToCurrentLocation();
-
-        if (mapView != null) {
-            try {
-                GesturesPlugin gestures = mapView.getPlugin(Plugin.MAPBOX_GESTURES_PLUGIN_ID);
-                if (gestures != null) {
-                    if (mapClickListener != null) gestures.removeOnMapClickListener(mapClickListener);
-                    if (moveGestureListener != null) gestures.removeOnMoveListener(moveGestureListener);
-                    if (scaleGestureListener != null) gestures.removeOnScaleListener(scaleGestureListener);
-                }
-                try { mapView.onStop(); } finally { mapView.onDestroy(); }
-            } catch (Throwable ignored) {
-                // MapView may already be partially torn down after a failed initialization.
-            }
-        }
-
+        cleanupStep(this::removeTouchRouter);
+        // Remove the visible native map before SDK/service cleanup can fail.
         if (rootView != null && rootView.getParent() instanceof ViewGroup) {
             ((ViewGroup) rootView.getParent()).removeView(rootView);
+        }
+        // Clear callbacks before stopping services so cleanup emits no stale events.
+        trackingStatusCallback = null;
+        cleanupStep(this::stopLocationAccuracyMonitoring);
+        locationAccuracyCallback = null;
+        cleanupStep(this::stopHeadingFollowMode);
+        cleanupStep(this::stopUserTracking);
+        cleanupStep(this::cancelMoveToCurrentLocation);
+
+        if (pointAnnotationManager != null && markerTapListener != null) {
+            cleanupStep(() -> pointAnnotationManager.removeClickListener(markerTapListener));
+        }
+        markerTapListener = null;
+
+        if (mapView != null) {
+            cleanupStep(() -> {
+                GesturesPlugin gestures = mapView.getPlugin(Plugin.MAPBOX_GESTURES_PLUGIN_ID);
+                if (gestures != null) {
+                    if (mapClickListener != null) cleanupStep(() -> gestures.removeOnMapClickListener(mapClickListener));
+                    if (moveGestureListener != null) cleanupStep(() -> gestures.removeOnMoveListener(moveGestureListener));
+                    if (scaleGestureListener != null) cleanupStep(() -> gestures.removeOnScaleListener(scaleGestureListener));
+                }
+            });
+            cleanupStep(() -> {
+                CameraAnimationsPlugin camera = mapView.getPlugin(Plugin.MAPBOX_CAMERA_PLUGIN_ID);
+                if (camera != null) camera.cancelAllAnimators(Collections.emptyList());
+            });
+            cleanupStep(() -> mapView.onStop());
+            cleanupStep(() -> mapView.onDestroy());
         }
 
         mapView = null;
@@ -3894,7 +3918,7 @@ private boolean addMarkerInternal(
         trackingStatusCallback = null;
         locationAccuracyCallback = null;
         lastLocationAccuracyUpdateMs = 0L;
-        cancelCurrentDownload();
+        cleanupStep(this::cancelCurrentDownload);
         isOfflineDownloading = false;
         waypointSelectionEnabled = false;
         autoAddWaypointMarker = false;
