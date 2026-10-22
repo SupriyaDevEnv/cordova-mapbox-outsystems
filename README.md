@@ -188,6 +188,18 @@ Map viewport, resize, touch-region, and offline-selection rectangles use WebView
 
 Boolean options (for example `enabled`, `visible`, `replace`, `isFind`, `trackCamera`) accept a boolean or the strings `"true"`/`"false"` (any case) on both platforms; any other value uses the option's default. Numeric options such as `lineWidth`, `lineOpacity` and `duration` accept numbers or numeric strings on both platforms. Marker IDs may be strings or JSON numbers and are returned as strings. `setPathVisibility` is idempotent when no path has been loaded.
 
+**Precise location is required.** Actions that use the device location (`enableUserLocation`, `setDeviceHeadingEnabled`, `setUserTrackingEnabled`, `startPathTracking`, `moveToCurrentLocation`, `onLocationAccuracyChanged`) need precise (fine) location on both platforms. If the user grants only approximate location (Android 12+ "Approximate", iOS "Precise Location" off), the call fails with `Precise location permission is not granted.` instead of showing a position that can be kilometres off. `getCurrentLocationAccuracy()` returns `{ accuracy: -1, accuracyLabel: "Unknown" }` in that case. Android also asks the fused provider for fine granularity. Ask the user to switch precise location on in system settings.
+
+**Location accuracy options (`initialize`).** All three are optional and off or `legacy` by default, so existing apps behave as before.
+
+| Option | Values | Effect |
+|---|---|---|
+| `locationFilter` | `"legacy"` (default) or `"accuracyWeighted"` | `accuracyWeighted` weights each GPS fix by its reported accuracy instead of the fixed smoothing and the 25 m cut-off. Standing still, the position converges and stays calm; when you start walking it follows quickly. Any other value rejects with `locationFilter must be "legacy" or "accuracyWeighted".` On Android the filtered position drives the blue dot, the camera and recorded paths. On iOS it drives the camera and recorded paths; the iOS blue dot is still drawn by Mapbox from the raw location. |
+| `showAccuracyRing` | boolean, default `false` | Draws Mapbox's accuracy ring around the blue dot so users can see how uncertain the position is. |
+| `locationDiagnostics` | boolean, default `false` | Writes each raw fix and the filtered position to the Android log / iOS console for field tests. It records coordinates: never enable it in production. |
+
+These options improve smoothing and show uncertainty; they cannot make phone GPS more accurate than the phone can measure (typically a few metres). See `docs/gps-field-test.md` in the repository for how to measure the result before switching `locationFilter` on.
+
 Registering `onLocationAccuracyChanged` requests location permission when needed and starts an independent accuracy monitor on both platforms. The monitor stops when the map plugin closes; user tracking and path tracking may be enabled or disabled independently.
 
 For behind-WebView maps, keep the WebView/page background transparent. Android and iOS now discover overlay touch regions automatically. See Touch Routing below.

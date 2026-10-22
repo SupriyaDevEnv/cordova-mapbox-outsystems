@@ -21,6 +21,7 @@ class MapboxPluginParity: MapboxPlugin {
     private var lastTrackingLocationUpdate: TimeInterval = 0
     private var smoothedTrackingCoordinate: CLLocationCoordinate2D?
     private var parityPathTrackingActive = false
+    private let locationFilter = LocationFilter()
 
     private var moveLocationManager: CLLocationManager?
     private var moveLocationCallbackId: String?
@@ -88,6 +89,11 @@ class MapboxPluginParity: MapboxPlugin {
                 manager.desiredAccuracy = kCLLocationAccuracyBest
                 manager.distanceFilter = kCLDistanceFilterNone
                 self.accuracyLocationManager = manager
+            }
+
+            guard self.accuracyLocationManager?.accuracyAuthorization == .fullAccuracy else {
+                self.sendAccuracyResult(accuracy: -1, label: "Unknown", command: command)
+                return
             }
 
             guard let location = self.accuracyLocationManager?.location,
@@ -269,14 +275,33 @@ class MapboxPluginParity: MapboxPlugin {
             return
         }
 
+        // The accuracy-weighted filter sees every fix, before the camera throttle below.
+        var weightedCoordinate: CLLocationCoordinate2D?
+        if accuracyWeightedFilter {
+            guard let estimate = locationFilter.update(
+                latitude: rawCoordinate.latitude,
+                longitude: rawCoordinate.longitude,
+                accuracy: location.horizontalAccuracy,
+                timeMs: Int64(location.timestamp.timeIntervalSince1970 * 1000),
+                speed: location.speed >= 0 ? location.speed : -1.0
+            ) else {
+                logLocationDiagnostic("dropped-filter", location, cam: smoothedTrackingCoordinate)
+                return
+            }
+            weightedCoordinate = CLLocationCoordinate2D(latitude: estimate.latitude, longitude: estimate.longitude)
+        }
+
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastTrackingLocationUpdate >= trackingCameraInterval else {
+            logLocationDiagnostic("throttled", location, cam: smoothedTrackingCoordinate)
             return
         }
         lastTrackingLocationUpdate = now
 
         let cameraCoordinate: CLLocationCoordinate2D
-        if let previous = smoothedTrackingCoordinate {
+        if let weighted = weightedCoordinate {
+            cameraCoordinate = weighted
+        } else if let previous = smoothedTrackingCoordinate {
             cameraCoordinate = CLLocationCoordinate2D(
                 latitude: previous.latitude
                     + (rawCoordinate.latitude - previous.latitude) * locationSmoothingFactor,
@@ -289,6 +314,7 @@ class MapboxPluginParity: MapboxPlugin {
             cameraCoordinate = rawCoordinate
         }
         smoothedTrackingCoordinate = cameraCoordinate
+        logLocationDiagnostic("accepted", location, cam: cameraCoordinate)
 
         if parityPathTrackingActive {
             // Preserve the inherited path recorder, but feed it the same smoothed
@@ -318,6 +344,17 @@ class MapboxPluginParity: MapboxPlugin {
         }
     }
 
+    // Opt-in field-test log (initialize option locationDiagnostics). Writes coordinates to the console: never enable in production.
+    // On iOS the blue dot is drawn by Mapbox from the raw location; `cam` is the filtered camera/path coordinate.
+    private func logLocationDiagnostic(_ tag: String, _ location: CLLocation, cam: CLLocationCoordinate2D?) {
+        guard locationDiagnostics else { return }
+        let camText = cam.map { String(format: "%.7f,%.7f", $0.latitude, $0.longitude) } ?? "none"
+        NSLog("MapboxPlugin: gps %@ raw=%.7f,%.7f acc=%.1f speed=%.2f t=%lld cam=%@",
+              tag, location.coordinate.latitude, location.coordinate.longitude,
+              location.horizontalAccuracy, location.speed,
+              Int64(location.timestamp.timeIntervalSince1970 * 1000), camText)
+    }
+
     override func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         if manager === moveLocationManager, let callbackId = moveLocationCallbackId {
             stopMoveLocationUpdates()
@@ -342,6 +379,7 @@ class MapboxPluginParity: MapboxPlugin {
     private func resetTrackingSmoothing() {
         lastTrackingLocationUpdate = 0
         smoothedTrackingCoordinate = nil
+        locationFilter.reset()
     }
 
     private func handleMoveToCurrentLocation(_ location: CLLocation, manager: CLLocationManager) {

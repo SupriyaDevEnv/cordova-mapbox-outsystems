@@ -49,9 +49,9 @@ public class MapboxPluginPermissionEntry extends MapboxPluginEntry {
             || "registerLocationAccuracyCallback".equals(action);
     }
 
+    // Precise (fine) location is required; approximate-only grants are too coarse for map positioning.
     private boolean hasLocationPermission() {
-        return cordova.hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-            || cordova.hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
+        return cordova.hasPermission(Manifest.permission.ACCESS_FINE_LOCATION);
     }
 
     private void requestLocationPermissionIfNeeded() {
@@ -90,17 +90,20 @@ public class MapboxPluginPermissionEntry extends MapboxPluginEntry {
             pendingLocationActions.clear();
         }
 
-        boolean granted = false;
-        for (int result : grantResults) {
-            if (result == PackageManager.PERMISSION_GRANTED) {
-                granted = true;
-                break;
-            }
+        boolean precise = false;
+        boolean approximate = false;
+        for (int i = 0; i < permissions.length && i < grantResults.length; i++) {
+            if (grantResults[i] != PackageManager.PERMISSION_GRANTED) continue;
+            if (Manifest.permission.ACCESS_FINE_LOCATION.equals(permissions[i])) precise = true;
+            if (Manifest.permission.ACCESS_COARSE_LOCATION.equals(permissions[i])) approximate = true;
         }
 
-        if (!granted) {
+        if (!precise) {
+            String message = approximate
+                ? "Precise location permission is not granted."
+                : "Location permission is not granted.";
             for (PendingAction action : actions) {
-                action.callbackContext.error("Location permission is not granted.");
+                action.callbackContext.error(message);
             }
             return;
         }

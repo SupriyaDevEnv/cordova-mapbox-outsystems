@@ -25,6 +25,7 @@ import android.widget.FrameLayout;
 
 import com.google.android.gms.location.CurrentLocationRequest;
 import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.Granularity;
 import com.google.android.gms.location.LocationCallback;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationResult;
@@ -184,6 +185,10 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
     private Point smoothedTrackingPoint = null;
+    private boolean locationDiagnostics = false;
+    private boolean accuracyWeightedFilter = false;
+    private boolean showAccuracyRing = false;
+    private final LocationFilter locationFilter = new LocationFilter();
     private int movementState = MOVEMENT_STATE_STATIONARY;
     private int movementStateAgreement = 0;
     private final List<Location> movementHistory = new ArrayList<>();
@@ -482,6 +487,13 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
                 callback.error(error.getMessage());
                 return;
             }
+            final String locationFilterMode = options.isNull("locationFilter")
+                ? "legacy"
+                : options.optString("locationFilter", "legacy");
+            if (!"legacy".equals(locationFilterMode) && !"accuracyWeighted".equals(locationFilterMode)) {
+                callback.error("locationFilter must be \"legacy\" or \"accuracyWeighted\".");
+                return;
+            }
             try {
                 String token = getAccessToken();
                 if (token.isEmpty()) {
@@ -509,6 +521,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
 
                 closeInternal();
                 sessionCallbacks.add(callback);
+                locationDiagnostics = options.optBoolean("locationDiagnostics", false);
+                accuracyWeightedFilter = "accuracyWeighted".equals(locationFilterMode);
+                showAccuracyRing = options.optBoolean("showAccuracyRing", false);
 
                 boolean behindWebView = options.optBoolean("behindWebView", false);
 
@@ -851,11 +866,8 @@ if (gestures != null) {
                 return;
             }
 
-            boolean hasFineLocation = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION);
-            boolean hasCoarseLocation = hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
-
-            if (!hasFineLocation && !hasCoarseLocation) {
-                callback.error("Location permission is not granted.");
+            if (!hasLocationPermission()) {
+                callback.error(locationPermissionMessage());
                 return;
             }
 
@@ -872,9 +884,11 @@ if (gestures != null) {
                     new SmoothedLocationProvider();
             }
 
+            smoothedLocationProvider.setReportAccuracyRadius(showAccuracyRing);
             location.setLocationProvider(smoothedLocationProvider);
             location.setPuckBearing(PuckBearing.HEADING);
             location.setPuckBearingEnabled(true);
+            location.setShowAccuracyRing(showAccuracyRing);
             location.setEnabled(true);
 
             if (fusedLocationClient == null) {
@@ -902,10 +916,19 @@ if (gestures != null) {
                     if (fix != null
                             && fix.hasAccuracy()
                             && fix.getAccuracy()
-                            <= MAX_ACCEPTABLE_ACCURACY_METERS
+                            <= (accuracyWeightedFilter
+                                ? LocationFilter.MAX_ACCURACY_METERS
+                                : MAX_ACCEPTABLE_ACCURACY_METERS)
                             && isUserLocationEnabled
                             && smoothedLocationProvider != null) {
-                        smoothedLocationProvider.updateLocation(fix);
+                        if (accuracyWeightedFilter) {
+                            smoothedLocationProvider.updateEstimate(
+                                Point.fromLngLat(fix.getLongitude(), fix.getLatitude()),
+                                fix.getAccuracy()
+                            );
+                        } else {
+                            smoothedLocationProvider.updateLocation(fix);
+                        }
                     }
                 })
                 .addOnFailureListener(ignored -> {
@@ -926,9 +949,16 @@ if (gestures != null) {
         return cordova.getActivity().checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
     }
 
+    // Precise (fine) location is required. On Android 12+ a user can grant only
+    // approximate location, whose fixes are far too coarse for map positioning.
     private boolean hasLocationPermission() {
-        return hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-            || hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
+        return hasPermission(Manifest.permission.ACCESS_FINE_LOCATION);
+    }
+
+    private String locationPermissionMessage() {
+        return hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+            ? "Precise location permission is not granted."
+            : "Location permission is not granted.";
     }
 
     private void setDeviceHeadingEnabled(JSONObject options, CallbackContext callback) {
@@ -938,11 +968,8 @@ if (gestures != null) {
                 return;
             }
 
-            boolean hasFineLocation = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION);
-            boolean hasCoarseLocation = hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
-
-            if (!hasFineLocation && !hasCoarseLocation) {
-                callback.error("Location permission is not granted.");
+            if (!hasLocationPermission()) {
+                callback.error(locationPermissionMessage());
                 return;
             }
 
@@ -1109,6 +1136,71 @@ if (gestures != null) {
 
             startUserTracking(callback);
         });
+    }
+
+    // Opt-in field-test log (initialize option locationDiagnostics). Writes coordinates to logcat: never enable in production.
+    private void logLocationDiagnostic(String tag, Location raw, Point dot) {
+        if (!locationDiagnostics) return;
+        Log.d("MapboxPlugin", String.format(java.util.Locale.US,
+            "gps %s raw=%.7f,%.7f acc=%.1f speed=%.2f t=%d dot=%s",
+            tag, raw.getLatitude(), raw.getLongitude(),
+            raw.hasAccuracy() ? raw.getAccuracy() : -1f,
+            raw.hasSpeed() ? raw.getSpeed() : -1f, raw.getTime(),
+            dot == null ? "none" : String.format(java.util.Locale.US, "%.7f,%.7f", dot.latitude(), dot.longitude())));
+    }
+
+    // Records the filtered point while a path recording is active; stops tracking at the point limit
+    // but keeps the recording available to stopPathTracking().
+    private void collectPathPoint(Point point) {
+        if (!isPathTrackingActive || isPathTrackingPaused) {
+            return;
+        }
+        if (pathPoints.size() >= MapboxSecurity.MAX_POINTS) {
+            stopUserTracking();
+            return;
+        }
+        pathPoints.add(point);
+        if (currentSegment != null) {
+            currentSegment.add(point);
+        }
+        runForSession(() -> {
+            if (mapView != null) {
+                updatePathAnnotation();
+            }
+        });
+    }
+
+    // initialize({ locationFilter: "accuracyWeighted" }): weight each fix by its accuracy.
+    private void handleWeightedFix(Location location) {
+        if (!location.hasAccuracy()) {
+            logLocationDiagnostic("dropped-no-accuracy", location, smoothedTrackingPoint);
+            return;
+        }
+        LocationFilter.Estimate estimate = locationFilter.update(
+            location.getLatitude(),
+            location.getLongitude(),
+            location.getAccuracy(),
+            location.getTime(),
+            location.hasSpeed() ? location.getSpeed() : -1.0
+        );
+        if (estimate == null) {
+            logLocationDiagnostic("dropped-filter", location, smoothedTrackingPoint);
+            return;
+        }
+
+        final Point point = Point.fromLngLat(estimate.longitude, estimate.latitude);
+        smoothedTrackingPoint = point;
+        lastUserTrackingUpdateMs = System.currentTimeMillis();
+        logLocationDiagnostic("accepted", location, point);
+
+        final double accuracyRadius = estimate.accuracyMeters;
+        runForSession(() -> {
+            if (mapView != null && smoothedLocationProvider != null) {
+                smoothedLocationProvider.updateEstimate(point, accuracyRadius);
+            }
+        });
+
+        collectPathPoint(point);
     }
 
     private void updateMovementHistory(Location location) {
@@ -1365,7 +1457,7 @@ if (gestures != null) {
 
 private void startUserTracking(CallbackContext callback) {
         if (!hasLocationPermission()) {
-            callback.error("Location permission is not granted.");
+            callback.error(locationPermissionMessage());
             return;
         }
 
@@ -1406,12 +1498,18 @@ private void startUserTracking(CallbackContext callback) {
 
                     sendLocationAccuracyUpdate(location);
 
+                    if (accuracyWeightedFilter) {
+                        handleWeightedFix(location);
+                        continue;
+                    }
+
                     long now = System.currentTimeMillis();
 
                     // 1. Reject readings without accuracy data or poor accuracy
                     if (!location.hasAccuracy()
                             || location.getAccuracy()
                             > MAX_ACCEPTABLE_ACCURACY_METERS) {
+                        logLocationDiagnostic("dropped-accuracy", location, smoothedTrackingPoint);
                         continue;
                     }
 
@@ -1447,6 +1545,7 @@ private void startUserTracking(CallbackContext callback) {
                                 speed = location.getSpeed();
                             }
                             if (speed > MAX_REASONABLE_SPEED_MPS) {
+                                logLocationDiagnostic("dropped-jump", location, smoothedTrackingPoint);
                                 continue;
                             }
                         }
@@ -1471,6 +1570,7 @@ private void startUserTracking(CallbackContext callback) {
                     // renders immediately on tracking start
                     if (movementState == MOVEMENT_STATE_STATIONARY
                             && smoothedTrackingPoint != null) {
+                        logLocationDiagnostic("held-stationary", location, smoothedTrackingPoint);
                         continue;
                     }
 
@@ -1509,6 +1609,7 @@ private void startUserTracking(CallbackContext callback) {
                     }
 
                     final Point cameraPoint = smoothedTrackingPoint;
+                    logLocationDiagnostic("accepted", location, cameraPoint);
 
                     // 5. Create filtered location for Mapbox puck
                     final Location filteredLocation =
@@ -1553,21 +1654,7 @@ private void startUserTracking(CallbackContext callback) {
                     });
 
                     // 7. Collect path point if path tracking is active and not paused
-                    if (isPathTrackingActive && !isPathTrackingPaused) {
-                        if (pathPoints.size() >= MapboxSecurity.MAX_POINTS) {
-                            stopUserTracking();
-                            continue; // Keep the recording available to stopPathTracking().
-                        }
-                        pathPoints.add(cameraPoint);
-                        if (currentSegment != null) {
-                            currentSegment.add(cameraPoint);
-                        }
-                        runForSession(() -> {
-                            if (mapView != null) {
-                                updatePathAnnotation();
-                            }
-                        });
-                    }
+                    collectPathPoint(cameraPoint);
                 }
             }
         };
@@ -1594,7 +1681,8 @@ private void startUserTracking(CallbackContext callback) {
                     1000L
                 )
                 .setMinUpdateIntervalMillis(500L)
-                .setMinUpdateDistanceMeters(1.0f)
+                .setMinUpdateDistanceMeters(accuracyWeightedFilter ? 0.0f : 1.0f)
+                .setGranularity(Granularity.GRANULARITY_FINE)
                 .build();
 
             fusedLocationClient.requestLocationUpdates(
@@ -1629,6 +1717,7 @@ private void startUserTracking(CallbackContext callback) {
         lastUserTrackingUpdateMs = 0L;
         lastAcceptedTrackingLocation = null;
         smoothedTrackingPoint = null;
+        locationFilter.reset();
         movementHistory.clear();
         movementState = MOVEMENT_STATE_STATIONARY;
         movementStateAgreement = 0;
@@ -1760,7 +1849,7 @@ private void startUserTracking(CallbackContext callback) {
             moveToCurrentLocationZoom = options.optDouble("zoom", 0.0);
 
             if (!hasLocationPermission()) {
-                callback.error("Location permission is not granted.");
+                callback.error(locationPermissionMessage());
                 return;
             }
 
@@ -2331,7 +2420,7 @@ private void startUserTracking(CallbackContext callback) {
     private void registerLocationAccuracyCallback(CallbackContext callback) {
         runForSession(() -> {
             if (!hasLocationPermission()) {
-                callback.error("Location permission is not granted.");
+                callback.error(locationPermissionMessage());
                 return;
             }
 
@@ -2361,7 +2450,9 @@ private void startUserTracking(CallbackContext callback) {
             LocationRequest request = new LocationRequest.Builder(
                 Priority.PRIORITY_HIGH_ACCURACY,
                 1000L
-            ).setMinUpdateIntervalMillis(500L).build();
+            ).setMinUpdateIntervalMillis(500L)
+                .setGranularity(Granularity.GRANULARITY_FINE)
+                .build();
 
             try {
                 accuracyFusedLocationClient.requestLocationUpdates(
@@ -3957,6 +4048,9 @@ private boolean addMarkerInternal(
         lastCompassVisible = false;
         fusedLocationClient = null;
         smoothedLocationProvider = null;
+        locationDiagnostics = false;
+        accuracyWeightedFilter = false;
+        showAccuracyRing = false;
         touchableRects.clear();
     }
 
@@ -4157,6 +4251,12 @@ private boolean addMarkerInternal(
             this.locationConsumer = null;
         }
 
+        private volatile boolean reportAccuracyRadius;
+
+        void setReportAccuracyRadius(boolean report) {
+            reportAccuracyRadius = report;
+        }
+
         public void updateLocation(Location androidLocation) {
             if (locationConsumer != null) {
                 locationConsumer.onLocationUpdated(
@@ -4168,6 +4268,20 @@ private boolean addMarkerInternal(
                     },
                     null
                 );
+                if (reportAccuracyRadius && androidLocation.hasAccuracy()) {
+                    locationConsumer.onHorizontalAccuracyRadiusUpdated(
+                        new double[]{androidLocation.getAccuracy()},
+                        null
+                    );
+                }
+            }
+        }
+
+        // Position and horizontal accuracy radius (metres) from the accuracy-weighted filter.
+        public void updateEstimate(Point point, double accuracyRadiusMeters) {
+            if (locationConsumer != null) {
+                locationConsumer.onLocationUpdated(new Point[]{point}, null);
+                locationConsumer.onHorizontalAccuracyRadiusUpdated(new double[]{accuracyRadiusMeters}, null);
             }
         }
     }

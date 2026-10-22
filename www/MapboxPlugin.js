@@ -62,6 +62,13 @@ var SERVICE = 'MapboxPlugin';
 var touchRegions = null;
 var touchGeneration = 0;
 
+function validateLocationFilter(options) {
+  var value = options.locationFilter;
+  if (value != null && value !== 'legacy' && value !== 'accuracyWeighted') {
+    throw new Error('locationFilter must be "legacy" or "accuracyWeighted".');
+  }
+}
+
 function validateCameraZoomBounds(options) {
   ['minZoom', 'maxZoom'].forEach(function (key) {
     var value = options[key];
@@ -177,6 +184,7 @@ var api = {
     // Validate before serialization (which turns NaN/Infinity into null) or changing touch routing.
     try {
       validateCameraZoomBounds(options);
+      validateLocationFilter(options);
     } catch (error) {
       return Promise.reject(error);
     }

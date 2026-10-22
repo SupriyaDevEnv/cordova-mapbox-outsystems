@@ -36,6 +36,14 @@ jobs:
         run: |
           swiftc src/ios/MapboxSecurity.swift tests/security-main.swift -o "$RUNNER_TEMP/security-tests"
           "$RUNNER_TEMP/security-tests"
+      - name: Replay GPS traces through the Android location filter
+        run: |
+          javac -d "$RUNNER_TEMP/mapbox-tests" src/android/LocationFilter.java tests/LocationFilterTest.java
+          java -cp "$RUNNER_TEMP/mapbox-tests" com.outsystems.mapbox.LocationFilterTest
+      - name: Replay GPS traces through the iOS location filter
+        run: |
+          swiftc src/ios/LocationFilter.swift tests/location-filter-main.swift -o "$RUNNER_TEMP/location-filter-tests"
+          "$RUNNER_TEMP/location-filter-tests"
       - name: Regress empty-path native crash
         run: python3 tests/test-empty-path.py
       - name: Regress stale session callbacks on both platforms

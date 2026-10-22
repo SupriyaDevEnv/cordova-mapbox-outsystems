@@ -102,6 +102,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var moveToCurrentLocationZoom: Double?
     private var lastHeadingBearing: CLLocationDirection = -1
     private var lastHeadingUpdate: TimeInterval = 0
+    var locationDiagnostics = false
+    var accuracyWeightedFilter = false
+    private var showAccuracyRing = false
     private var isUserTrackingEnabled = false
     private(set) var isCameraFollowingUser = false
     private var isUserLocationEnabled = false
@@ -165,6 +168,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 self.sendError("minZoom must be less than or equal to maxZoom.", command)
                 return
             }
+            var locationFilterMode = "legacy"
+            if let rawMode = options["locationFilter"], !(rawMode is NSNull) {
+                guard let mode = rawMode as? String, mode == "legacy" || mode == "accuracyWeighted" else {
+                    self.sendError("locationFilter must be \"legacy\" or \"accuracyWeighted\".", command)
+                    return
+                }
+                locationFilterMode = mode
+            }
             let token = self.getAccessToken()
 
             guard !token.isEmpty else {
@@ -192,6 +203,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             self.closeInternal()
             self.rememberCommand(command)
+            self.locationDiagnostics = self.boolOption(options["locationDiagnostics"], defaultValue: false)
+            self.accuracyWeightedFilter = locationFilterMode == "accuracyWeighted"
+            self.showAccuracyRing = self.boolOption(options["showAccuracyRing"], defaultValue: false)
 
             MapboxOptions.accessToken = token
 
@@ -431,12 +445,22 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             self.requestLocationAuthorizationIfNeeded()
-            mapView.location.options.puckType = .puck2D()
+            mapView.location.options.puckType = self.puckType(showBearing: false)
             mapView.location.options.puckBearingEnabled = true
             self.isUserLocationEnabled = true
             self.fireTrackingStatusChanged()
             self.sendSuccess(command)
         }
+    }
+
+    // The legacy puck is returned unchanged unless the accuracy ring was requested.
+    private func puckType(showBearing: Bool) -> PuckType {
+        guard showAccuracyRing else {
+            return showBearing ? .puck2D(.makeDefault(showBearing: true)) : .puck2D()
+        }
+        var configuration = Puck2DConfiguration.makeDefault(showBearing: showBearing)
+        configuration.showsAccuracyRing = true
+        return .puck2D(configuration)
     }
 
     @objc(setDeviceHeadingEnabled:)
@@ -453,7 +477,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let enabled = self.boolOption(options["enabled"], defaultValue: true)
 
             if enabled {
-                mapView.location.options.puckType = .puck2D(.makeDefault(showBearing: true))
+                mapView.location.options.puckType = self.puckType(showBearing: true)
                 mapView.location.options.puckBearing = .heading
             }
 
@@ -483,7 +507,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
-            mapView.location.options.puckType = .puck2D(.makeDefault(showBearing: true))
+            mapView.location.options.puckType = self.puckType(showBearing: true)
             mapView.location.options.puckBearing = .heading
             mapView.location.options.puckBearingEnabled = true
 
@@ -2042,6 +2066,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         isUserTrackingEnabled = false
         isDeviceHeadingEnabled = false
         isHeadingFollowModeEnabled = false
+        locationDiagnostics = false
+        accuracyWeightedFilter = false
+        showAccuracyRing = false
         waypointSelectionEnabled = false
         autoAddWaypointMarker = false
         lastKeepCallbackOfflineTs = 0

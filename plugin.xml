@@ -52,6 +52,7 @@
 
         <framework src="src/android/mapbox-plugin.gradle" custom="true" type="gradleReference" />
         <source-file src="src/android/MapboxSecurity.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
+        <source-file src="src/android/LocationFilter.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
         <source-file src="src/android/MarkerIcons.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
         <source-file src="src/android/MapboxPluginEntry.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
         <source-file src="src/android/MapboxPluginPermissionEntry.java" target-dir="app/src/main/java/com/outsystems/mapbox" />
@@ -83,6 +84,7 @@
         </podspec>
 
         <source-file src="src/ios/MapboxSecurity.swift" />
+        <source-file src="src/ios/LocationFilter.swift" />
         <source-file src="src/ios/MarkerIcons.swift" />
         <source-file src="src/ios/MapboxPlugin.swift" />
         <source-file src="src/ios/MapboxPluginParity.swift" />

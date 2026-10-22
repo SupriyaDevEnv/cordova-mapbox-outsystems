@@ -113,6 +113,66 @@ test('Mapbox SDK version strings agree across plugin.xml, Gradle and iOS', () =>
   assert.equal(iosReported, pod);
 });
 
+test('precise location is required on both platforms with the same error text', () => {
+  const iosPermissions = fs.readFileSync('src/ios/MapboxPluginPermissionParity.swift', 'utf8');
+  const iosParity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const hasPermission = android.split('private boolean hasLocationPermission()')[1].split('}')[0];
+  assert.match(hasPermission, /ACCESS_FINE_LOCATION/);
+  assert.doesNotMatch(hasPermission, /ACCESS_COARSE_LOCATION/);
+  const gate = androidPermissions.split('private boolean hasLocationPermission()')[1].split('}')[0];
+  assert.match(gate, /ACCESS_FINE_LOCATION/);
+  assert.doesNotMatch(gate, /ACCESS_COARSE_LOCATION/);
+  assert.match(androidPermissions, /Precise location permission is not granted\./);
+  assert.match(android, /Precise location permission is not granted\./);
+  assert.match(iosPermissions, /accuracyAuthorization == \.fullAccuracy/);
+  assert.match(iosPermissions, /Precise location permission is not granted\./);
+  assert.match(iosParity, /accuracyAuthorization == \.fullAccuracy/);
+  assert.equal((android.match(/setGranularity\(Granularity\.GRANULARITY_FINE\)/g) || []).length, 2,
+    'tracking and accuracy-monitor requests ask for fine granularity');
+});
+
+test('Java and Swift location filters keep identical constants', () => {
+  const java = fs.readFileSync('src/android/LocationFilter.java', 'utf8');
+  const swift = fs.readFileSync('src/ios/LocationFilter.swift', 'utf8');
+  const javaConstants = {};
+  for (const m of java.matchAll(/static final (?:double|int) ([A-Z_]+) = ([0-9.]+);/g)) {
+    const camel = m[1].toLowerCase().replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+    javaConstants[camel] = Number(m[2]);
+  }
+  const swiftConstants = {};
+  for (const m of swift.matchAll(/static let ([A-Za-z]+) = ([0-9.]+)/g)) swiftConstants[m[1]] = Number(m[2]);
+  assert.equal(Object.keys(javaConstants).length, 10, 'all filter constants found in Java');
+  assert.deepEqual(swiftConstants, javaConstants);
+});
+
+test('locationFilter option is validated identically on both platforms and defaults to legacy', () => {
+  assert.match(android, /"legacy"\.equals\(locationFilterMode\) && !"accuracyWeighted"\.equals\(locationFilterMode\)/);
+  assert.match(android, /locationFilter must be \\"legacy\\" or \\"accuracyWeighted\\"\./);
+  assert.match(ios, /mode == "legacy" \|\| mode == "accuracyWeighted"/);
+  assert.match(ios, /locationFilter must be \\"legacy\\" or \\"accuracyWeighted\\"\./);
+  assert.match(android, /accuracyWeightedFilter = false;/);
+  assert.match(ios, /accuracyWeightedFilter = false/);
+});
+
+test('accuracy ring is opt-in on both platforms and the legacy puck is unchanged when off', () => {
+  assert.match(android, /options\.optBoolean\("showAccuracyRing", false\)/);
+  assert.match(android, /location\.setShowAccuracyRing\(showAccuracyRing\)/);
+  assert.match(android, /onHorizontalAccuracyRadiusUpdated\(/);
+  assert.match(android, /showAccuracyRing = false;/);
+  assert.match(ios, /boolOption\(options\["showAccuracyRing"\], defaultValue: false\)/);
+  assert.match(ios, /guard showAccuracyRing else \{\s*return showBearing \? \.puck2D\(\.makeDefault\(showBearing: true\)\) : \.puck2D\(\)/);
+  assert.match(ios, /configuration\.showsAccuracyRing = true/);
+  assert.doesNotMatch(ios, /options\.puckType = \.puck2D/, 'puck creation goes through puckType(showBearing:)');
+});
+
+test('location diagnostics are opt-in on both platforms', () => {
+  const iosParity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  assert.match(android, /options\.optBoolean\("locationDiagnostics", false\)/);
+  assert.match(ios, /boolOption\(options\["locationDiagnostics"\], defaultValue: false\)/);
+  assert.match(android, /if \(!locationDiagnostics\) return;/);
+  assert.match(iosParity, /guard locationDiagnostics else \{ return \}/);
+});
+
 test('boolean and numeric options use the same tolerant parsing on both platforms', () => {
   assert.doesNotMatch(ios, /options\["(enabled|visible|replace|isFind|autoAddMarker|deleteStylePack|inline|behindWebView)"\] as\? Bool/);
   assert.doesNotMatch(ios, /marker\["IsFind"\] as\? Bool/);

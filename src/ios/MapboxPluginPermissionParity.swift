@@ -77,8 +77,13 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
         pendingLocationActions.removeAll()
 
         if status == .authorizedWhenInUse || status == .authorizedAlways {
+            let precise = manager.accuracyAuthorization == .fullAccuracy
             for action in actions {
-                resume(action)
+                if precise {
+                    resume(action)
+                } else {
+                    fail(action, message: "Precise location permission is not granted.")
+                }
             }
         } else {
             for action in actions {
@@ -103,6 +108,11 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
             let status = self.permissionLocationManager.authorizationStatus
 
             if status == .authorizedWhenInUse || status == .authorizedAlways {
+                // Approximate (reduced accuracy) location is too coarse for map positioning.
+                guard self.permissionLocationManager.accuracyAuthorization == .fullAccuracy else {
+                    self.fail(action, message: "Precise location permission is not granted.")
+                    return
+                }
                 self.resume(action)
                 return
             }
