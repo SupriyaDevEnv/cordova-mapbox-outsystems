@@ -21,7 +21,7 @@ def method(text, signature):
 follow = method(source, 'private void startCameraFollow()')
 recenter = method(source, 'private void runRecenterAnimation(')
 stop = method(source, 'private void stopCameraFollow()')
-move = method(source, 'private void startMoveToCurrentLocation(')
+move = method(source, 'private void completeMoveToCurrentLocation(')
 
 # Static: the ticker has to defer to the recenter guard.
 assert '&& !isRecenterAnimating' in follow, 'Ticker must skip while a recenter flight runs'
@@ -359,3 +359,4 @@ with tempfile.TemporaryDirectory() as temp:
         ['java', '-cp', str(directory / 'out'), 'Main'],
         check=True,
     )
+
