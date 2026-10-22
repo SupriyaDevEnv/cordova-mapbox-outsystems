@@ -50,6 +50,8 @@ jobs:
         run: python3 tests/test-ios-camera-follow.py
       - name: Validate Android recenter location age and accuracy
         run: python3 tests/test-recenter-location.py
+      - name: Validate shared location waiting and cancellation
+        run: python3 tests/test-shared-location.py
       - name: Regress Android recenter against the camera follow ticker
         run: python3 tests/test-android-camera-recenter.py
 
@@ -113,3 +115,4 @@ jobs:
           xcodebuild -workspace platforms/ios/App.xcworkspace \
             -scheme App -configuration Debug -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+
