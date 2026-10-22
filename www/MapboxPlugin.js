@@ -325,8 +325,12 @@ var api = {
     return call('loadMarkers', [options]);
   },
 
-  removeMarker: function (id) {
-    return call('removeMarker', [{ id: id }]);
+  // Returns a Promise; optional callbacks also support Cordova/OutSystems callers.
+  removeMarker: function (markerId, success, error) {
+    var request = typeof markerId === 'string' && markerId.length > 0
+      ? call('removeMarker', [{ id: markerId }])
+      : Promise.reject(new Error('markerId must be a non-empty string.'));
+    return request.then(success, error);
   },
 
   clearMarkers: function () {

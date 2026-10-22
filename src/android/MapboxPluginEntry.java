@@ -2982,24 +2982,41 @@ private boolean addMarkerInternal(
     }
 
     private void removeMarker(JSONObject options, CallbackContext callback) {
-    runForSession(() -> {
-        removeMarkerInternal(options.optString("id", ""));
-        callback.success();
-    });
-}
+        Object value = options.opt("id");
+        if (!(value instanceof String) || ((String) value).isEmpty()) {
+            callback.error("markerId must be a non-empty string.");
+            return;
+        }
+        String id = (String) value;
+        runForSession(() -> {
+            try {
+                removeMarkerInternal(id);
+                callback.success();
+            } catch (Exception e) {
+                callback.error("Failed to remove marker: " + e.getMessage());
+            }
+        });
+    }
 
     private void removeMarkerInternal(String id) {
-        if (pointAnnotationManager == null || id == null || id.isEmpty()) {
+        if (id == null || id.isEmpty()) {
             return;
         }
 
-        PointAnnotation annotation = markerAnnotationsByRecordId.remove(id);
+        PointAnnotation annotation = markerAnnotationsByRecordId.get(id);
         if (annotation != null) {
-            pointAnnotationManager.delete(annotation);
+            if (pointAnnotationManager != null) {
+                pointAnnotationManager.delete(annotation);
+            }
             markerRecordIds.remove(annotation.getId());
         }
+        markerAnnotationsByRecordId.remove(id);
         markerPointsByRecordId.remove(id);
         markerStylesByRecordId.remove(id);
+        // Keep in-flight downloads for other markers, but forget this subscriber.
+        for (List<String> waiting : pendingMarkerImages.values()) {
+            waiting.removeIf(id::equals);
+        }
     }
 
     private void clearMarkers(CallbackContext callback) {
