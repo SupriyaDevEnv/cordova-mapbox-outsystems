@@ -900,13 +900,12 @@ if (gestures != null) {
                 .addOnSuccessListener(fix -> {
                     if (bootstrapGeneration != sessionGeneration || bootstrapLocationToken != bootstrapToken) return;
                     bootstrapLocationToken = null;
-                    if (fix != null
-                            && fix.hasAccuracy()
-                            && fix.getAccuracy()
-                            <= MAX_ACCEPTABLE_ACCURACY_METERS
-                            && isUserLocationEnabled
-                            && smoothedLocationProvider != null) {
-                        smoothedLocationProvider.updateLocation(fix);
+                    if (isUsableRecenterLocation(fix)) {
+                        if (latestRecenterLocation == null || fix.getElapsedRealtimeNanos()
+                                > latestRecenterLocation.getElapsedRealtimeNanos()) {
+                            latestRecenterLocation = new Location(fix);
+                            updateInitialUserLocation(fix);
+                        }
                     }
                 })
                 .addOnFailureListener(ignored -> {
@@ -1409,10 +1408,17 @@ private void startUserTracking(CallbackContext callback) {
 
                     long now = System.currentTimeMillis();
 
-                    // 1. Reject readings without accuracy data or poor accuracy
-                    if (!location.hasAccuracy()
-                            || location.getAccuracy()
-                            > MAX_ACCEPTABLE_ACCURACY_METERS) {
+                    // A coarse fix can display the initial puck and serve recentering.
+                    // Do not feed it into movement classification or path recording.
+                    if (!isUsableRecenterLocation(location)) {
+                        continue;
+                    }
+                    if (location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) {
+                        if (latestRecenterLocation == null || location.getElapsedRealtimeNanos()
+                                > latestRecenterLocation.getElapsedRealtimeNanos()) {
+                            latestRecenterLocation = new Location(location);
+                            updateInitialUserLocation(location);
+                        }
                         continue;
                     }
 
@@ -1773,20 +1779,37 @@ private void startUserTracking(CallbackContext callback) {
         });
     }
 
-    private boolean isUsableRecenterLocation(Location location) {
-        if (location == null || !location.hasAccuracy()
-                || !Float.isFinite(location.getAccuracy())
-                || location.getAccuracy() < 0
-                || location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS
-                || !isValidLatitude(location.getLatitude())
-                || !isValidLongitude(location.getLongitude())) {
-            return false;
+    private String recenterLocationProblem(Location location) {
+        if (location == null) return "No location fix was returned.";
+        if (!isValidLatitude(location.getLatitude()) || !isValidLongitude(location.getLongitude())) {
+            return "Location coordinates are invalid.";
         }
-        // Monotonic time avoids accepting stale fixes after a wall-clock change.
+        if (!location.hasAccuracy()) return "Location accuracy is unavailable.";
+        if (!Float.isFinite(location.getAccuracy()) || location.getAccuracy() < 0) {
+            return "Location accuracy is invalid.";
+        }
         long fixNanos = location.getElapsedRealtimeNanos();
+        if (fixNanos <= 0) return "Location timestamp is unavailable.";
         long ageNanos = android.os.SystemClock.elapsedRealtimeNanos() - fixNanos;
-        return fixNanos > 0 && ageNanos >= 0
-            && ageNanos <= MAX_LOCATION_AGE_MS * 1_000_000L;
+        if (ageNanos < 0) return "Location timestamp is in the future.";
+        if (ageNanos > MAX_LOCATION_AGE_MS * 1_000_000L) {
+            return "Location fix is older than " + (MAX_LOCATION_AGE_MS / 1000L) + " seconds.";
+        }
+        return null;
+    }
+
+    private boolean isUsableRecenterLocation(Location location) {
+        return recenterLocationProblem(location) == null;
+    }
+
+    private void updateInitialUserLocation(Location location) {
+        if (isUserLocationEnabled && smoothedTrackingPoint == null
+                && smoothedLocationProvider != null && isUsableRecenterLocation(location)) {
+            // Preserve the reported accuracy; an approximate position is not a precise fix.
+            currentLocationAccuracy = location.getAccuracy();
+            currentLocationAccuracyLabel = getAccuracyLabel(currentLocationAccuracy);
+            smoothedLocationProvider.updateLocation(location);
+        }
     }
 
     private void startMoveToCurrentLocation(CallbackContext callback) {
@@ -1835,7 +1858,8 @@ private void startUserTracking(CallbackContext callback) {
                         ? location : latestRecenterLocation;
                     if (!isUsableRecenterLocation(candidate)) {
                         cancelMoveToCurrentLocation();
-                        callback.error("No recent location within 25 metres accuracy was available after the location request.");
+                        callback.error("Unable to recenter. Requested fix: " + recenterLocationProblem(location)
+                            + " Tracking fix: " + recenterLocationProblem(latestRecenterLocation));
                         return;
                     }
                     completeMoveToCurrentLocation(new Location(candidate));
@@ -1857,6 +1881,7 @@ private void startUserTracking(CallbackContext callback) {
     }
 
     private void completeMoveToCurrentLocation(Location location) {
+        updateInitialUserLocation(location);
         currentLocationAccuracy =
             location.hasAccuracy() ? location.getAccuracy() : -1f;
         currentLocationAccuracyLabel =
@@ -4277,4 +4302,5 @@ private boolean addMarkerInternal(
         super.onReset();
     }
 }
+
 
