@@ -135,3 +135,23 @@ test('location accuracy subscriptions actively monitor and clean up on both plat
   assert.match(iosRegistration, /startUpdatingLocation\(\)/);
   assert.match(iosParity, /stopAccuracyMonitoring\(\)/);
 });
+test('pinStyle "photo" draws the same 52x63 pin on both platforms and is opt-in', () => {
+  const androidIcons = fs.readFileSync('src/android/MarkerIcons.java', 'utf8');
+  assert.match(android, /optString\("pinStyle"/);
+  assert.match(android, /optString\("PinStyle"/);
+  assert.match(ios, /pinStyle: options\["pinStyle"\]/);
+  assert.match(ios, /pinStyle: marker\["PinStyle"\]/);
+  assert.match(ios, /\(pinStyle as\? String\) == "photo"/);
+  // Same canvas (52x63 grid at 2x) and the same teardrop geometry.
+  assert.match(androidIcons, /PHOTO_WIDTH = 52/);
+  assert.match(androidIcons, /PHOTO_HEIGHT = 63/);
+  assert.match(iosMarkerIcons, /photoSize = CGSize\(width: 104, height: 126\)/);
+  for (const source of [androidIcons, iosMarkerIcons]) {
+    assert.match(source, /14\.5/);
+    assert.match(source, /36\.95/);
+    assert.match(source, /62\.75/);
+  }
+  // Classic pins are untouched unless the option is set.
+  assert.match(android, /MarkerStyle\(int color, boolean isFind, String imageUrl\)\s*\{\s*this\(color, isFind, imageUrl, false\)/);
+  assert.match(ios, /var photo = false/);
+});

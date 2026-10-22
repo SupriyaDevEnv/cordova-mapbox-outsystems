@@ -8,6 +8,7 @@ import UIKit
 final class MarkerIcons: NSObject, URLSessionDataDelegate {
     static let defaultPinColor = UIColor(red: 220 / 255, green: 38 / 255, blue: 38 / 255, alpha: 1)
     static let findPinColor = UIColor(red: 37 / 255, green: 99 / 255, blue: 235 / 255, alpha: 1)
+    static let photoPinColor = UIColor(red: 221 / 255, green: 0, blue: 29 / 255, alpha: 1)
 
     private static let size = CGSize(width: 72, height: 96)
     private static let headY: CGFloat = 32
@@ -79,6 +80,23 @@ final class MarkerIcons: NSObject, URLSessionDataDelegate {
             return .init(image: cached, name: name)
         }
         let drawn = Self.draw(pinColor: color, isFind: isFind, image: image)
+        pins.setObject(drawn, forKey: name as NSString)
+        return .init(image: drawn, name: name)
+    }
+
+    /// Larger "photo" pin (pinStyle "photo"); shows a grey disc until the image has loaded.
+    func photoPin(color: UIColor, source: String?, image: UIImage? = nil) -> PointAnnotation.Image {
+        let image = image ?? source.flatMap { images.object(forKey: $0 as NSString) }
+        var name = "marker-photo-\(Self.colorKey(color))"
+        if let source = source, image != nil {
+            let digest = SHA256.hash(data: Data(source.utf8))
+            name += "-" + digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+        }
+
+        if let cached = pins.object(forKey: name as NSString) {
+            return .init(image: cached, name: name)
+        }
+        let drawn = Self.drawPhoto(pinColor: color, image: image)
         pins.setObject(drawn, forKey: name as NSString)
         return .init(image: drawn, name: name)
     }
@@ -238,6 +256,56 @@ final class MarkerIcons: NSObject, URLSessionDataDelegate {
                 cg.addLine(to: CGPoint(x: centerX + 7, y: headY + 7))
                 cg.strokePath()
             }
+        }
+    }
+
+    // Photo pin artwork is authored on a 52x63 grid and rendered at 2x so that iconSize 0.5 shows it at 52x63.
+    private static let photoSize = CGSize(width: 104, height: 126)
+    private static let photoCenter = CGPoint(x: 26, y: 26)
+    private static let photoRadius: CGFloat = 14.5
+
+    private static func drawPhoto(pinColor: UIColor, image: UIImage?) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: photoSize, format: format).image { context in
+            let cg = context.cgContext
+            cg.scaleBy(x: 2, y: 2)
+
+            // Teardrop: circular head with a concave neck narrowing to a rounded tip.
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: 8.75, y: 44))
+            path.addArc(
+                withCenter: photoCenter,
+                radius: 25,
+                startAngle: 133.8 * CGFloat.pi / 180,
+                endAngle: 46.2 * CGFloat.pi / 180,
+                clockwise: true
+            )
+            path.addCurve(to: CGPoint(x: 29, y: 60), controlPoint1: CGPoint(x: 36.95, y: 50), controlPoint2: CGPoint(x: 29, y: 53.75))
+            path.addCurve(to: CGPoint(x: 23, y: 60), controlPoint1: CGPoint(x: 29, y: 62.75), controlPoint2: CGPoint(x: 23, y: 62.75))
+            path.addCurve(to: CGPoint(x: 8.75, y: 44), controlPoint1: CGPoint(x: 23, y: 53.75), controlPoint2: CGPoint(x: 15.05, y: 50))
+            path.close()
+            pinColor.setFill()
+            path.fill()
+
+            guard let image = image else {
+                UIColor(red: 243 / 255, green: 244 / 255, blue: 246 / 255, alpha: 1).setFill()
+                UIBezierPath(ovalIn: circle(photoCenter.x, photoCenter.y, photoRadius)).fill()
+                return
+            }
+
+            // Center-crop the image into the pin head.
+            let scale = 2 * photoRadius / min(image.size.width, image.size.height)
+            let drawSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+            cg.saveGState()
+            UIBezierPath(ovalIn: circle(photoCenter.x, photoCenter.y, photoRadius)).addClip()
+            image.draw(in: CGRect(
+                x: photoCenter.x - drawSize.width / 2,
+                y: photoCenter.y - drawSize.height / 2,
+                width: drawSize.width,
+                height: drawSize.height
+            ))
+            cg.restoreGState()
         }
     }
 

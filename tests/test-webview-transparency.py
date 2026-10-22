@@ -83,3 +83,55 @@ with tempfile.TemporaryDirectory() as temp:
     java.write_text(host)
     subprocess.run(['javac', '-d', temp, str(java)], check=True)
     subprocess.run(['java', '-cp', temp, 'AppearanceTest'], check=True)
+
+# Cordova exposes webView as UIView, even when the instance is WKWebView.
+# Keep that base type in this host so unguarded .scrollView access fails to compile.
+ios = Path('src/ios/MapboxPlugin.swift').read_text()
+apply = ios.split('    private func makeWebViewTransparent() {', 1)[1].split('\n    private func sendSuccess', 1)[0]
+restore = ios.split('        if let saved = savedWebViewAppearance {', 1)[1].split('        trackingStatusCallbackId = nil', 1)[0]
+swift_host = '''
+enum UIColor { static let clear = "clear" }
+class UIView {
+    var backgroundColor: String? = "view"
+    var isOpaque = true
+}
+class WKWebView: UIView { let scrollView = UIView() }
+class AppearanceTest {
+    var webView: UIView
+    var savedWebViewAppearance: (Bool, String?, String?)?
+    init(_ view: UIView) { webView = view }
+    func apply() {
+''' + apply + '''
+    func restore() {
+        if let saved = savedWebViewAppearance {
+''' + restore + '''
+    }
+}
+for view in [UIView(), WKWebView()] {
+    let plugin = AppearanceTest(view)
+    let scroll = (view as? WKWebView)?.scrollView
+    scroll?.backgroundColor = "scroll"
+    for _ in 0..<3 {
+        plugin.apply()
+        precondition(view.backgroundColor == UIColor.clear && !view.isOpaque)
+        if let scroll = scroll { precondition(scroll.backgroundColor == UIColor.clear) }
+        plugin.restore()
+        precondition(view.backgroundColor == "view" && view.isOpaque)
+        if let scroll = scroll { precondition(scroll.backgroundColor == "scroll") }
+        precondition(plugin.savedWebViewAppearance == nil)
+    }
+    plugin.apply()
+    view.backgroundColor = "external"
+    scroll?.backgroundColor = "external-scroll"
+    plugin.restore()
+    precondition(view.backgroundColor == "external")
+    if let scroll = scroll { precondition(scroll.backgroundColor == "external-scroll") }
+}
+print("iOS UIView/WKWebView appearance contract passed")
+'''
+with tempfile.TemporaryDirectory() as temp:
+    swift = Path(temp) / 'main.swift'
+    binary = Path(temp) / 'appearance-test'
+    swift.write_text(swift_host)
+    subprocess.run(['swiftc', str(swift), '-o', str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
