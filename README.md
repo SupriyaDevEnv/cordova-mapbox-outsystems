@@ -946,3 +946,35 @@ Rebuild the Cordova app using this plugin revision. Keep existing OutSystems ini
 4. Open/close overlays, scroll, and rotate the device. Verify control bounds update. For manual routing, call `setTouchableRects` and verify automatic updates stop until reinitialization.
 
 The JavaScript regression suite exercises both platform configurations and lifecycle races with a simulated DOM/bridge. Native CI checks and device checks are separate; passing the JavaScript suite does not establish end-to-end device behavior.
+
+### Remove one marker (Android and iOS)
+
+`MapboxPlugin.removeMarker(markerId, success?, error?)` removes the marker created
+by `addMarker` or `loadMarkers` with that exact string ID. It returns a Promise and
+also accepts optional success/error callbacks:
+
+```javascript
+await MapboxPlugin.removeMarker('record-123');
+
+// Callback form for Cordova/OutSystems integrations:
+MapboxPlugin.removeMarker('record-123', function () {
+  console.log('Marker removed');
+}, function (error) {
+  console.error(error);
+});
+```
+
+- Success has no payload. Unknown/already removed IDs succeed without changing other markers.
+- Missing, empty, or non-string IDs fail with `markerId must be a non-empty string.`.
+  Numeric record IDs must be converted to strings explicitly.
+- Without an error callback, failures reject the Promise. With callbacks, the returned
+  Promise follows the callback result, just like `promise.then(success, error)`.
+- Removal clears marker metadata and pending image subscriptions, while keeping other
+  markers and the registered marker-click callback active. Closing/reinitializing the
+  map cancels pending operations through the existing cancellation mechanism.
+- The native Cordova action remains `removeMarker` with arguments `[{ id: markerId }]`.
+
+Device verification: add two markers (including an image marker), click both, remove
+one while its image is loading, and confirm only the remaining marker still produces
+clicks. Repeat removal, try an unknown ID and invalid IDs, then re-add the removed ID.
+Run this on Android and iOS; JavaScript bridge tests do not exercise native rendering.
