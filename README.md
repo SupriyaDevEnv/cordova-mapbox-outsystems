@@ -572,6 +572,7 @@ Every marker is the same teardrop pin, anchored at its bottom tip. Three optiona
 - `pinColor` overrides the default color, including the blue of `isFind` pins.
 - `imageUrl` replaces the white dot or the magnifying glass. The image is center-cropped to a circle and framed by a white ring.
 - The fields can be combined, for example a green pin with a photo inside.
+- `pinStyle: "photo"` switches to the larger photo pin: a 52x63 teardrop (default color `#DD001D`) with a large circular photo and no outline or shadow, tip on the marker coordinate. Until the image loads (or if it fails) a light grey disc is shown at the same size, so the marker does not change size. `pinColor` still applies. Any other value, or omitting it, keeps the classic pin. The same size is used on Android and iOS.
 
 ### addMarker(options)
 
@@ -587,6 +588,7 @@ Adds one marker. If a marker with the same `id` already exists, it is replaced.
 | `isFind` | boolean | No | `false` | Blue pin with a magnifying-glass icon. |
 | `pinColor` | string | No | Red, or blue when `isFind` | `#RRGGBB` or `#RRGGBBAA` (alpha last). Invalid values fall back to the default. |
 | `imageUrl` | string | No | None | Image shown inside the pin. See [Image sources](#marker-image-sources). |
+| `pinStyle` | string | No | Classic pin | `"photo"` for the larger photo pin. See [Marker appearance](#marker-appearance). |
 
 `latitude` and `longitude` default to `0`, which is a valid coordinate in the Gulf of Guinea. Always pass them.
 
@@ -641,6 +643,7 @@ Adds many markers in one native call. Use this instead of calling `addMarker` in
 | `IsFind` | boolean | No | `false` | Same as `isFind` in `addMarker`. |
 | `PinColor` | string | No | Red, or blue when `IsFind` | Same as `pinColor` in `addMarker`. |
 | `ImageUrl` | string | No | None | Same as `imageUrl` in `addMarker`. |
+| `PinStyle` | string | No | Classic pin | Same as `pinStyle` in `addMarker`. |
 
 `options` is optional:
 

@@ -8,6 +8,7 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RectF;
 import android.graphics.Shader;
 import android.util.Base64;
 import android.util.Log;
@@ -25,6 +26,8 @@ final class MarkerIcons {
     static final int DEFAULT_PIN_COLOR = Color.rgb(220, 38, 38);
     static final int FIND_PIN_COLOR = Color.rgb(37, 99, 235);
 
+    static final int PHOTO_PIN_COLOR = Color.rgb(221, 0, 29);
+
     interface Loaded {
         void done(Bitmap image);
     }
@@ -37,6 +40,12 @@ final class MarkerIcons {
     private static final float IMAGE_RING_RADIUS = 21.0f;
     private static final float IMAGE_RADIUS = 19.0f;
     private static final int IMAGE_DECODE_SIZE = 128;
+    private static final int PHOTO_WIDTH = 52;
+    private static final int PHOTO_HEIGHT = 63;
+    private static final float PHOTO_CENTER_X = 26.0f;
+    private static final float PHOTO_CENTER_Y = 26.0f;
+    private static final float PHOTO_RADIUS = 14.5f;
+    private static final int PHOTO_PLACEHOLDER_COLOR = 0xFFF3F4F6;
     private static final int TIMEOUT_MS = 10000;
 
     // Reusing one Bitmap instance per look lets Mapbox register a single style image for it.
@@ -97,6 +106,66 @@ final class MarkerIcons {
 
     void shutdown() {
         executor.shutdownNow();
+    }
+
+    /** Larger "photo" pin (pinStyle "photo"); shows a grey disc until the image has loaded. */
+    Bitmap photoPin(int color, String source, float density) {
+        return photoPin(color, source, source == null ? null : images.get(source), density);
+    }
+
+    Bitmap photoPin(int color, String source, Bitmap image, float density) {
+        density = validDensity(density);
+        String key = "photo|" + density + "|" + color + "|" + (image == null ? "" : source);
+        Bitmap cached = pins.get(key);
+        if (cached == null) {
+            cached = drawPhoto(color, image, density);
+            pins.put(key, cached);
+        }
+        return cached;
+    }
+
+    private static Bitmap drawPhoto(int pinColor, Bitmap image, float density) {
+        // Artwork is authored on a 52x63 grid and rendered at 2x so that iconSize=0.5
+        // shows it at 52x63 dp, like the classic pin does with its 72x96 canvas.
+        Bitmap bitmap = Bitmap.createBitmap(Math.max(1, Math.round(PHOTO_WIDTH * 2 * density)),
+            Math.max(1, Math.round(PHOTO_HEIGHT * 2 * density)), Bitmap.Config.ARGB_8888);
+        bitmap.setDensity(Bitmap.DENSITY_NONE);
+        Canvas canvas = new Canvas(bitmap);
+        canvas.scale(density * 2, density * 2);
+
+        // Teardrop: circular head with a concave neck narrowing to a rounded tip.
+        Path pinPath = new Path();
+        pinPath.moveTo(8.75f, 44.0f);
+        pinPath.arcTo(new RectF(1.0f, 1.0f, 51.0f, 51.0f), 133.8f, 272.4f);
+        pinPath.cubicTo(36.95f, 50.0f, 29.0f, 53.75f, 29.0f, 60.0f);
+        pinPath.cubicTo(29.0f, 62.75f, 23.0f, 62.75f, 23.0f, 60.0f);
+        pinPath.cubicTo(23.0f, 53.75f, 15.05f, 50.0f, 8.75f, 44.0f);
+        pinPath.close();
+
+        Paint pinPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        pinPaint.setColor(pinColor);
+        canvas.drawPath(pinPath, pinPaint);
+
+        if (image == null) {
+            Paint discPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            discPaint.setColor(PHOTO_PLACEHOLDER_COLOR);
+            canvas.drawCircle(PHOTO_CENTER_X, PHOTO_CENTER_Y, PHOTO_RADIUS, discPaint);
+            return bitmap;
+        }
+
+        float scale = 2 * PHOTO_RADIUS / Math.min(image.getWidth(), image.getHeight());
+        Matrix matrix = new Matrix();
+        matrix.setScale(scale, scale);
+        matrix.postTranslate(
+            PHOTO_CENTER_X - image.getWidth() * scale / 2,
+            PHOTO_CENTER_Y - image.getHeight() * scale / 2
+        );
+        BitmapShader shader = new BitmapShader(image, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+        shader.setLocalMatrix(matrix);
+        Paint imagePaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        imagePaint.setShader(shader);
+        canvas.drawCircle(PHOTO_CENTER_X, PHOTO_CENTER_Y, PHOTO_RADIUS, imagePaint);
+        return bitmap;
     }
 
     private byte[] read(String source, String hosts, long requestGeneration) throws Exception {
