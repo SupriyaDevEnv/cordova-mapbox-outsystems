@@ -371,7 +371,7 @@ class MapboxPluginParity: MapboxPlugin {
 
             if self.isCameraFollowingUser {
                 self.smoothedTrackingCoordinate = coordinate
-                self.runRecenterAnimation(to: CameraOptions(center: coordinate, zoom: zoom))
+                self.runRecenterAnimation(to: CameraOptions(center: coordinate, zoom: zoom.map { CGFloat($0) }))
             }
 
             let accuracy = location.horizontalAccuracy >= 0 ? location.horizontalAccuracy : -1

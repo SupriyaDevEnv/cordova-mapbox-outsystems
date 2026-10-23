@@ -34,7 +34,7 @@ assert 'isCameraFollowingUser = false' in method(base, 'private func stopUserTra
 assert 'self.resumeCameraFollowing()' in method(parity, 'override func moveToCurrentLocation(')
 assert 'if self.isCameraFollowingUser' in method(parity, 'private func handleMoveToCurrentLocation(')
 recenter = method(parity, 'private func handleMoveToCurrentLocation(')
-assert 'self.runRecenterAnimation(to: CameraOptions(center: coordinate, zoom: zoom))' in recenter
+assert 'self.runRecenterAnimation(to: CameraOptions(center: coordinate, zoom: zoom.map { CGFloat($0) }))' in recenter
 assert 'self.smoothedTrackingCoordinate = coordinate' in recenter
 assert '.setCamera(' not in recenter
 assert 'resetRecenterAnimation()' in method(base, 'func closeInternal()')
@@ -46,7 +46,7 @@ import Foundation
 import CoreLocation
 struct CameraOptions {
     var center: CLLocationCoordinate2D
-    var zoom: Double? = nil
+    var zoom: CGFloat? = nil
 }
 class Camera {
     var moves = 0
