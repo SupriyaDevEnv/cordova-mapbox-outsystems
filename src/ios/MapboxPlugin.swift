@@ -841,9 +841,16 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         runForSession {
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let id = options["id"].flatMap(self.stringOption) ?? ""
+            guard let id = options["id"] as? String, !id.isEmpty else {
+                self.sendError("markerId must be a non-empty string.", command)
+                return
+            }
             self.markers.removeValue(forKey: id)
             self.markerStyles.removeValue(forKey: id)
+            // Keep shared downloads alive without retaining the removed marker.
+            for imageUrl in Array(self.pendingMarkerImages.keys) {
+                self.pendingMarkerImages[imageUrl]?.removeAll { $0 == id }
+            }
             self.annotations?.annotations = Array(self.markers.values)
             self.sendSuccess(command)
         }

@@ -183,6 +183,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private LocationManager locationManager;
     private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
+    private Location latestRecenterLocation = null;
     private Point smoothedTrackingPoint = null;
     private int movementState = MOVEMENT_STATE_STATIONARY;
     private int movementStateAgreement = 0;
@@ -899,13 +900,12 @@ if (gestures != null) {
                 .addOnSuccessListener(fix -> {
                     if (bootstrapGeneration != sessionGeneration || bootstrapLocationToken != bootstrapToken) return;
                     bootstrapLocationToken = null;
-                    if (fix != null
-                            && fix.hasAccuracy()
-                            && fix.getAccuracy()
-                            <= MAX_ACCEPTABLE_ACCURACY_METERS
-                            && isUserLocationEnabled
-                            && smoothedLocationProvider != null) {
-                        smoothedLocationProvider.updateLocation(fix);
+                    if (isUsableRecenterLocation(fix)) {
+                        if (latestRecenterLocation == null || fix.getElapsedRealtimeNanos()
+                                > latestRecenterLocation.getElapsedRealtimeNanos()) {
+                            latestRecenterLocation = new Location(fix);
+                            updateInitialUserLocation(fix);
+                        }
                     }
                 })
                 .addOnFailureListener(ignored -> {
@@ -1408,10 +1408,17 @@ private void startUserTracking(CallbackContext callback) {
 
                     long now = System.currentTimeMillis();
 
-                    // 1. Reject readings without accuracy data or poor accuracy
-                    if (!location.hasAccuracy()
-                            || location.getAccuracy()
-                            > MAX_ACCEPTABLE_ACCURACY_METERS) {
+                    // A coarse fix can display the initial puck and serve recentering.
+                    // Do not feed it into movement classification or path recording.
+                    if (!isUsableRecenterLocation(location)) {
+                        continue;
+                    }
+                    if (location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) {
+                        if (latestRecenterLocation == null || location.getElapsedRealtimeNanos()
+                                > latestRecenterLocation.getElapsedRealtimeNanos()) {
+                            latestRecenterLocation = new Location(location);
+                            updateInitialUserLocation(location);
+                        }
                         continue;
                     }
 
@@ -1465,6 +1472,9 @@ private void startUserTracking(CallbackContext callback) {
                         movementHistory.clear();
                         movementHistory.add(new Location(location));
                     }
+
+                    // Keep a fresh raw fix even while the displayed puck is pinned.
+                    latestRecenterLocation = new Location(location);
 
                     // Pin the puck while the classifier says stationary,
                     // but always let the first fix through so the dot
@@ -1628,6 +1638,7 @@ private void startUserTracking(CallbackContext callback) {
         fusedLocationCallback = null;
         lastUserTrackingUpdateMs = 0L;
         lastAcceptedTrackingLocation = null;
+        latestRecenterLocation = null;
         smoothedTrackingPoint = null;
         movementHistory.clear();
         movementState = MOVEMENT_STATE_STATIONARY;
@@ -1768,6 +1779,39 @@ private void startUserTracking(CallbackContext callback) {
         });
     }
 
+    private String recenterLocationProblem(Location location) {
+        if (location == null) return "No location fix was returned.";
+        if (!isValidLatitude(location.getLatitude()) || !isValidLongitude(location.getLongitude())) {
+            return "Location coordinates are invalid.";
+        }
+        if (!location.hasAccuracy()) return "Location accuracy is unavailable.";
+        if (!Float.isFinite(location.getAccuracy()) || location.getAccuracy() < 0) {
+            return "Location accuracy is invalid.";
+        }
+        long fixNanos = location.getElapsedRealtimeNanos();
+        if (fixNanos <= 0) return "Location timestamp is unavailable.";
+        long ageNanos = android.os.SystemClock.elapsedRealtimeNanos() - fixNanos;
+        if (ageNanos < 0) return "Location timestamp is in the future.";
+        if (ageNanos > MAX_LOCATION_AGE_MS * 1_000_000L) {
+            return "Location fix is older than " + (MAX_LOCATION_AGE_MS / 1000L) + " seconds.";
+        }
+        return null;
+    }
+
+    private boolean isUsableRecenterLocation(Location location) {
+        return recenterLocationProblem(location) == null;
+    }
+
+    private void updateInitialUserLocation(Location location) {
+        if (isUserLocationEnabled && smoothedTrackingPoint == null
+                && smoothedLocationProvider != null && isUsableRecenterLocation(location)) {
+            // Preserve the reported accuracy; an approximate position is not a precise fix.
+            currentLocationAccuracy = location.getAccuracy();
+            currentLocationAccuracyLabel = getAccuracyLabel(currentLocationAccuracy);
+            smoothedLocationProvider.updateLocation(location);
+        }
+    }
+
     private void startMoveToCurrentLocation(CallbackContext callback) {
         if (moveToCurrentLocationCallback != null) moveToCurrentLocationCallback.error("Location request superseded.");
         unregisterMoveToCurrentLocation();
@@ -1781,10 +1825,8 @@ private void startUserTracking(CallbackContext callback) {
             callback.error("Device location manager is not available.");
             return;
         }
-
         boolean gpsEnabled = manager.isProviderEnabled(LocationManager.GPS_PROVIDER);
         boolean networkEnabled = manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
-
         if (!gpsEnabled && !networkEnabled) {
             cancelMoveToCurrentLocation();
             callback.error("Location provider is not enabled.");
@@ -1792,95 +1834,113 @@ private void startUserTracking(CallbackContext callback) {
         }
 
         moveToCurrentLocationCallback = callback;
-
+        if (isUsableRecenterLocation(latestRecenterLocation)) {
+            completeMoveToCurrentLocation(new Location(latestRecenterLocation));
+            return;
+        }
         if (fusedLocationClient == null) {
             fusedLocationClient = LocationServices
                 .getFusedLocationProviderClient(cordova.getActivity());
         }
-
         CurrentLocationRequest request = new CurrentLocationRequest.Builder()
             .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
             .setDurationMillis(5000L)
-            .setMaxUpdateAgeMillis(0L)
+            .setMaxUpdateAgeMillis(MAX_LOCATION_AGE_MS)
             .build();
-
         moveToCurrentLocationToken = new CancellationTokenSource();
-
-        fusedLocationClient
-            .getCurrentLocation(request, moveToCurrentLocationToken.getToken())
-            .addOnSuccessListener(location -> {
-                if (locationGeneration != sessionGeneration || moveToCurrentLocationCallback != callback) return;
-                if (location == null) {
-                    cancelMoveToCurrentLocation();
-                    callback.error("Unable to get current location.");
-                    return;
-                }
-
-                currentLocationAccuracy =
-                    location.hasAccuracy() ? location.getAccuracy() : -1f;
-                currentLocationAccuracyLabel =
-                    getAccuracyLabel(currentLocationAccuracy);
-
-                final double latitude = location.getLatitude();
-                final double longitude = location.getLongitude();
-
-                if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
-                    if (moveToCurrentLocationCallback != null) {
-                        moveToCurrentLocationCallback.error(
-                            "Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180]."
-                        );
+        try {
+            fusedLocationClient
+                .getCurrentLocation(request, moveToCurrentLocationToken.getToken())
+                .addOnSuccessListener(location -> {
+                    if (locationGeneration != sessionGeneration || moveToCurrentLocationCallback != callback) return;
+                    // Tracking may have received a fix while this request was pending.
+                    Location candidate = isUsableRecenterLocation(location)
+                        ? location : latestRecenterLocation;
+                    if (!isUsableRecenterLocation(candidate)) {
+                        cancelMoveToCurrentLocation();
+                        callback.error("Unable to recenter. Requested fix: " + recenterLocationProblem(location)
+                            + " Tracking fix: " + recenterLocationProblem(latestRecenterLocation));
+                        return;
+                    }
+                    completeMoveToCurrentLocation(new Location(candidate));
+                })
+                .addOnFailureListener(e -> {
+                    if (locationGeneration != sessionGeneration || moveToCurrentLocationCallback != callback) return;
+                    if (!(e instanceof SecurityException) && isUsableRecenterLocation(latestRecenterLocation)) {
+                        completeMoveToCurrentLocation(new Location(latestRecenterLocation));
+                        return;
                     }
                     cancelMoveToCurrentLocation();
-                    return;
-                }
-
-                if (moveToCurrentLocationCallback == null) {
-                    return;
-                }
-
-                final CallbackContext pendingCallback = moveToCurrentLocationCallback;
-                final boolean applyZoom = moveToCurrentLocationZoomSet;
-                final double zoom = moveToCurrentLocationZoom;
-
-                moveToCurrentLocationCallback = null;
-                cancelMoveToCurrentLocation();
-
-                runForSession(() -> {
-                    if (mapView != null) {
-                        CameraOptions.Builder cameraBuilder = new CameraOptions.Builder()
-                            .center(Point.fromLngLat(longitude, latitude));
-                        if (applyZoom) {
-                            cameraBuilder.zoom(zoom);
-                        }
-                        CameraOptions cameraOptions = cameraBuilder.build();
-                        runRecenterAnimation(
-                            cameraOptions,
-                            new MapAnimationOptions.Builder()
-                                .duration(RECENTER_ANIMATION_DURATION_MS)
-                                .build()
-                        );
-                        // Seed the follow target so the first tick after the
-                        // flight lands does not issue a redundant camera move.
-                        lastCameraFollowTarget = cameraOptions.getCenter();
-                    }
-
-                    JSONObject result = new JSONObject();
-                    try {
-                        result.put("latitude", latitude);
-                        result.put("longitude", longitude);
-                        result.put("accuracy", currentLocationAccuracy);
-                        result.put("accuracyLabel", currentLocationAccuracyLabel);
-                        pendingCallback.success(result);
-                    } catch (JSONException e) {
-                        pendingCallback.error(e.getMessage());
-                    }
+                    callback.error("Current location request failed: " + e.getClass().getSimpleName()
+                        + (e.getMessage() == null ? "" : ": " + e.getMessage()));
                 });
-            })
-            .addOnFailureListener(e -> {
-                if (locationGeneration != sessionGeneration || moveToCurrentLocationCallback != callback) return;
-                cancelMoveToCurrentLocation();
-                callback.error("Unable to get current location.");
-            });
+        } catch (SecurityException e) {
+            cancelMoveToCurrentLocation();
+            callback.error("Location permission is not granted.");
+        }
+    }
+
+    private void completeMoveToCurrentLocation(Location location) {
+        updateInitialUserLocation(location);
+        currentLocationAccuracy =
+            location.hasAccuracy() ? location.getAccuracy() : -1f;
+        currentLocationAccuracyLabel =
+            getAccuracyLabel(currentLocationAccuracy);
+
+        final double latitude = location.getLatitude();
+        final double longitude = location.getLongitude();
+
+        if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
+            if (moveToCurrentLocationCallback != null) {
+                moveToCurrentLocationCallback.error(
+                    "Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180]."
+                );
+            }
+            cancelMoveToCurrentLocation();
+            return;
+        }
+
+        if (moveToCurrentLocationCallback == null) {
+            return;
+        }
+
+        final CallbackContext pendingCallback = moveToCurrentLocationCallback;
+        final boolean applyZoom = moveToCurrentLocationZoomSet;
+        final double zoom = moveToCurrentLocationZoom;
+
+        moveToCurrentLocationCallback = null;
+        cancelMoveToCurrentLocation();
+
+        runForSession(() -> {
+            if (mapView != null) {
+                CameraOptions.Builder cameraBuilder = new CameraOptions.Builder()
+                    .center(Point.fromLngLat(longitude, latitude));
+                if (applyZoom) {
+                    cameraBuilder.zoom(zoom);
+                }
+                CameraOptions cameraOptions = cameraBuilder.build();
+                runRecenterAnimation(
+                    cameraOptions,
+                    new MapAnimationOptions.Builder()
+                        .duration(RECENTER_ANIMATION_DURATION_MS)
+                        .build()
+                );
+                // Seed the follow target so the first tick after the
+                // flight lands does not issue a redundant camera move.
+                lastCameraFollowTarget = cameraOptions.getCenter();
+            }
+
+            JSONObject result = new JSONObject();
+            try {
+                result.put("latitude", latitude);
+                result.put("longitude", longitude);
+                result.put("accuracy", currentLocationAccuracy);
+                result.put("accuracyLabel", currentLocationAccuracyLabel);
+                pendingCallback.success(result);
+            } catch (JSONException e) {
+                pendingCallback.error(e.getMessage());
+            }
+        });
     }
 
     private String getAccuracyLabel(float accuracy) {
@@ -2997,24 +3057,41 @@ private boolean addMarkerInternal(
     }
 
     private void removeMarker(JSONObject options, CallbackContext callback) {
-    runForSession(() -> {
-        removeMarkerInternal(options.optString("id", ""));
-        callback.success();
-    });
-}
+        Object value = options.opt("id");
+        if (!(value instanceof String) || ((String) value).isEmpty()) {
+            callback.error("markerId must be a non-empty string.");
+            return;
+        }
+        String id = (String) value;
+        runForSession(() -> {
+            try {
+                removeMarkerInternal(id);
+                callback.success();
+            } catch (Exception e) {
+                callback.error("Failed to remove marker: " + e.getMessage());
+            }
+        });
+    }
 
     private void removeMarkerInternal(String id) {
-        if (pointAnnotationManager == null || id == null || id.isEmpty()) {
+        if (id == null || id.isEmpty()) {
             return;
         }
 
-        PointAnnotation annotation = markerAnnotationsByRecordId.remove(id);
+        PointAnnotation annotation = markerAnnotationsByRecordId.get(id);
         if (annotation != null) {
-            pointAnnotationManager.delete(annotation);
+            if (pointAnnotationManager != null) {
+                pointAnnotationManager.delete(annotation);
+            }
             markerRecordIds.remove(annotation.getId());
         }
+        markerAnnotationsByRecordId.remove(id);
         markerPointsByRecordId.remove(id);
         markerStylesByRecordId.remove(id);
+        // Keep in-flight downloads for other markers, but forget this subscriber.
+        for (List<String> waiting : pendingMarkerImages.values()) {
+            waiting.removeIf(id::equals);
+        }
     }
 
     private void clearMarkers(CallbackContext callback) {
@@ -4240,3 +4317,5 @@ private boolean addMarkerInternal(
         super.onReset();
     }
 }
+
+

@@ -142,6 +142,4 @@ test('isOnline sync flag is accepted by addMarker and loadMarkers and returned i
   assert.match(ios, /var isOnline = true/);
   assert.equal((android.match(/payload\.put\("isOnline"/g) || []).length, 2);
   assert.equal((ios.match(/"isOnline": /g) || []).length, 3);
-  // removeMarker matches numeric ids as strings on iOS, like Android.
-  assert.match(ios.split('func removeMarker(command:')[1].split('@objc(clearMarkers:')[0], /options\["id"\]\.flatMap\(self\.stringOption\)/);
 });
