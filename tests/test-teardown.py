@@ -10,15 +10,20 @@ with tempfile.TemporaryDirectory() as temp:
     swift = directory / 'main.swift'
     swift.write_text('''import Foundation
 struct Marker { var id: String }
+struct MarkerStyle { var isOnline: Bool }
 class TestPlugin {
     var sessionGeneration: UInt64 = 0
     var markers = ["record": Marker(id: "annotation")]
+    var markerStyles = ["record": MarkerStyle(isOnline: false)]
     var lastKeepCallbackMarkerTs: Double = 0
     let callbackRateLimit: Double = 0
     var markerClickCallbackId: String? = "callback"
     var events = 0
     func markerType(for id: String) -> String { "Waypoint" }
-    func sendKeepCallback(_ id: String?, payload: [String: Any]) { events += 1 }
+    func sendKeepCallback(_ id: String?, payload: [String: Any]) {
+        precondition(payload["isOnline"] as? Bool == false)
+        events += 1
+    }
     func listener() -> (Int) -> Bool {
         let generation = sessionGeneration
         let id = "record"
@@ -59,10 +64,15 @@ public class TeardownTest {
     int events = 0;
     Map<Long, String> markerRecordIds = new HashMap<>();
     Map<String, MarkerStyle> markerStylesByRecordId = new HashMap<>();
-    static class MarkerStyle { boolean isFind; }
+    static class MarkerStyle { boolean isFind; boolean isOnline; }
     static class Annotation { long getId() { return 1L; } }
     interface Tap { boolean click(Annotation annotation); }
-    static class JSONObject { void put(String key, String value) {} }
+    static class JSONObject {
+        void put(String key, String value) {}
+        void put(String key, boolean value) {
+            if (value) throw new AssertionError("Offline marker must retain isOnline=false");
+        }
+    }
     static class Log {
         static void e(String tag, String message, Exception error) { throw new AssertionError(error); }
         static void w(String tag, String message, Exception error) {}
@@ -76,6 +86,7 @@ public class TeardownTest {
     public static void main(String[] args) {
         TeardownTest plugin = new TeardownTest();
         plugin.markerRecordIds.put(1L, "record");
+        plugin.markerStylesByRecordId.put("record", new MarkerStyle());
         Tap old = plugin.listener();
         old.click(new Annotation());
         if (plugin.events != 1) throw new AssertionError("Live tap missing");
@@ -95,3 +106,4 @@ public class TeardownTest {
 ''')
     subprocess.run(['javac', '-d', temp, str(java)], check=True)
     subprocess.run(['java', '-cp', temp, 'TeardownTest'], check=True)
+

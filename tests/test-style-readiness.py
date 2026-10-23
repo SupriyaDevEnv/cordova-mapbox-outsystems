@@ -12,7 +12,7 @@ assert android.count('loadReadyStyle(styleUrl,') == 3
 assert ios.count('self.loadReadyStyle(styleURI,') == 3
 assert 'sessionGeneration++;\n        cancelPendingStyle();' in android
 assert 'sessionGeneration &+= 1\n        cancelPendingStyle()' in ios
-java_helper = android.split('    // All style replacements use this gate.', 1)[1].split('    private void cancelCurrentDownload()', 1)[0]
+java_helper = android.split('    // All style replacements use this gate. Never resolve readiness on a timer.', 1)[1].split('    private void cancelCurrentDownload()', 1)[0]
 swift_helper = ios.split('    private final class StyleRequest', 1)[1].split('    private func cancelCurrentDownload()', 1)[0]
 
 with tempfile.TemporaryDirectory() as temp:
