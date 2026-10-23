@@ -2655,6 +2655,7 @@ private void startUserTracking(CallbackContext callback) {
                 JSONObject payload = new JSONObject();
                 payload.put("id", markerId);
                 payload.put("type", type);
+                payload.put("isOnline", style == null || style.isOnline);
 
                 long now = System.currentTimeMillis();
                 if (now - lastKeepCallbackMarkerMs >= CALLBACK_RATE_LIMIT_MS) {
@@ -2728,6 +2729,7 @@ private void startUserTracking(CallbackContext callback) {
             JSONObject payload = new JSONObject();
             payload.put("id", nearestId);
             payload.put("type", type);
+            payload.put("isOnline", style == null || style.isOnline);
             long now = System.currentTimeMillis();
             if (now - lastKeepCallbackMarkerMs >= CALLBACK_RATE_LIMIT_MS) {
                 lastKeepCallbackMarkerMs = now;
@@ -2753,7 +2755,8 @@ private void startUserTracking(CallbackContext callback) {
                 options.optBoolean("isFind", false),
                 options.optString("pinColor", null),
                 options.optString("imageUrl", ""),
-                "photo".equals(options.optString("pinStyle", ""))
+                "photo".equals(options.optString("pinStyle", "")),
+                options.optBoolean("isOnline", true)
             );
 
             if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
@@ -2807,7 +2810,8 @@ private void startUserTracking(CallbackContext callback) {
                     marker.optBoolean("IsFind", false),
                     marker.optString("PinColor", null),
                     marker.optString("ImageUrl", ""),
-                    "photo".equals(marker.optString("PinStyle", ""))
+                    "photo".equals(marker.optString("PinStyle", "")),
+                    marker.optBoolean("IsOnline", true)
                 );
                 if (styles[i] == null) { callback.error(MARKER_IMAGE_NOT_ALLOWED); return; }
                 ids.add(id);
@@ -2902,17 +2906,21 @@ private boolean addMarkerInternal(
     }
 
     private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl, boolean photo) {
+        return markerStyle(isFind, pinColor, rawImageUrl, photo, true);
+    }
+
+    private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl, boolean photo, boolean isOnline) {
         int defaultColor = isFind ? MarkerIcons.FIND_PIN_COLOR
             : photo ? MarkerIcons.PHOTO_PIN_COLOR : MarkerIcons.DEFAULT_PIN_COLOR;
         int color = MarkerIcons.parseColor(pinColor, defaultColor);
         String imageUrl = rawImageUrl == null ? "" : rawImageUrl.trim();
         if (imageUrl.isEmpty()) {
-            return new MarkerStyle(color, isFind, null, photo);
+            return new MarkerStyle(color, isFind, null, photo, isOnline);
         }
         if (!MapboxSecurity.markerImageAllowed(imageUrl, allowedMarkerImageHosts())) {
             return null;
         }
-        return new MarkerStyle(color, isFind, imageUrl, photo);
+        return new MarkerStyle(color, isFind, imageUrl, photo, isOnline);
     }
 
     private String allowedMarkerImageHosts() {
@@ -2968,16 +2976,23 @@ private boolean addMarkerInternal(
         final boolean isFind;
         final String imageUrl;
         final boolean photo;
+        /** False for a marker created on the device that has not been synced to the backend yet. */
+        final boolean isOnline;
 
         MarkerStyle(int color, boolean isFind, String imageUrl) {
             this(color, isFind, imageUrl, false);
         }
 
         MarkerStyle(int color, boolean isFind, String imageUrl, boolean photo) {
+            this(color, isFind, imageUrl, photo, true);
+        }
+
+        MarkerStyle(int color, boolean isFind, String imageUrl, boolean photo, boolean isOnline) {
             this.color = color;
             this.isFind = isFind;
             this.imageUrl = imageUrl;
             this.photo = photo;
+            this.isOnline = isOnline;
         }
     }
 

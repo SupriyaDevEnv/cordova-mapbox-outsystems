@@ -589,6 +589,7 @@ Adds one marker. If a marker with the same `id` already exists, it is replaced.
 | `pinColor` | string | No | Red, or blue when `isFind` | `#RRGGBB` or `#RRGGBBAA` (alpha last). Invalid values fall back to the default. |
 | `imageUrl` | string | No | None | Image shown inside the pin. See [Image sources](#marker-image-sources). |
 | `pinStyle` | string | No | Classic pin | `"photo"` for the larger photo pin. See [Marker appearance](#marker-appearance). |
+| `isOnline` | boolean | No | `true` | `true` when the marker is synced with the backend, `false` when it was created on the device and has not been saved yet (so it has no server-assigned ID). The pin looks the same either way; the flag is returned in [`onMarkerClick`](#onmarkerclickcallback-errorcallback) events. |
 
 `latitude` and `longitude` default to `0`, which is a valid coordinate in the Gulf of Guinea. Always pass them.
 
@@ -644,6 +645,7 @@ Adds many markers in one native call. Use this instead of calling `addMarker` in
 | `PinColor` | string | No | Red, or blue when `IsFind` | Same as `pinColor` in `addMarker`. |
 | `ImageUrl` | string | No | None | Same as `imageUrl` in `addMarker`. |
 | `PinStyle` | string | No | Classic pin | Same as `pinStyle` in `addMarker`. |
+| `IsOnline` | boolean | No | `true` | Same as `isOnline` in `addMarker`. `true` if the marker is synced, `false` if it is still offline. |
 
 `options` is optional:
 
@@ -673,7 +675,7 @@ Items with invalid coordinates do not reject the call. They are skipped silently
 #### Example
 
 ```javascript
-// $parameters.Markers: List of { Id, Latitude, Longitude, IsFind, PinColor, ImageUrl }
+// $parameters.Markers: List of { Id, Latitude, Longitude, IsFind, PinColor, ImageUrl, IsOnline }
 window.MapboxPlugin.loadMarkers($parameters.Markers, { replace: true })
   .then($resolve)
   .catch($reject);
@@ -687,11 +689,13 @@ Removes one marker. Resolves with no value, whether or not the marker existed.
 |---|---|---|
 | `id` | string | The marker's ID. |
 
-Pass the ID as a string. iOS ignores numeric IDs here, so `removeMarker(42)` silently does nothing on iOS. Use `removeMarker("42")` instead.
+The ID can be a string or a number; it is matched as a string on both platforms.
 
 ```javascript
-window.MapboxPlugin.removeMarker(String($parameters.Id)).then($resolve).catch($reject);
+window.MapboxPlugin.removeMarker($parameters.Id).then($resolve).catch($reject);
 ```
+
+To replace an offline marker with its synced version, remove it by its temporary ID and add it again with the server ID and `isOnline: true`.
 
 ### clearMarkers()
 
@@ -711,6 +715,7 @@ The callback receives:
 |---|---|---|
 | `type` | string | Always `"markerClicked"`. |
 | `id` | string | ID of the tapped marker. |
+| `isOnline` | boolean | The `isOnline` / `IsOnline` value the marker was added with (`true` if it was not set). |
 | `latitude` | number | The marker's latitude. |
 | `longitude` | number | The marker's longitude. |
 
@@ -782,7 +787,6 @@ By default, any HTTPS host is allowed. To allow only specific hosts, set the `MA
 
 - **Pin size.** The pin is drawn 72 Ã— 96 on both platforms, but Android uses physical pixels and iOS uses points. On a typical 3Ã— Android phone the pin appears about one third the size of the iOS pin, so images inside it are smaller too.
 - **Tap area.** Android also reports taps on the map within 150 m of a marker. iOS reports only taps on the pin.
-- **Numeric IDs in `removeMarker`.** Android accepts them; iOS ignores them. Pass strings.
 - **Non-object items in `loadMarkers`.** Android skips `null` items. On iOS, one non-object item makes the whole array read as empty, so with `replace: true` all markers are cleared.
 
 ### Marker changes from earlier versions

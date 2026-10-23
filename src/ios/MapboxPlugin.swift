@@ -782,7 +782,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             guard self.markers[id] != nil || self.markers.count < self.maxMarkers,
                   id.utf8.count <= 256 else { self.sendError("Marker/id limit exceeded.", command); return }
             let isFind = options["isFind"] as? Bool ?? false
-            guard let style = self.markerStyle(isFind: isFind, pinColor: options["pinColor"], imageUrl: options["imageUrl"], pinStyle: options["pinStyle"]) else {
+            guard let style = self.markerStyle(isFind: isFind, pinColor: options["pinColor"], imageUrl: options["imageUrl"], pinStyle: options["pinStyle"], isOnline: options["isOnline"] as? Bool ?? true) else {
                 self.sendError(self.markerImageNotAllowed, command)
                 return
             }
@@ -810,7 +810,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 let id = marker["Id"].flatMap(self.stringOption) ?? String(index)
                 guard !id.isEmpty, id.utf8.count <= 256 else { self.sendError("Invalid marker id.", command); return }
                 let isFind = marker["IsFind"] as? Bool ?? false
-                guard let style = self.markerStyle(isFind: isFind, pinColor: marker["PinColor"], imageUrl: marker["ImageUrl"], pinStyle: marker["PinStyle"]) else {
+                guard let style = self.markerStyle(isFind: isFind, pinColor: marker["PinColor"], imageUrl: marker["ImageUrl"], pinStyle: marker["PinStyle"], isOnline: marker["IsOnline"] as? Bool ?? true) else {
                     self.sendError(self.markerImageNotAllowed, command); return
                 }
                 styles.append(style)
@@ -841,7 +841,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         runForSession {
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let id = options["id"] as? String ?? ""
+            let id = options["id"].flatMap(self.stringOption) ?? ""
             self.markers.removeValue(forKey: id)
             self.markerStyles.removeValue(forKey: id)
             self.annotations?.annotations = Array(self.markers.values)
@@ -1725,7 +1725,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.lastKeepCallbackMarkerTs = now
             self.sendKeepCallback(self.markerClickCallbackId, payload: [
                 "type": self.markerType(for: id),
-                "id": id
+                "id": id,
+                "isOnline": self.markerStyles[id]?.isOnline ?? true
             ])
             return true
         }
@@ -1741,18 +1742,18 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     /// Returns nil when imageUrl is not an allowed image source.
-    private func markerStyle(isFind: Bool, pinColor: Any?, imageUrl rawImageUrl: Any?, pinStyle: Any? = nil) -> MarkerStyle? {
+    private func markerStyle(isFind: Bool, pinColor: Any?, imageUrl rawImageUrl: Any?, pinStyle: Any? = nil, isOnline: Bool = true) -> MarkerStyle? {
         let photo = (pinStyle as? String) == "photo"
         let defaultColor = isFind ? MarkerIcons.findPinColor : photo ? MarkerIcons.photoPinColor : MarkerIcons.defaultPinColor
         let color = colorOption(pinColor, defaultColor: defaultColor)
         let imageUrl = (rawImageUrl as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if imageUrl.isEmpty {
-            return MarkerStyle(color: color, isFind: isFind, imageUrl: nil, photo: photo)
+            return MarkerStyle(color: color, isFind: isFind, imageUrl: nil, photo: photo, isOnline: isOnline)
         }
         guard MapboxSecurity.markerImageAllowed(imageUrl, hosts: preferenceValue("MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS")) else {
             return nil
         }
-        return MarkerStyle(color: color, isFind: isFind, imageUrl: imageUrl, photo: photo)
+        return MarkerStyle(color: color, isFind: isFind, imageUrl: imageUrl, photo: photo, isOnline: isOnline)
     }
 
     // Markers show a plain pin until their image arrives; one download serves every marker using it.
@@ -1875,7 +1876,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         lastKeepCallbackMarkerTs = now
         sendKeepCallback(markerClickCallbackId, payload: [
             "type": markerType(for: nearestId),
-            "id": nearestId
+            "id": nearestId,
+            "isOnline": markerStyles[nearestId]?.isOnline ?? true
         ])
         return true
     }
@@ -2241,7 +2243,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         if let markerId = hitMarkerAtScreenPoint(tapPoint, mapView: mapView) {
             sendKeepCallback(markerClickCallbackId, payload: [
                 "type": markerType(for: markerId),
-                "id": markerId
+                "id": markerId,
+                "isOnline": markerStyles[markerId]?.isOnline ?? true
             ])
             return
         }
@@ -2467,4 +2470,6 @@ private struct MarkerStyle {
     let isFind: Bool
     let imageUrl: String?
     var photo = false
+    /// False for a marker created on the device that has not been synced to the backend yet.
+    var isOnline = true
 }

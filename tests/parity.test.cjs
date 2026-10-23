@@ -133,3 +133,15 @@ test('pinStyle "photo" draws the same 52x63 pin on both platforms and is opt-in'
   assert.match(android, /MarkerStyle\(int color, boolean isFind, String imageUrl\)\s*\{\s*this\(color, isFind, imageUrl, false\)/);
   assert.match(ios, /var photo = false/);
 });
+
+test('isOnline sync flag is accepted by addMarker and loadMarkers and returned in tap events on both platforms', () => {
+  assert.match(android, /optBoolean\("isOnline", true\)/);
+  assert.match(android, /optBoolean\("IsOnline", true\)/);
+  assert.match(ios, /isOnline: options\["isOnline"\] as\? Bool \?\? true/);
+  assert.match(ios, /isOnline: marker\["IsOnline"\] as\? Bool \?\? true/);
+  assert.match(ios, /var isOnline = true/);
+  assert.equal((android.match(/payload\.put\("isOnline"/g) || []).length, 2);
+  assert.equal((ios.match(/"isOnline": /g) || []).length, 3);
+  // removeMarker matches numeric ids as strings on iOS, like Android.
+  assert.match(ios.split('func removeMarker(command:')[1].split('@objc(clearMarkers:')[0], /options\["id"\]\.flatMap\(self\.stringOption\)/);
+});
