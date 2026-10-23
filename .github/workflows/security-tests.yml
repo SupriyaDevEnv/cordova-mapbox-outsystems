@@ -19,6 +19,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - run: npm test
+      - name: Regress style readiness, failures, timeouts and cancellation
+        run: python3 tests/test-style-readiness.py
       - name: Regress marker size and cache across Android screen densities
         run: python3 tests/test-marker-density.py
       - name: Regress behind-WebView transparency and appearance restoration
@@ -113,3 +115,4 @@ jobs:
           xcodebuild -workspace platforms/ios/App.xcworkspace \
             -scheme App -configuration Debug -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+

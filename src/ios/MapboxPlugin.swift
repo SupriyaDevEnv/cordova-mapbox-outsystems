@@ -203,7 +203,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             )
 
             let styleURI = StyleURI(rawValue: styleUrl) ?? .streets
-            let initOptions = MapInitOptions(cameraOptions: camera, styleURI: styleURI)
+            let initOptions = MapInitOptions(cameraOptions: camera, styleURI: nil)
 
             let isInline = options["inline"] as? Bool ?? false
             let mapView = MapView(
@@ -274,7 +274,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 ])
             }
 
-            self.sendSuccess(["status": "initialized"], command)
+            self.loadReadyStyle(styleURI, status: "initialized", command: command)
         }
     }
 
@@ -1508,12 +1508,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
             let styleURI = StyleURI(rawValue: styleUrl) ?? .streets
 
-            mapView.mapboxMap.loadStyle(styleURI)
             mapView.mapboxMap.setCamera(to: CameraOptions(
                 center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
                 zoom: zoom
             ))
-            self.sendSuccess(command)
+            self.loadReadyStyle(styleURI, status: nil, command: command)
         }
     }
 
@@ -1942,8 +1941,54 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 self.sendError("Style URL is not allowed.", command); return
             }
             let styleURI = StyleURI(rawValue: styleUrl) ?? StyleURI.streets
-            mapView.mapboxMap.loadStyle(styleURI)
-            self.sendSuccess(["status": "styleChanged"], command)
+            self.loadReadyStyle(styleURI, status: "styleChanged", command: command)
+        }
+    }
+
+    private final class StyleRequest {
+        let view: MapView
+        let command: CDVInvokedUrlCommand
+        let status: String?
+        var timeout: DispatchWorkItem?
+        init(view: MapView, command: CDVInvokedUrlCommand, status: String?) {
+            self.view = view; self.command = command; self.status = status
+        }
+    }
+    private var pendingStyle: StyleRequest?
+
+    private func cancelPendingStyle() {
+        pendingStyle?.timeout?.cancel()
+        pendingStyle = nil
+        // closeInternal settles the registered Cordova callback.
+    }
+
+    private func finishStyle(_ request: StyleRequest, error: String?) {
+        guard pendingStyle === request, mapView === request.view else { return }
+        cancelPendingStyle()
+        if let error = error { sendError(error, request.command) }
+        else if let status = request.status { sendSuccess(["status": status], request.command) }
+        else { sendSuccess(request.command) }
+    }
+
+    private func loadReadyStyle(_ uri: StyleURI, status: String?, command: CDVInvokedUrlCommand) {
+        guard let mapView = mapView else { sendError("Map is not initialized.", command); return }
+        guard pendingStyle == nil else {
+            sendError("A style load is already in progress. Await its completion first.", command)
+            return
+        }
+        let request = StyleRequest(view: mapView, command: command, status: status)
+        pendingStyle = request
+        let timeout = DispatchWorkItem { [weak self, weak request] in
+            guard let request = request else { return }
+            self?.finishStyle(request, error: "Style loading timed out after 30 seconds.")
+        }
+        request.timeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: timeout)
+        mapView.mapboxMap.loadStyle(uri) { [weak self, weak request] error in
+            DispatchQueue.main.async {
+                guard let request = request else { return }
+                self?.finishStyle(request, error: error == nil ? nil : "Map style failed to load.")
+            }
         }
     }
 
@@ -1956,6 +2001,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     func closeInternal() {
         sessionGeneration &+= 1
+        cancelPendingStyle()
         if let id = closeCallbackId {
             closeCallbackId = nil
             sendSuccess(["closed": true], callbackId: id)
@@ -2480,3 +2526,4 @@ private struct MarkerStyle {
     /// False for a marker created on the device that has not been synced to the backend yet.
     var isOnline = true
 }
+

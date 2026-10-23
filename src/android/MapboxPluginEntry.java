@@ -630,28 +630,7 @@ if (gestures != null) {
                     .pitch(pitch)
                     .build());
 
-                final long styleGeneration = sessionGeneration;
-                mapView.getMapboxMap().loadStyle(
-                    styleUrl,
-                    style -> {
-                        runForGeneration(styleGeneration, () -> {
-                            Log.d(
-                                "MapboxPlugin",
-                                "Map style loaded"
-                            );
-
-                            try {
-                                JSONObject result = new JSONObject();
-                                result.put("status", "initialized");
-                                callback.success(result);
-                            } catch (Exception e) {
-                                callback.error(
-                                    "Failed to create initialization result."
-                                );
-                            }
-                        });
-                    }
-                );
+                loadReadyStyle(styleUrl, "initialized", callback);
             } catch (Throwable e) {
                 callback.error(sanitizeError("Failed to initialize Mapbox map.", e));
                 closeInternal();
@@ -2288,13 +2267,13 @@ private void startUserTracking(CallbackContext callback) {
                 return;
             }
 
-            mapView.getMapboxMap().loadStyle(styleUrl);
+
             mapView.getMapboxMap().setCamera(new CameraOptions.Builder()
                 .center(Point.fromLngLat(longitude, latitude))
                 .zoom(zoom)
                 .build());
 
-            callback.success();
+            loadReadyStyle(styleUrl, null, callback);
         });
     }
 
@@ -3893,22 +3872,69 @@ private boolean addMarkerInternal(
                 return;
             }
 
-            final long styleGeneration = sessionGeneration;
-            mapView.getMapboxMap().loadStyle(
-                styleUrl,
-                style -> {
-                    runForGeneration(styleGeneration, () -> {
-                        JSONObject result = new JSONObject();
-                        try {
-                            result.put("status", "styleChanged");
-                            callback.success(result);
-                        } catch (JSONException ignored) {
-                            callback.success();
-                        }
-                    });
-                }
-            );
+            loadReadyStyle(styleUrl, "styleChanged", callback);
         });
+    }
+
+    // All style replacements use this gate. Never resolve readiness on a timer.
+    private final Handler styleHandler = new Handler(Looper.getMainLooper());
+    private StyleRequest pendingStyle;
+
+    private static final class StyleRequest {
+        final MapView view;
+        final CallbackContext callback;
+        final String status;
+        Cancelable errors;
+        Runnable timeout;
+        StyleRequest(MapView view, CallbackContext callback, String status) {
+            this.view = view; this.callback = callback; this.status = status;
+        }
+    }
+
+    private void cancelPendingStyle() {
+        StyleRequest request = pendingStyle;
+        pendingStyle = null;
+        if (request == null) return;
+        if (request.timeout != null) styleHandler.removeCallbacks(request.timeout);
+        if (request.errors != null) cleanupStep(() -> request.errors.cancel());
+        // closeInternal settles the registered Cordova callback.
+    }
+
+    private void finishStyle(StyleRequest request, String error) {
+        if (pendingStyle != request || mapView != request.view) return;
+        cancelPendingStyle();
+        if (request.callback.isFinished()) return;
+        if (error != null) { request.callback.error(error); return; }
+        if (request.status == null) { request.callback.success(); return; }
+        try {
+            JSONObject result = new JSONObject();
+            result.put("status", request.status);
+            request.callback.success(result);
+        } catch (JSONException e) {
+            request.callback.error("Failed to create style completion result.");
+        }
+    }
+
+    private void loadReadyStyle(String uri, String status, CallbackContext callback) {
+        if (pendingStyle != null) {
+            callback.error("A style load is already in progress. Await its completion first.");
+            return;
+        }
+        final StyleRequest request = new StyleRequest(mapView, callback, status);
+        pendingStyle = request;
+        request.timeout = () -> finishStyle(request, "Style loading timed out after 30 seconds.");
+        styleHandler.postDelayed(request.timeout, 30000L);
+        try {
+            request.errors = request.view.getMapboxMap().subscribeMapLoadingError(event -> {
+                if (event.getType() == com.mapbox.maps.MapLoadingErrorType.STYLE) {
+                    styleHandler.post(() -> finishStyle(request, "Map style failed to load."));
+                }
+            });
+            request.view.getMapboxMap().loadStyle(uri,
+                style -> finishStyle(request, null));
+        } catch (RuntimeException error) {
+            finishStyle(request, "Map style failed to load.");
+        }
     }
 
     private void cancelCurrentDownload() {
@@ -3934,6 +3960,7 @@ private boolean addMarkerInternal(
 
     protected void closeInternal() {
         sessionGeneration++;
+        cancelPendingStyle();
         if (closeCallback != null) { closeCallback.success(); closeCallback = null; }
         for (CallbackContext pending : sessionCallbacks) {
             if (!pending.isFinished()) {
@@ -4317,5 +4344,6 @@ private boolean addMarkerInternal(
         super.onReset();
     }
 }
+
 
 

@@ -1,5 +1,16 @@
 # OutSystems Mapbox Native Plugin
 
+
+## Style readiness and sequential OutSystems actions
+
+`initialize()`, `setMapStyle()` and `showOfflineRegion()` resolve only when the requested native style has loaded on Android and iOS. A fatal style-load error or a 30-second timeout rejects the operation. The timeout never signals readiness. Close cancels the pending action; late callbacks cannot complete a newer map session. Concurrent style requests are rejected: await the current request before replacing the style.
+
+In an OutSystems JavaScript element, enable asynchronous execution and call `$resolve()` only after the plugin Promise succeeds. Call `$reject(error)` on failure so the flow does not proceed to layer operations. Keep initialization, marker registration and layer changes as separate sequential actions; do not launch layer toggles from a parallel aggregate/event while initialization is pending. Your existing initialization snippet already awaits `plugin.initialize(options)` and can remain unchanged with this native update.
+
+After initialization resolves, apply layers and saved visibility settings. After each subsequent `setMapStyle()` resolves, recreate any custom sources/layers and reapply their visibility. A loaded style does not imply a GPS fix is available; location acquisition remains a separate asynchronous operation.
+
+Native changes require rebuilding and installing the mobile application. Updating/publishing JavaScript alone does not replace the installed Android/iOS plugin binaries. Verify slow/failed style loads, immediate layer toggles, close during loading, reopen and later style changes on both devices before UAT acceptance.
+
 ## Close cleanup build: 1.0.4-close-cleanup.2
 
 This cleanup release extends the existing teardown on `913103a`, retaining the behind-WebView transparency fix.
@@ -982,3 +993,4 @@ Device verification: add two markers (including an image marker), click both, re
 one while its image is loading, and confirm only the remaining marker still produces
 clicks. Repeat removal, try an unknown ID and invalid IDs, then re-add the removed ID.
 Run this on Android and iOS; JavaScript bridge tests do not exercise native rendering.
+
