@@ -19,6 +19,8 @@ def method(source, signature):
 callback = 'func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation])'
 helpers = '\n'.join(method(base, signature) for signature in [
     'func resumeCameraFollowing()',
+    'func resetRecenterAnimation()',
+    'func runRecenterAnimation(',
     'func isTrackingLocationManager(',
     'func pauseCameraFollowForGesture('
 ])
@@ -31,6 +33,13 @@ assert 'resumeCameraFollowing()' in method(base, 'private func startUserTracking
 assert 'isCameraFollowingUser = false' in method(base, 'private func stopUserTracking(')
 assert 'self.resumeCameraFollowing()' in method(parity, 'override func moveToCurrentLocation(')
 assert 'if self.isCameraFollowingUser' in method(parity, 'private func handleMoveToCurrentLocation(')
+recenter = method(parity, 'private func handleMoveToCurrentLocation(')
+assert 'self.runRecenterAnimation(to: CameraOptions(center: coordinate, zoom: zoom))' in recenter
+assert 'self.smoothedTrackingCoordinate = coordinate' in recenter
+assert '.setCamera(' not in recenter
+assert 'resetRecenterAnimation()' in method(base, 'func closeInternal()')
+assert 'guard !self.isRecenterAnimating else { return }' in method(
+    base, 'func locationManager(_ manager: CLLocationManager, didUpdateHeading')
 
 host = '''
 import Foundation
@@ -42,6 +51,14 @@ struct CameraOptions {
 class Camera {
     var moves = 0
     var cancellations = 0
+    var flights: [CameraOptions] = []
+    var completions: [(Bool) -> Void] = []
+    func fly(to: CameraOptions, duration: Double, completion: @escaping (Bool) -> Void) {
+        precondition(duration == 1.5, "Match Android's 1500 ms recenter flight")
+        moves += 1
+        flights.append(to)
+        completions.append(completion)
+    }
     func setCamera(to: CameraOptions) { moves += 1 }
     func ease(to: CameraOptions, duration: Double) { moves += 1 }
     func cancelAnimations() { cancellations += 1 }
@@ -56,6 +73,8 @@ class UIGestureRecognizer {
 }
 enum MapboxSecurity { static let maxPoints = 20000 }
 class Base {
+    var isRecenterAnimating = false
+    var recenterAnimationGeneration: UInt64 = 0
     var isCameraFollowingUser = false
     var isUserTrackingEnabled = true
     var headingLocationManager: CLLocationManager? = CLLocationManager()
@@ -129,6 +148,47 @@ plugin.resumeCameraFollowing()
 update(); plugin.drain()
 precondition(plugin.mapView!.camera.moves > beforePause, "Explicit follow resumes")
 
+// Location/path/accuracy updates continue during the flight without moving its camera.
+let camera = plugin.mapView!.camera
+plugin.runRecenterAnimation(to: CameraOptions(center: CLLocationCoordinate2D(latitude: 30, longitude: 40), zoom: 15))
+precondition(plugin.isRecenterAnimating)
+let beforeFlightUpdates = camera.moves
+let recordedBeforeFlight = plugin.pathPoints.count
+let accuracyBeforeFlight = plugin.accuracyUpdates
+update(); plugin.drain()
+precondition(camera.moves == beforeFlightUpdates, "Follow callbacks must not interrupt recenter")
+precondition(plugin.pathPoints.count == recordedBeforeFlight + 1)
+precondition(plugin.accuracyUpdates == accuracyBeforeFlight + 1)
+precondition(camera.flights.last!.zoom == 15)
+
+// A late completion from a superseded flight cannot release the newer flight's guard.
+let oldFlight = camera.completions.last!
+plugin.runRecenterAnimation(to: CameraOptions(center: CLLocationCoordinate2D(latitude: 31, longitude: 41)))
+precondition(camera.flights.last!.zoom == nil, "Omitted zoom must be preserved")
+oldFlight(false)
+precondition(plugin.isRecenterAnimating)
+camera.completions.last!(true)
+precondition(!plugin.isRecenterAnimating)
+let afterFlight = camera.moves
+update(); plugin.drain()
+precondition(camera.moves > afterFlight, "Follow resumes after flight completion")
+
+plugin.runRecenterAnimation(to: CameraOptions(center: CLLocationCoordinate2D(latitude: 32, longitude: 42)))
+gesture.state = .began
+plugin.pauseCameraFollowForGesture(gesture)
+precondition(!plugin.isRecenterAnimating && !plugin.isCameraFollowingUser)
+plugin.resumeCameraFollowing()
+
+// Close resets animation ownership; stale completion cannot affect a reopened map.
+let beforeClose = camera.completions.last!
+plugin.resetRecenterAnimation()
+plugin.mapView = MapView()
+plugin.runRecenterAnimation(to: CameraOptions(center: CLLocationCoordinate2D(latitude: 33, longitude: 43)))
+beforeClose(false)
+precondition(plugin.isRecenterAnimating)
+plugin.mapView!.camera.completions.last!(false)
+precondition(!plugin.isRecenterAnimating, "Cancellation must release the current guard")
+
 update(); plugin.stopUserTracking()
 let beforeStop = plugin.mapView!.camera.moves
 let pointCount = plugin.pathPoints.count
@@ -146,6 +206,15 @@ oneShot.pauseCameraFollowForGesture(gesture)
 oneShot.drain()
 precondition(oneShot.mapView!.camera.moves == 0)
 precondition(oneShot.results == 1, "Location result still resolves while camera is paused")
+let animatedOneShot = Base()
+animatedOneShot.resumeCameraFollowing()
+animatedOneShot.moveToCurrentLocationCallbackId = "animated"
+animatedOneShot.moveToCurrentLocationZoom = 16
+animatedOneShot.locationManager(animatedOneShot.headingLocationManager!, didUpdateLocations: [CLLocation(latitude: 12, longitude: 23)])
+animatedOneShot.drain()
+precondition(animatedOneShot.mapView!.camera.flights.count == 1)
+precondition(animatedOneShot.mapView!.camera.flights[0].zoom == 16)
+precondition(animatedOneShot.results == 1, "Match Android: resolve once flight is started")
 print("iOS camera pause/resume, queued updates, recording and accuracy checks passed")
 '''
 with tempfile.TemporaryDirectory() as temp:
@@ -156,3 +225,4 @@ with tempfile.TemporaryDirectory() as temp:
     binary = directory / 'follow-tests'
     subprocess.run(['swiftc', str(swift), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
+

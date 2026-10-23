@@ -586,6 +586,25 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         lastUserTrackingUpdate = 0
     }
 
+    private(set) var isRecenterAnimating = false
+    private var recenterAnimationGeneration: UInt64 = 0
+
+    func resetRecenterAnimation() {
+        recenterAnimationGeneration &+= 1
+        isRecenterAnimating = false
+    }
+
+    func runRecenterAnimation(to camera: CameraOptions) {
+        guard let mapView = mapView else { return }
+        recenterAnimationGeneration &+= 1
+        let generation = recenterAnimationGeneration
+        isRecenterAnimating = true
+        mapView.camera.fly(to: camera, duration: 1.5) { [weak self] _ in
+            guard let self = self, self.recenterAnimationGeneration == generation else { return }
+            self.isRecenterAnimating = false
+        }
+    }
+
     func resumeCameraFollowing() {
         isCameraFollowingUser = true
     }
@@ -598,6 +617,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         guard recognizer.state == .began || recognizer.state == .changed else { return }
         guard isCameraFollowingUser else { return }
         isCameraFollowingUser = false
+        resetRecenterAnimation()
         mapView?.camera.cancelAnimations()
     }
 
@@ -655,6 +675,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         lastHeadingUpdate = now
 
         runForSession {
+            guard !self.isRecenterAnimating else { return }
             self.mapView?.mapboxMap.setCamera(to: CameraOptions(bearing: bearing))
         }
     }
@@ -677,7 +698,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             runForSession {
                 if self.isCameraFollowingUser {
-                    self.mapView?.mapboxMap.setCamera(to: camera)
+                    self.runRecenterAnimation(to: camera)
                 }
                 if !self.isUserTrackingEnabled {
                     manager.stopUpdatingLocation()
@@ -705,7 +726,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
         runForSession {
             guard self.isTrackingLocationManager(manager) else { return }
-            if self.isCameraFollowingUser {
+            if self.isCameraFollowingUser && !self.isRecenterAnimating {
                 self.mapView?.mapboxMap.setCamera(to: CameraOptions(center: coordinate))
             }
 
@@ -2001,6 +2022,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     func closeInternal() {
         sessionGeneration &+= 1
+        resetRecenterAnimation()
         cancelPendingStyle()
         if let id = closeCallbackId {
             closeCallbackId = nil
