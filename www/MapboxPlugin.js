@@ -190,14 +190,17 @@ var api = {
       options.behindWebView === true;
     var controlsOnly = options.autoTouchRouting === false;
     return call('initialize', [options]).then(function (result) {
-      if (lifecycle !== lifecycleGeneration) return result;
+      if (lifecycle !== lifecycleGeneration) throw cancellationError('initialize');
       if (typeof window !== 'undefined' && window.cordova &&
           /^(android|ios)$/.test(window.cordova.platformId)) observeNativeClose(lifecycle);
       if (!automatic || generation !== touchGeneration) return result;
       var start = require('./AndroidTouchRegions');
       touchRegions = start(window, function (rects) { return call('setTouchableRects', [rects]); },
         { controlsOnly: controlsOnly });
-      return touchRegions.ready.then(function () { return result; });
+      return touchRegions.ready.then(function () {
+        if (lifecycle !== lifecycleGeneration) throw cancellationError('initialize');
+        return result;
+      });
     });
   },
 
@@ -453,3 +456,4 @@ if (typeof window !== 'undefined') {
 }
 
 module.exports = api;
+

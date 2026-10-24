@@ -118,3 +118,4 @@ with tempfile.TemporaryDirectory() as temp:
     file.write_text(host)
     subprocess.run(['javac', '-d', temp, str(file)], check=True)
     subprocess.run(['java', '-cp', temp, 'Main'], check=True)
+
