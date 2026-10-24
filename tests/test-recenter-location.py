@@ -20,16 +20,15 @@ predicate = '\n'.join(method(signature) for signature in (
 
 # Integration guard checks accompany the executable predicate cases.
 assert source.index('latestRecenterLocation = new Location(location);') < source.index('// Pin the puck while')
-stop = source[source.index('private void stopUserTracking()'):source.index('private void startCameraFollow()')]
+stop = method('    private void stopSharedLocationUpdates(')
 assert 'latestRecenterLocation = null;' in stop
 move = source[source.index('private void startMoveToCurrentLocation('):source.index('private String getAccuracyLabel(')]
-assert '.setMaxUpdateAgeMillis(MAX_LOCATION_AGE_MS)' in move
-assert 'locationGeneration != sessionGeneration || moveToCurrentLocationCallback != callback' in move
-assert 'e.getClass().getSimpleName()' in move
+assert 'generation != sessionGeneration || moveToCurrentLocationCallback != callback' in move
+assert 'ensureLocationUpdates(' in move
 assert 'runRecenterAnimation(' in move
 assert 'final boolean applyZoom = moveToCurrentLocationZoomSet;' in move
 tracking = source[source.index('private void startUserTracking('):source.index('private void stopUserTracking(')]
-coarse = tracking[tracking.index('if (location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS)'):tracking.index('// 2. Validate coordinates')]
+coarse = tracking[tracking.index('// One stream supplies'):tracking.index('// 2. Validate coordinates')]
 assert 'updateInitialUserLocation(location)' in coarse and 'continue;' in coarse
 assert 'updateMovementHistory' not in coarse and 'pathPoints.add' not in coarse
 assert 'updateInitialUserLocation(location);' in move
@@ -116,4 +115,6 @@ with tempfile.TemporaryDirectory() as tmp:
     main.write_text(host)
     subprocess.run(['javac', '-d', str(root), str(clock), str(main)], check=True)
     subprocess.run(['java', '-cp', str(root), 'Main'], check=True)
+
+
 

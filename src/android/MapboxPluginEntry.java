@@ -23,14 +23,12 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.FrameLayout;
 
-import com.google.android.gms.location.CurrentLocationRequest;
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationCallback;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationResult;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.Priority;
-import com.google.android.gms.tasks.CancellationTokenSource;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -196,8 +194,17 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private FusedLocationProviderClient fusedLocationClient;
     private LocationCallback fusedLocationCallback;
     private CallbackContext moveToCurrentLocationCallback = null;
-    private CancellationTokenSource moveToCurrentLocationToken = null;
-    private CancellationTokenSource bootstrapLocationToken;
+    private static final long LOCATION_WAIT_MS = 15_000L;
+    private final Handler locationWaitHandler = new Handler(Looper.getMainLooper());
+    private Runnable recenterTimeout;
+    private Runnable subscriptionTimeout;
+    private boolean locationSubscriptionReady;
+    private long trackingRequestGeneration;
+    private interface LocationStartCallback {
+        void ready();
+        void failed(String message);
+    }
+    private final List<LocationStartCallback> locationStartCallbacks = new ArrayList<>();
     private double moveToCurrentLocationZoom = 0.0;
     private boolean moveToCurrentLocationZoomSet = false;
     private float currentLocationAccuracy = -1f;
@@ -857,43 +864,15 @@ if (gestures != null) {
             location.setPuckBearingEnabled(true);
             location.setEnabled(true);
 
-            if (fusedLocationClient == null) {
-                fusedLocationClient = LocationServices
-                    .getFusedLocationProviderClient(cordova.getActivity());
-            }
-
-            CurrentLocationRequest bootstrapRequest =
-                new CurrentLocationRequest.Builder()
-                    .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
-                    .setDurationMillis(3000L)
-                    .setMaxUpdateAgeMillis(MAX_LOCATION_AGE_MS)
-                    .build();
-
-            if (bootstrapLocationToken != null) bootstrapLocationToken.cancel();
-            CancellationTokenSource bootstrapToken = new CancellationTokenSource();
-            bootstrapLocationToken = bootstrapToken;
-            final long bootstrapGeneration = sessionGeneration;
-
-            fusedLocationClient
-                .getCurrentLocation(bootstrapRequest, bootstrapToken.getToken())
-                .addOnSuccessListener(fix -> {
-                    if (bootstrapGeneration != sessionGeneration || bootstrapLocationToken != bootstrapToken) return;
-                    bootstrapLocationToken = null;
-                    if (isUsableRecenterLocation(fix)) {
-                        if (latestRecenterLocation == null || fix.getElapsedRealtimeNanos()
-                                > latestRecenterLocation.getElapsedRealtimeNanos()) {
-                            latestRecenterLocation = new Location(fix);
-                            updateInitialUserLocation(fix);
-                        }
-                    }
-                })
-                .addOnFailureListener(ignored -> {
-                });
-
             isUserLocationEnabled = true;
-            fireTrackingStatusChanged();
-
-            callback.success();
+            ensureLocationUpdates(new LocationStartCallback() {
+                public void ready() {
+                    updateInitialUserLocation(latestRecenterLocation);
+                    fireTrackingStatusChanged();
+                    callback.success();
+                }
+                public void failed(String message) { callback.error(message); }
+            });
         });
     }
 
@@ -1342,30 +1321,42 @@ if (gestures != null) {
         }
     }
 
-private void startUserTracking(CallbackContext callback) {
-        if (!hasLocationPermission()) {
-            callback.error("Location permission is not granted.");
-            return;
+    private void startUserTracking(CallbackContext callback) {
+        final long request = ++trackingRequestGeneration;
+        ensureLocationUpdates(new LocationStartCallback() {
+            public void ready() {
+                if (request != trackingRequestGeneration) {
+                    callback.error("Location request was cancelled.");
+                    return;
+                }
+                isUserTrackingEnabled = true;
+                isCameraFollowingUser = true;
+                startCameraFollow();
+                fireTrackingStatusChanged();
+                callback.success();
+            }
+            public void failed(String message) { callback.error(message); }
+        });
+    }
+
+    private String locationServiceProblem() {
+        if (!hasLocationPermission()) return "Location permission is not granted.";
+        LocationManager manager = (LocationManager) cordova.getActivity().getSystemService(Context.LOCATION_SERVICE);
+        if (manager == null) return "Device location manager is not available.";
+        if (!manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                && !manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+            return "Location provider is not enabled.";
         }
+        return null;
+    }
 
-        // Stop previous tracking and reset filter state
-        stopUserTracking();
-        isCameraFollowingUser = true;
-
-        locationManager = (LocationManager) cordova
-            .getActivity()
-            .getSystemService(Context.LOCATION_SERVICE);
-
-        if (locationManager == null) {
-            callback.error("Device location manager is not available.");
-            return;
-        }
-
-        fusedLocationClient =
-            LocationServices.getFusedLocationProviderClient(
-                cordova.getActivity()
-            );
-
+    private void ensureLocationUpdates(LocationStartCallback callback) {
+        String problem = locationServiceProblem();
+        if (problem != null) { callback.failed(problem); return; }
+        if (locationSubscriptionReady) { callback.ready(); return; }
+        locationStartCallbacks.add(callback);
+        if (fusedLocationCallback != null) return;
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(cordova.getActivity());
         final long trackingGeneration = sessionGeneration;
         fusedLocationCallback = new LocationCallback() {
             @Override
@@ -1376,7 +1367,7 @@ private void startUserTracking(CallbackContext callback) {
                     return;
                 }
 
-                if (trackingGeneration != sessionGeneration) return;
+                if (trackingGeneration != sessionGeneration || fusedLocationCallback != this) return;
 
                 for (Location location : locationResult.getLocations()) {
                     if (mapView == null || location == null) {
@@ -1387,19 +1378,18 @@ private void startUserTracking(CallbackContext callback) {
 
                     long now = System.currentTimeMillis();
 
-                    // A coarse fix can display the initial puck and serve recentering.
-                    // Do not feed it into movement classification or path recording.
-                    if (!isUsableRecenterLocation(location)) {
-                        continue;
+                    // One stream supplies display, recenter and recording. Keep fresh
+                    // approximate fixes for display without admitting them to the path.
+                    if (!isUsableRecenterLocation(location)) continue;
+                    if (latestRecenterLocation != null && location.getElapsedRealtimeNanos()
+                            <= latestRecenterLocation.getElapsedRealtimeNanos()) continue;
+                    latestRecenterLocation = new Location(location);
+                    updateInitialUserLocation(location);
+                    if (moveToCurrentLocationCallback != null) {
+                        completeMoveToCurrentLocation(new Location(location));
                     }
-                    if (location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) {
-                        if (latestRecenterLocation == null || location.getElapsedRealtimeNanos()
-                                > latestRecenterLocation.getElapsedRealtimeNanos()) {
-                            latestRecenterLocation = new Location(location);
-                            updateInitialUserLocation(location);
-                        }
-                        continue;
-                    }
+                    if (!isUserTrackingEnabled
+                            || location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) continue;
 
                     double latitude = location.getLatitude();
                     double longitude = location.getLongitude();
@@ -1561,63 +1551,69 @@ private void startUserTracking(CallbackContext callback) {
             }
         };
 
-        try {
-            boolean gpsEnabled =
-                locationManager.isProviderEnabled(
-                    LocationManager.GPS_PROVIDER
-                );
-            boolean networkEnabled =
-                locationManager.isProviderEnabled(
-                    LocationManager.NETWORK_PROVIDER
-                );
-
-            if (!gpsEnabled && !networkEnabled) {
-                stopUserTracking();
-                callback.error("Location provider is not enabled.");
-                return;
+        final LocationCallback subscription = fusedLocationCallback;
+        subscriptionTimeout = () -> {
+            if (trackingGeneration == sessionGeneration && fusedLocationCallback == subscription
+                    && !locationSubscriptionReady) {
+                stopSharedLocationUpdates("Location subscription did not start within 15 seconds.");
             }
-
-            LocationRequest locationRequest =
-                new LocationRequest.Builder(
-                    Priority.PRIORITY_HIGH_ACCURACY,
-                    1000L
-                )
-                .setMinUpdateIntervalMillis(500L)
-                .setMinUpdateDistanceMeters(1.0f)
-                .build();
-
-            fusedLocationClient.requestLocationUpdates(
-                locationRequest,
-                fusedLocationCallback,
-                Looper.getMainLooper()
-            );
-
-            isUserTrackingEnabled = true;
-            startCameraFollow();
-            fireTrackingStatusChanged();
-
-            callback.success();
-        } catch (SecurityException e) {
-            stopUserTracking();
-            callback.error("Location permission is not granted.");
+        };
+        locationWaitHandler.postDelayed(subscriptionTimeout, LOCATION_WAIT_MS);
+        try {
+            LocationRequest request = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
+                .setMinUpdateIntervalMillis(500L).build();
+            fusedLocationClient.requestLocationUpdates(request, subscription, Looper.getMainLooper())
+                .addOnSuccessListener(ignored -> {
+                    if (trackingGeneration != sessionGeneration || fusedLocationCallback != subscription) {
+                        // Registration may finish after teardown. Remove that exact listener.
+                        LocationServices.getFusedLocationProviderClient(cordova.getActivity())
+                            .removeLocationUpdates(subscription);
+                        return;
+                    }
+                    locationSubscriptionReady = true;
+                    locationWaitHandler.removeCallbacks(subscriptionTimeout);
+                    subscriptionTimeout = null;
+                    List<LocationStartCallback> waiting = new ArrayList<>(locationStartCallbacks);
+                    locationStartCallbacks.clear();
+                    for (LocationStartCallback pending : waiting) pending.ready();
+                })
+                .addOnFailureListener(error -> {
+                    if (trackingGeneration != sessionGeneration || fusedLocationCallback != subscription) return;
+                    stopSharedLocationUpdates("Location subscription failed: " + error.getClass().getSimpleName()
+                        + (error.getMessage() == null ? "" : ": " + error.getMessage()));
+                });
+        } catch (SecurityException error) {
+            stopSharedLocationUpdates("Location permission is not granted.");
         }
     }
+
+    private void stopSharedLocationUpdates(String reason) {
+        LocationCallback old = fusedLocationCallback;
+        fusedLocationCallback = null;
+        locationSubscriptionReady = false;
+        if (subscriptionTimeout != null) locationWaitHandler.removeCallbacks(subscriptionTimeout);
+        subscriptionTimeout = null;
+        if (old != null && fusedLocationClient != null) {
+            try { fusedLocationClient.removeLocationUpdates(old); }
+            catch (SecurityException ignored) { }
+        }
+        latestRecenterLocation = null;
+        List<LocationStartCallback> waiting = new ArrayList<>(locationStartCallbacks);
+        locationStartCallbacks.clear();
+        for (LocationStartCallback pending : waiting) pending.failed(reason);
+        if (moveToCurrentLocationCallback != null) {
+            CallbackContext pending = moveToCurrentLocationCallback;
+            cancelMoveToCurrentLocation();
+            pending.error(reason);
+        }
+    }
+
     private void stopUserTracking() {
         stopCameraFollow();
-        if (fusedLocationClient != null
-                && fusedLocationCallback != null) {
-            try {
-                fusedLocationClient.removeLocationUpdates(
-                    fusedLocationCallback
-                );
-            } catch (SecurityException ignored) {
-            }
-        }
-
-        fusedLocationCallback = null;
+        trackingRequestGeneration++;
+        // Stopping camera/path tracking must not stop the visible puck's stream.
         lastUserTrackingUpdateMs = 0L;
         lastAcceptedTrackingLocation = null;
-        latestRecenterLocation = null;
         smoothedTrackingPoint = null;
         movementHistory.clear();
         movementState = MOVEMENT_STATE_STATIONARY;
@@ -1794,69 +1790,32 @@ private void startUserTracking(CallbackContext callback) {
     private void startMoveToCurrentLocation(CallbackContext callback) {
         if (moveToCurrentLocationCallback != null) moveToCurrentLocationCallback.error("Location request superseded.");
         unregisterMoveToCurrentLocation();
-        final long locationGeneration = sessionGeneration;
-
-        LocationManager manager = (LocationManager) cordova
-            .getActivity()
-            .getSystemService(Context.LOCATION_SERVICE);
-        if (manager == null) {
-            cancelMoveToCurrentLocation();
-            callback.error("Device location manager is not available.");
-            return;
-        }
-        boolean gpsEnabled = manager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-        boolean networkEnabled = manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
-        if (!gpsEnabled && !networkEnabled) {
-            cancelMoveToCurrentLocation();
-            callback.error("Location provider is not enabled.");
-            return;
-        }
-
+        String problem = locationServiceProblem();
+        if (problem != null) { cancelMoveToCurrentLocation(); callback.error(problem); return; }
         moveToCurrentLocationCallback = callback;
-        if (isUsableRecenterLocation(latestRecenterLocation)) {
-            completeMoveToCurrentLocation(new Location(latestRecenterLocation));
-            return;
-        }
-        if (fusedLocationClient == null) {
-            fusedLocationClient = LocationServices
-                .getFusedLocationProviderClient(cordova.getActivity());
-        }
-        CurrentLocationRequest request = new CurrentLocationRequest.Builder()
-            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
-            .setDurationMillis(5000L)
-            .setMaxUpdateAgeMillis(MAX_LOCATION_AGE_MS)
-            .build();
-        moveToCurrentLocationToken = new CancellationTokenSource();
-        try {
-            fusedLocationClient
-                .getCurrentLocation(request, moveToCurrentLocationToken.getToken())
-                .addOnSuccessListener(location -> {
-                    if (locationGeneration != sessionGeneration || moveToCurrentLocationCallback != callback) return;
-                    // Tracking may have received a fix while this request was pending.
-                    Location candidate = isUsableRecenterLocation(location)
-                        ? location : latestRecenterLocation;
-                    if (!isUsableRecenterLocation(candidate)) {
-                        cancelMoveToCurrentLocation();
-                        callback.error("Unable to recenter. Requested fix: " + recenterLocationProblem(location)
-                            + " Tracking fix: " + recenterLocationProblem(latestRecenterLocation));
-                        return;
-                    }
-                    completeMoveToCurrentLocation(new Location(candidate));
-                })
-                .addOnFailureListener(e -> {
-                    if (locationGeneration != sessionGeneration || moveToCurrentLocationCallback != callback) return;
-                    if (!(e instanceof SecurityException) && isUsableRecenterLocation(latestRecenterLocation)) {
-                        completeMoveToCurrentLocation(new Location(latestRecenterLocation));
-                        return;
-                    }
-                    cancelMoveToCurrentLocation();
-                    callback.error("Current location request failed: " + e.getClass().getSimpleName()
-                        + (e.getMessage() == null ? "" : ": " + e.getMessage()));
-                });
-        } catch (SecurityException e) {
+        final long generation = sessionGeneration;
+        recenterTimeout = () -> {
+            if (generation != sessionGeneration || moveToCurrentLocationCallback != callback) return;
+            String currentProblem = locationServiceProblem();
             cancelMoveToCurrentLocation();
-            callback.error("Location permission is not granted.");
-        }
+            callback.error(currentProblem != null ? currentProblem
+                : "No valid location update received within 15 seconds.");
+        };
+        locationWaitHandler.postDelayed(recenterTimeout, LOCATION_WAIT_MS);
+        ensureLocationUpdates(new LocationStartCallback() {
+            public void ready() {
+                if (generation != sessionGeneration || moveToCurrentLocationCallback != callback) return;
+                if (isUsableRecenterLocation(latestRecenterLocation)) {
+                    completeMoveToCurrentLocation(new Location(latestRecenterLocation));
+                }
+                // Otherwise the shared stream completes this request on its next valid fix.
+            }
+            public void failed(String message) {
+                if (generation != sessionGeneration || moveToCurrentLocationCallback != callback) return;
+                cancelMoveToCurrentLocation();
+                callback.error(message);
+            }
+        });
     }
 
     private void completeMoveToCurrentLocation(Location location) {
@@ -1939,10 +1898,8 @@ private void startUserTracking(CallbackContext callback) {
     }
 
     private void unregisterMoveToCurrentLocation() {
-        if (moveToCurrentLocationToken != null) {
-            moveToCurrentLocationToken.cancel();
-            moveToCurrentLocationToken = null;
-        }
+        if (recenterTimeout != null) locationWaitHandler.removeCallbacks(recenterTimeout);
+        recenterTimeout = null;
         moveToCurrentLocationCallback = null;
     }
 
@@ -3980,7 +3937,7 @@ private boolean addMarkerInternal(
         }
         cleanupStep(this::cancelCurrentDownload);
         cleanupStep(markerIcons::cancelAll);
-        if (bootstrapLocationToken != null) { cleanupStep(() -> bootstrapLocationToken.cancel()); bootstrapLocationToken = null; }
+        cleanupStep(() -> stopSharedLocationUpdates("Map closed; operation cancelled."));
         recenterAnimationGeneration++;
         isCameraFollowingUser = true;
         if (mapView != null) {
@@ -4344,6 +4301,7 @@ private boolean addMarkerInternal(
         super.onReset();
     }
 }
+
 
 
 
