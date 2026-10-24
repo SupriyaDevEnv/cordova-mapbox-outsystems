@@ -2876,7 +2876,7 @@ private boolean addMarkerInternal(
             : markerIcons.pin(style.color, style.isFind, style.imageUrl,
                 cordova.getActivity().getResources().getDisplayMetrics().density))
         .withIconAnchor(IconAnchor.BOTTOM)
-        .withIconSize(0.5);
+        .withIconSize(style.photo ? 0.27 : 0.5);
 
     PointAnnotation annotation =
         pointAnnotationManager.create(markerOptions);
