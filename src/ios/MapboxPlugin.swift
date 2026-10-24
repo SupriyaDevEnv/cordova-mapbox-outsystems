@@ -1741,7 +1741,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             ? markerIcons.photoPin(color: style.color, source: style.imageUrl)
             : markerIcons.pin(color: style.color, isFind: style.isFind, source: style.imageUrl)
         marker.iconAnchor = .bottom
-        marker.iconSize = 0.5
+        marker.iconSize = style.photo ? 0.27 : 0.5
         let generation = sessionGeneration
         let annotationId = marker.id
         marker.tapHandler = { [weak self, id] context in
