@@ -51,7 +51,7 @@ class MapboxPluginParity: MapboxPlugin {
         locationAccuracyCallbackId = command.callbackId
         lastLocationAccuracyUpdate = 0
 
-        let result = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
+        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
         result?.setKeepCallbackAs(true)
         commandDelegate.send(result, callbackId: command.callbackId)
 
@@ -305,7 +305,8 @@ class MapboxPluginParity: MapboxPlugin {
         }
 
         runForSession {
-            guard self.isTrackingLocationManager(manager), self.isCameraFollowingUser else { return }
+            guard self.isTrackingLocationManager(manager), self.isCameraFollowingUser,
+                  !self.isRecenterAnimating else { return }
             guard let mapView = self.activeMapView() else {
                 return
             }
@@ -363,17 +364,14 @@ class MapboxPluginParity: MapboxPlugin {
         stopMoveLocationUpdates()
 
         runForSession {
-            guard let mapView = self.activeMapView() else {
+            guard self.activeMapView() != nil else {
                 self.sendParityError("Map is not initialized.", callbackId: callbackId)
                 return
             }
 
             if self.isCameraFollowingUser {
-                if let zoom = zoom {
-                    mapView.mapboxMap.setCamera(to: CameraOptions(center: coordinate, zoom: zoom))
-                } else {
-                    mapView.mapboxMap.setCamera(to: CameraOptions(center: coordinate))
-                }
+                self.smoothedTrackingCoordinate = coordinate
+                self.runRecenterAnimation(to: CameraOptions(center: coordinate, zoom: zoom.map { CGFloat($0) }))
             }
 
             let accuracy = location.horizontalAccuracy >= 0 ? location.horizontalAccuracy : -1
@@ -411,7 +409,7 @@ class MapboxPluginParity: MapboxPlugin {
             "timestamp": Int(Date().timeIntervalSince1970 * 1000)
         ]
 
-        let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
+        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
         result?.setKeepCallbackAs(true)
         commandDelegate.send(result, callbackId: callbackId)
     }
@@ -510,3 +508,4 @@ class MapboxPluginParity: MapboxPlugin {
         commandDelegate.send(result, callbackId: callbackId)
     }
 }
+

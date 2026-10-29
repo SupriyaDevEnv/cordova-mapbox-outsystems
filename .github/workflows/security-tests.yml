@@ -19,6 +19,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - run: npm test
+      - name: Regress style readiness, failures, timeouts and cancellation
+        run: python3 tests/test-style-readiness.py
       - name: Regress marker size and cache across Android screen densities
         run: python3 tests/test-marker-density.py
       - name: Regress behind-WebView transparency and appearance restoration
@@ -40,11 +42,80 @@ jobs:
         run: python3 tests/test-empty-path.py
       - name: Regress stale session callbacks on both platforms
         run: python3 tests/test-session-guards.py
+      - name: Regress delayed native marker taps and cleanup failures
+        run: python3 tests/test-teardown.py
       - name: Parse all iOS plugin sources
         run: swiftc -frontend -parse src/ios/*.swift
       - name: Regress iOS touch coordinates and map boundaries
         run: python3 tests/test-ios-touch-routing.py
       - name: Regress iOS camera follow during manual gestures
         run: python3 tests/test-ios-camera-follow.py
+      - name: Validate Android recenter location age and accuracy
+        run: python3 tests/test-recenter-location.py
+      - name: Validate shared location waiting and cancellation
+        run: python3 tests/test-shared-location.py
       - name: Regress Android recenter against the camera follow ticker
         run: python3 tests/test-android-camera-recenter.py
+
+  native-build:
+    name: Native SDK build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            runner: ubuntu-24.04
+          - platform: ios
+            runner: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v4
+        if: matrix.platform == 'android'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        if: matrix.platform == 'android'
+        with:
+          gradle-version: '8.13'
+      - uses: android-actions/setup-android@v3
+        if: matrix.platform == 'android'
+        with:
+          packages: 'platform-tools'
+      - name: Install Android SDK build inputs
+        if: matrix.platform == 'android'
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Prepare clean Cordova application with the checked-out plugin
+        env:
+          SMOKE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          npm install --global cordova@12.0.0
+          cordova create "$RUNNER_TEMP/mapbox-smoke" com.outsystems.mapbox.smoke MapboxSmoke
+          cd "$RUNNER_TEMP/mapbox-smoke"
+          node -e 'const fs = require("fs"); const p = "config.xml"; fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("</widget>", "<preference name=\"deployment-target\" value=\"14.0\" /></widget>"));'
+          if [ "$SMOKE_PLATFORM" = android ]; then
+            cordova platform add android@14.0.1
+          else
+            cordova platform add ios@8.0.0
+          fi
+          cordova plugin add "$GITHUB_WORKSPACE"
+          cordova prepare "$SMOKE_PLATFORM"
+      - name: Compile and package Android debug app
+        if: matrix.platform == 'android'
+        run: |
+          cd "$RUNNER_TEMP/mapbox-smoke"
+          cordova build android --debug
+      - name: Compile and link iOS simulator app without signing
+        if: matrix.platform == 'ios'
+        run: |
+          cd "$RUNNER_TEMP/mapbox-smoke"
+          xcodebuild -workspace platforms/ios/App.xcworkspace \
+            -scheme App -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+
+

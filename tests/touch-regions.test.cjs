@@ -344,3 +344,44 @@ test('a rejected write after navigation cannot retry or restart stopped tracking
   assert.equal(h.frames.size, 0);
   assert.equal(h.warnings.length, 0);
 });
+
+for (const stopMode of ['missing', 'throws', 'clears globals']) {
+  test('close cleans legacy resources when stop ' + stopMode, async () => {
+    const h = host(); const b = bridge(h);
+    await b.api.initialize({ behindWebView: true });
+    let externalEvents = 0;
+    const independent = () => externalEvents++;
+    h.win.addEventListener('scroll', independent);
+    h.doc.addEventListener('load', independent);
+    const schedule = () => { throw new Error('legacy listener survived'); };
+    const pagehide = schedule;
+    h.win.addEventListener('resize', schedule);
+    h.win.addEventListener('scroll', schedule, true);
+    h.win.addEventListener('pagehide', pagehide);
+    for (const event of ['transitionrun', 'transitionend', 'transitioncancel',
+      'animationstart', 'animationend', 'animationcancel', 'load']) {
+      h.doc.addEventListener(event, schedule, true);
+    }
+    h.win.__mapboxTouchHandlers = { schedule, pagehide };
+    const observer = h.win.__mapboxTouchObserver = new h.win.MutationObserver(schedule);
+    const resize = h.win.__mapboxResizeObserver = new h.win.ResizeObserver(schedule);
+    observer.observe(h.doc.documentElement); resize.observe(h.doc.documentElement);
+    const legacy = h.win.__mapboxTouchBridge = {
+      frame: h.win.requestAnimationFrame(schedule), retry: h.win.setTimeout(schedule)
+    };
+    if (stopMode === 'throws') legacy.stop = () => { throw new Error('legacy stop failed'); };
+    if (stopMode === 'clears globals') legacy.stop = () => {
+      assert.notEqual(legacy.stopped, true, 'do not bypass a legacy stop guard');
+      h.win.__mapboxTouchObserver = h.win.__mapboxTouchHandlers = null;
+      legacy.frame = legacy.retry = null;
+    };
+    await b.api.close(); await b.api.close();
+    assert.equal(b.calls.at(-1).action, 'close', 'native teardown must still run');
+    assert.equal(legacy.stopped, true);
+    assert.equal(h.frames.size, 0); assert.equal(h.timers.size, 0);
+    assert.equal(observer.nodes.length, 0); assert.equal(resize.nodes.length, 0);
+    h.win.emit('resize'); h.win.emit('scroll'); h.win.emit('pagehide'); h.doc.emit('load');
+    assert.equal(externalEvents, 2, 'unrelated listeners remain active');
+    assert.equal(h.win.__mapboxTouchBridge, null);
+  });
+}

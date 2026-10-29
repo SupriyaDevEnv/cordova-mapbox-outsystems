@@ -133,3 +133,29 @@ test('pinStyle "photo" draws the same 52x63 pin on both platforms and is opt-in'
   assert.match(android, /MarkerStyle\(int color, boolean isFind, String imageUrl\)\s*\{\s*this\(color, isFind, imageUrl, false\)/);
   assert.match(ios, /var photo = false/);
 });
+
+test('isOnline sync flag is accepted by addMarker and loadMarkers and returned in tap events on both platforms', () => {
+  assert.match(android, /optBoolean\("isOnline", true\)/);
+  assert.match(android, /optBoolean\("IsOnline", true\)/);
+  assert.match(ios, /isOnline: options\["isOnline"\] as\? Bool \?\? true/);
+  assert.match(ios, /isOnline: marker\["IsOnline"\] as\? Bool \?\? true/);
+  assert.match(ios, /var isOnline = true/);
+  assert.equal((android.match(/payload\.put\("isOnline"/g) || []).length, 2);
+  assert.equal((ios.match(/"isOnline": /g) || []).length, 3);
+});
+
+test('path line style is validated the same way on both platforms', () => {
+  const androidStart = android.split('private void startPathTracking(')[1].split('private void stopPathTracking(')[0];
+  const androidLoad = android.split('private void loadPath(')[1].split('private void clearPaths(')[0];
+  for (const body of [androidStart, androidLoad]) {
+    assert.match(body, /MarkerIcons\.parseColor\(options\.optString\("lineColor"/);
+    assert.match(body, /readLineWidth\(options\)/);
+    assert.match(body, /readLineOpacity\(options\)/);
+  }
+  const iosStart = ios.split('func startPathTracking(command:')[1].split('@objc(stopPathTracking:', 1)[0];
+  const iosLoad = ios.split('func loadPath(command:')[1].split('@objc(clearPaths:', 1)[0];
+  for (const body of [iosStart, iosLoad]) {
+    assert.match(body, /lineWidthOption\(options\["lineWidth"\]\)/);
+    assert.match(body, /lineOpacityOption\(options\["lineOpacity"\]\)/);
+  }
+});

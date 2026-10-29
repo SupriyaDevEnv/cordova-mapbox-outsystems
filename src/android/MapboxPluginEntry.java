@@ -23,14 +23,12 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.FrameLayout;
 
-import com.google.android.gms.location.CurrentLocationRequest;
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationCallback;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationResult;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.Priority;
-import com.google.android.gms.tasks.CancellationTokenSource;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -66,6 +64,7 @@ import com.mapbox.maps.plugin.PuckBearing;
 import com.mapbox.maps.plugin.Plugin;
 import com.mapbox.maps.plugin.annotation.AnnotationPlugin;
 import com.mapbox.maps.plugin.annotation.generated.PointAnnotation;
+import com.mapbox.maps.plugin.annotation.generated.OnPointAnnotationClickListener;
 import com.mapbox.maps.plugin.annotation.generated.PointAnnotationManager;
 import com.mapbox.maps.plugin.annotation.generated.PointAnnotationManagerKt;
 import com.mapbox.maps.plugin.annotation.generated.PointAnnotationOptions;
@@ -182,6 +181,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private LocationManager locationManager;
     private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
+    private Location latestRecenterLocation = null;
     private Point smoothedTrackingPoint = null;
     private int movementState = MOVEMENT_STATE_STATIONARY;
     private int movementStateAgreement = 0;
@@ -194,13 +194,23 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private FusedLocationProviderClient fusedLocationClient;
     private LocationCallback fusedLocationCallback;
     private CallbackContext moveToCurrentLocationCallback = null;
-    private CancellationTokenSource moveToCurrentLocationToken = null;
-    private CancellationTokenSource bootstrapLocationToken;
+    private static final long LOCATION_WAIT_MS = 15_000L;
+    private final Handler locationWaitHandler = new Handler(Looper.getMainLooper());
+    private Runnable recenterTimeout;
+    private Runnable subscriptionTimeout;
+    private boolean locationSubscriptionReady;
+    private long trackingRequestGeneration;
+    private interface LocationStartCallback {
+        void ready();
+        void failed(String message);
+    }
+    private final List<LocationStartCallback> locationStartCallbacks = new ArrayList<>();
     private double moveToCurrentLocationZoom = 0.0;
     private boolean moveToCurrentLocationZoomSet = false;
     private float currentLocationAccuracy = -1f;
     private String currentLocationAccuracyLabel = "Unknown";
     private PointAnnotationManager pointAnnotationManager;
+    private OnPointAnnotationClickListener markerTapListener;
     private PolygonAnnotationManager boundaryAnnotationManager;
     private final List<PolygonAnnotationOptions> boundaryAnnotationOptions = new ArrayList<>();
     private final List<PolygonAnnotation> boundaryAnnotations = new ArrayList<>();
@@ -218,7 +228,10 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private boolean isPathTrackingActive = false;
     private long pathTrackingStartTimeMs = 0L;
     private boolean isPathVisible = true;
-    private String pathLineColor = "#FF0000";
+    private static final int DEFAULT_PATH_COLOR = 0xFFFF0000;
+    private static final double DEFAULT_PATH_WIDTH = 3.0;
+    private static final double MAX_PATH_WIDTH = 30.0;
+    private int pathLineColor = DEFAULT_PATH_COLOR;
     private float pathLineWidth = 3.0f;
     private float pathLineOpacity = 1.0f;
     private boolean isPathTrackingPaused = false;
@@ -554,12 +567,13 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     mapView.getPlugin(Plugin.MAPBOX_GESTURES_PLUGIN_ID);
 
 if (gestures != null) {
+    final long gestureGeneration = sessionGeneration;
 
     moveGestureListener = new com.mapbox.maps.plugin.gestures.OnMoveListener() {
         @Override
         public void onMoveBegin(
                 com.mapbox.android.gestures.MoveGestureDetector detector) {
-            isCameraFollowingUser = false;
+            if (gestureGeneration == sessionGeneration) isCameraFollowingUser = false;
         }
 
         @Override
@@ -579,7 +593,7 @@ if (gestures != null) {
                     @Override
                     public void onScaleBegin(
                             com.mapbox.android.gestures.StandardScaleGestureDetector detector) {
-                        isCameraFollowingUser = false;
+                        if (gestureGeneration == sessionGeneration) isCameraFollowingUser = false;
                     }
             
                     @Override
@@ -626,28 +640,7 @@ if (gestures != null) {
                     .pitch(pitch)
                     .build());
 
-                final long styleGeneration = sessionGeneration;
-                mapView.getMapboxMap().loadStyle(
-                    styleUrl,
-                    style -> {
-                        runForGeneration(styleGeneration, () -> {
-                            Log.d(
-                                "MapboxPlugin",
-                                "Map style loaded"
-                            );
-
-                            try {
-                                JSONObject result = new JSONObject();
-                                result.put("status", "initialized");
-                                callback.success(result);
-                            } catch (Exception e) {
-                                callback.error(
-                                    "Failed to create initialization result."
-                                );
-                            }
-                        });
-                    }
-                );
+                loadReadyStyle(styleUrl, "initialized", callback);
             } catch (Throwable e) {
                 callback.error(sanitizeError("Failed to initialize Mapbox map.", e));
                 closeInternal();
@@ -874,44 +867,15 @@ if (gestures != null) {
             location.setPuckBearingEnabled(true);
             location.setEnabled(true);
 
-            if (fusedLocationClient == null) {
-                fusedLocationClient = LocationServices
-                    .getFusedLocationProviderClient(cordova.getActivity());
-            }
-
-            CurrentLocationRequest bootstrapRequest =
-                new CurrentLocationRequest.Builder()
-                    .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
-                    .setDurationMillis(3000L)
-                    .setMaxUpdateAgeMillis(MAX_LOCATION_AGE_MS)
-                    .build();
-
-            if (bootstrapLocationToken != null) bootstrapLocationToken.cancel();
-            CancellationTokenSource bootstrapToken = new CancellationTokenSource();
-            bootstrapLocationToken = bootstrapToken;
-            final long bootstrapGeneration = sessionGeneration;
-
-            fusedLocationClient
-                .getCurrentLocation(bootstrapRequest, bootstrapToken.getToken())
-                .addOnSuccessListener(fix -> {
-                    if (bootstrapGeneration != sessionGeneration || bootstrapLocationToken != bootstrapToken) return;
-                    bootstrapLocationToken = null;
-                    if (fix != null
-                            && fix.hasAccuracy()
-                            && fix.getAccuracy()
-                            <= MAX_ACCEPTABLE_ACCURACY_METERS
-                            && isUserLocationEnabled
-                            && smoothedLocationProvider != null) {
-                        smoothedLocationProvider.updateLocation(fix);
-                    }
-                })
-                .addOnFailureListener(ignored -> {
-                });
-
             isUserLocationEnabled = true;
-            fireTrackingStatusChanged();
-
-            callback.success();
+            ensureLocationUpdates(new LocationStartCallback() {
+                public void ready() {
+                    updateInitialUserLocation(latestRecenterLocation);
+                    fireTrackingStatusChanged();
+                    callback.success();
+                }
+                public void failed(String message) { callback.error(message); }
+            });
         });
     }
 
@@ -1360,30 +1324,42 @@ if (gestures != null) {
         }
     }
 
-private void startUserTracking(CallbackContext callback) {
-        if (!hasLocationPermission()) {
-            callback.error("Location permission is not granted.");
-            return;
+    private void startUserTracking(CallbackContext callback) {
+        final long request = ++trackingRequestGeneration;
+        ensureLocationUpdates(new LocationStartCallback() {
+            public void ready() {
+                if (request != trackingRequestGeneration) {
+                    callback.error("Location request was cancelled.");
+                    return;
+                }
+                isUserTrackingEnabled = true;
+                isCameraFollowingUser = true;
+                startCameraFollow();
+                fireTrackingStatusChanged();
+                callback.success();
+            }
+            public void failed(String message) { callback.error(message); }
+        });
+    }
+
+    private String locationServiceProblem() {
+        if (!hasLocationPermission()) return "Location permission is not granted.";
+        LocationManager manager = (LocationManager) cordova.getActivity().getSystemService(Context.LOCATION_SERVICE);
+        if (manager == null) return "Device location manager is not available.";
+        if (!manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                && !manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+            return "Location provider is not enabled.";
         }
+        return null;
+    }
 
-        // Stop previous tracking and reset filter state
-        stopUserTracking();
-        isCameraFollowingUser = true;
-
-        locationManager = (LocationManager) cordova
-            .getActivity()
-            .getSystemService(Context.LOCATION_SERVICE);
-
-        if (locationManager == null) {
-            callback.error("Device location manager is not available.");
-            return;
-        }
-
-        fusedLocationClient =
-            LocationServices.getFusedLocationProviderClient(
-                cordova.getActivity()
-            );
-
+    private void ensureLocationUpdates(LocationStartCallback callback) {
+        String problem = locationServiceProblem();
+        if (problem != null) { callback.failed(problem); return; }
+        if (locationSubscriptionReady) { callback.ready(); return; }
+        locationStartCallbacks.add(callback);
+        if (fusedLocationCallback != null) return;
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(cordova.getActivity());
         final long trackingGeneration = sessionGeneration;
         fusedLocationCallback = new LocationCallback() {
             @Override
@@ -1394,7 +1370,7 @@ private void startUserTracking(CallbackContext callback) {
                     return;
                 }
 
-                if (trackingGeneration != sessionGeneration) return;
+                if (trackingGeneration != sessionGeneration || fusedLocationCallback != this) return;
 
                 for (Location location : locationResult.getLocations()) {
                     if (mapView == null || location == null) {
@@ -1405,12 +1381,18 @@ private void startUserTracking(CallbackContext callback) {
 
                     long now = System.currentTimeMillis();
 
-                    // 1. Reject readings without accuracy data or poor accuracy
-                    if (!location.hasAccuracy()
-                            || location.getAccuracy()
-                            > MAX_ACCEPTABLE_ACCURACY_METERS) {
-                        continue;
+                    // One stream supplies display, recenter and recording. Keep fresh
+                    // approximate fixes for display without admitting them to the path.
+                    if (!isUsableRecenterLocation(location)) continue;
+                    if (latestRecenterLocation != null && location.getElapsedRealtimeNanos()
+                            <= latestRecenterLocation.getElapsedRealtimeNanos()) continue;
+                    latestRecenterLocation = new Location(location);
+                    updateInitialUserLocation(location);
+                    if (moveToCurrentLocationCallback != null) {
+                        completeMoveToCurrentLocation(new Location(location));
                     }
+                    if (!isUserTrackingEnabled
+                            || location.getAccuracy() > MAX_ACCEPTABLE_ACCURACY_METERS) continue;
 
                     double latitude = location.getLatitude();
                     double longitude = location.getLongitude();
@@ -1462,6 +1444,9 @@ private void startUserTracking(CallbackContext callback) {
                         movementHistory.clear();
                         movementHistory.add(new Location(location));
                     }
+
+                    // Keep a fresh raw fix even while the displayed puck is pinned.
+                    latestRecenterLocation = new Location(location);
 
                     // Pin the puck while the classifier says stationary,
                     // but always let the first fix through so the dot
@@ -1569,60 +1554,67 @@ private void startUserTracking(CallbackContext callback) {
             }
         };
 
-        try {
-            boolean gpsEnabled =
-                locationManager.isProviderEnabled(
-                    LocationManager.GPS_PROVIDER
-                );
-            boolean networkEnabled =
-                locationManager.isProviderEnabled(
-                    LocationManager.NETWORK_PROVIDER
-                );
-
-            if (!gpsEnabled && !networkEnabled) {
-                stopUserTracking();
-                callback.error("Location provider is not enabled.");
-                return;
+        final LocationCallback subscription = fusedLocationCallback;
+        subscriptionTimeout = () -> {
+            if (trackingGeneration == sessionGeneration && fusedLocationCallback == subscription
+                    && !locationSubscriptionReady) {
+                stopSharedLocationUpdates("Location subscription did not start within 15 seconds.");
             }
-
-            LocationRequest locationRequest =
-                new LocationRequest.Builder(
-                    Priority.PRIORITY_HIGH_ACCURACY,
-                    1000L
-                )
-                .setMinUpdateIntervalMillis(500L)
-                .setMinUpdateDistanceMeters(1.0f)
-                .build();
-
-            fusedLocationClient.requestLocationUpdates(
-                locationRequest,
-                fusedLocationCallback,
-                Looper.getMainLooper()
-            );
-
-            isUserTrackingEnabled = true;
-            startCameraFollow();
-            fireTrackingStatusChanged();
-
-            callback.success();
-        } catch (SecurityException e) {
-            stopUserTracking();
-            callback.error("Location permission is not granted.");
+        };
+        locationWaitHandler.postDelayed(subscriptionTimeout, LOCATION_WAIT_MS);
+        try {
+            LocationRequest request = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
+                .setMinUpdateIntervalMillis(500L).build();
+            fusedLocationClient.requestLocationUpdates(request, subscription, Looper.getMainLooper())
+                .addOnSuccessListener(ignored -> {
+                    if (trackingGeneration != sessionGeneration || fusedLocationCallback != subscription) {
+                        // Registration may finish after teardown. Remove that exact listener.
+                        LocationServices.getFusedLocationProviderClient(cordova.getActivity())
+                            .removeLocationUpdates(subscription);
+                        return;
+                    }
+                    locationSubscriptionReady = true;
+                    locationWaitHandler.removeCallbacks(subscriptionTimeout);
+                    subscriptionTimeout = null;
+                    List<LocationStartCallback> waiting = new ArrayList<>(locationStartCallbacks);
+                    locationStartCallbacks.clear();
+                    for (LocationStartCallback pending : waiting) pending.ready();
+                })
+                .addOnFailureListener(error -> {
+                    if (trackingGeneration != sessionGeneration || fusedLocationCallback != subscription) return;
+                    stopSharedLocationUpdates("Location subscription failed: " + error.getClass().getSimpleName()
+                        + (error.getMessage() == null ? "" : ": " + error.getMessage()));
+                });
+        } catch (SecurityException error) {
+            stopSharedLocationUpdates("Location permission is not granted.");
         }
     }
+
+    private void stopSharedLocationUpdates(String reason) {
+        LocationCallback old = fusedLocationCallback;
+        fusedLocationCallback = null;
+        locationSubscriptionReady = false;
+        if (subscriptionTimeout != null) locationWaitHandler.removeCallbacks(subscriptionTimeout);
+        subscriptionTimeout = null;
+        if (old != null && fusedLocationClient != null) {
+            try { fusedLocationClient.removeLocationUpdates(old); }
+            catch (SecurityException ignored) { }
+        }
+        latestRecenterLocation = null;
+        List<LocationStartCallback> waiting = new ArrayList<>(locationStartCallbacks);
+        locationStartCallbacks.clear();
+        for (LocationStartCallback pending : waiting) pending.failed(reason);
+        if (moveToCurrentLocationCallback != null) {
+            CallbackContext pending = moveToCurrentLocationCallback;
+            cancelMoveToCurrentLocation();
+            pending.error(reason);
+        }
+    }
+
     private void stopUserTracking() {
         stopCameraFollow();
-        if (fusedLocationClient != null
-                && fusedLocationCallback != null) {
-            try {
-                fusedLocationClient.removeLocationUpdates(
-                    fusedLocationCallback
-                );
-            } catch (SecurityException ignored) {
-            }
-        }
-
-        fusedLocationCallback = null;
+        trackingRequestGeneration++;
+        // Stopping camera/path tracking must not stop the visible puck's stream.
         lastUserTrackingUpdateMs = 0L;
         lastAcceptedTrackingLocation = null;
         smoothedTrackingPoint = null;
@@ -1765,119 +1757,131 @@ private void startUserTracking(CallbackContext callback) {
         });
     }
 
+    private String recenterLocationProblem(Location location) {
+        if (location == null) return "No location fix was returned.";
+        if (!isValidLatitude(location.getLatitude()) || !isValidLongitude(location.getLongitude())) {
+            return "Location coordinates are invalid.";
+        }
+        if (!location.hasAccuracy()) return "Location accuracy is unavailable.";
+        if (!Float.isFinite(location.getAccuracy()) || location.getAccuracy() < 0) {
+            return "Location accuracy is invalid.";
+        }
+        long fixNanos = location.getElapsedRealtimeNanos();
+        if (fixNanos <= 0) return "Location timestamp is unavailable.";
+        long ageNanos = android.os.SystemClock.elapsedRealtimeNanos() - fixNanos;
+        if (ageNanos < 0) return "Location timestamp is in the future.";
+        if (ageNanos > MAX_LOCATION_AGE_MS * 1_000_000L) {
+            return "Location fix is older than " + (MAX_LOCATION_AGE_MS / 1000L) + " seconds.";
+        }
+        return null;
+    }
+
+    private boolean isUsableRecenterLocation(Location location) {
+        return recenterLocationProblem(location) == null;
+    }
+
+    private void updateInitialUserLocation(Location location) {
+        if (isUserLocationEnabled && smoothedTrackingPoint == null
+                && smoothedLocationProvider != null && isUsableRecenterLocation(location)) {
+            // Preserve the reported accuracy; an approximate position is not a precise fix.
+            currentLocationAccuracy = location.getAccuracy();
+            currentLocationAccuracyLabel = getAccuracyLabel(currentLocationAccuracy);
+            smoothedLocationProvider.updateLocation(location);
+        }
+    }
+
     private void startMoveToCurrentLocation(CallbackContext callback) {
         if (moveToCurrentLocationCallback != null) moveToCurrentLocationCallback.error("Location request superseded.");
         unregisterMoveToCurrentLocation();
-        final long locationGeneration = sessionGeneration;
-
-        LocationManager manager = (LocationManager) cordova
-            .getActivity()
-            .getSystemService(Context.LOCATION_SERVICE);
-        if (manager == null) {
-            cancelMoveToCurrentLocation();
-            callback.error("Device location manager is not available.");
-            return;
-        }
-
-        boolean gpsEnabled = manager.isProviderEnabled(LocationManager.GPS_PROVIDER);
-        boolean networkEnabled = manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
-
-        if (!gpsEnabled && !networkEnabled) {
-            cancelMoveToCurrentLocation();
-            callback.error("Location provider is not enabled.");
-            return;
-        }
-
+        String problem = locationServiceProblem();
+        if (problem != null) { cancelMoveToCurrentLocation(); callback.error(problem); return; }
         moveToCurrentLocationCallback = callback;
+        final long generation = sessionGeneration;
+        recenterTimeout = () -> {
+            if (generation != sessionGeneration || moveToCurrentLocationCallback != callback) return;
+            String currentProblem = locationServiceProblem();
+            cancelMoveToCurrentLocation();
+            callback.error(currentProblem != null ? currentProblem
+                : "No valid location update received within 15 seconds.");
+        };
+        locationWaitHandler.postDelayed(recenterTimeout, LOCATION_WAIT_MS);
+        ensureLocationUpdates(new LocationStartCallback() {
+            public void ready() {
+                if (generation != sessionGeneration || moveToCurrentLocationCallback != callback) return;
+                if (isUsableRecenterLocation(latestRecenterLocation)) {
+                    completeMoveToCurrentLocation(new Location(latestRecenterLocation));
+                }
+                // Otherwise the shared stream completes this request on its next valid fix.
+            }
+            public void failed(String message) {
+                if (generation != sessionGeneration || moveToCurrentLocationCallback != callback) return;
+                cancelMoveToCurrentLocation();
+                callback.error(message);
+            }
+        });
+    }
 
-        if (fusedLocationClient == null) {
-            fusedLocationClient = LocationServices
-                .getFusedLocationProviderClient(cordova.getActivity());
+    private void completeMoveToCurrentLocation(Location location) {
+        updateInitialUserLocation(location);
+        currentLocationAccuracy =
+            location.hasAccuracy() ? location.getAccuracy() : -1f;
+        currentLocationAccuracyLabel =
+            getAccuracyLabel(currentLocationAccuracy);
+
+        final double latitude = location.getLatitude();
+        final double longitude = location.getLongitude();
+
+        if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
+            if (moveToCurrentLocationCallback != null) {
+                moveToCurrentLocationCallback.error(
+                    "Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180]."
+                );
+            }
+            cancelMoveToCurrentLocation();
+            return;
         }
 
-        CurrentLocationRequest request = new CurrentLocationRequest.Builder()
-            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
-            .setDurationMillis(5000L)
-            .setMaxUpdateAgeMillis(0L)
-            .build();
+        if (moveToCurrentLocationCallback == null) {
+            return;
+        }
 
-        moveToCurrentLocationToken = new CancellationTokenSource();
+        final CallbackContext pendingCallback = moveToCurrentLocationCallback;
+        final boolean applyZoom = moveToCurrentLocationZoomSet;
+        final double zoom = moveToCurrentLocationZoom;
 
-        fusedLocationClient
-            .getCurrentLocation(request, moveToCurrentLocationToken.getToken())
-            .addOnSuccessListener(location -> {
-                if (locationGeneration != sessionGeneration || moveToCurrentLocationCallback != callback) return;
-                if (location == null) {
-                    cancelMoveToCurrentLocation();
-                    callback.error("Unable to get current location.");
-                    return;
+        moveToCurrentLocationCallback = null;
+        cancelMoveToCurrentLocation();
+
+        runForSession(() -> {
+            if (mapView != null) {
+                CameraOptions.Builder cameraBuilder = new CameraOptions.Builder()
+                    .center(Point.fromLngLat(longitude, latitude));
+                if (applyZoom) {
+                    cameraBuilder.zoom(zoom);
                 }
+                CameraOptions cameraOptions = cameraBuilder.build();
+                runRecenterAnimation(
+                    cameraOptions,
+                    new MapAnimationOptions.Builder()
+                        .duration(RECENTER_ANIMATION_DURATION_MS)
+                        .build()
+                );
+                // Seed the follow target so the first tick after the
+                // flight lands does not issue a redundant camera move.
+                lastCameraFollowTarget = cameraOptions.getCenter();
+            }
 
-                currentLocationAccuracy =
-                    location.hasAccuracy() ? location.getAccuracy() : -1f;
-                currentLocationAccuracyLabel =
-                    getAccuracyLabel(currentLocationAccuracy);
-
-                final double latitude = location.getLatitude();
-                final double longitude = location.getLongitude();
-
-                if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
-                    if (moveToCurrentLocationCallback != null) {
-                        moveToCurrentLocationCallback.error(
-                            "Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180]."
-                        );
-                    }
-                    cancelMoveToCurrentLocation();
-                    return;
-                }
-
-                if (moveToCurrentLocationCallback == null) {
-                    return;
-                }
-
-                final CallbackContext pendingCallback = moveToCurrentLocationCallback;
-                final boolean applyZoom = moveToCurrentLocationZoomSet;
-                final double zoom = moveToCurrentLocationZoom;
-
-                moveToCurrentLocationCallback = null;
-                cancelMoveToCurrentLocation();
-
-                runForSession(() -> {
-                    if (mapView != null) {
-                        CameraOptions.Builder cameraBuilder = new CameraOptions.Builder()
-                            .center(Point.fromLngLat(longitude, latitude));
-                        if (applyZoom) {
-                            cameraBuilder.zoom(zoom);
-                        }
-                        CameraOptions cameraOptions = cameraBuilder.build();
-                        runRecenterAnimation(
-                            cameraOptions,
-                            new MapAnimationOptions.Builder()
-                                .duration(RECENTER_ANIMATION_DURATION_MS)
-                                .build()
-                        );
-                        // Seed the follow target so the first tick after the
-                        // flight lands does not issue a redundant camera move.
-                        lastCameraFollowTarget = cameraOptions.getCenter();
-                    }
-
-                    JSONObject result = new JSONObject();
-                    try {
-                        result.put("latitude", latitude);
-                        result.put("longitude", longitude);
-                        result.put("accuracy", currentLocationAccuracy);
-                        result.put("accuracyLabel", currentLocationAccuracyLabel);
-                        pendingCallback.success(result);
-                    } catch (JSONException e) {
-                        pendingCallback.error(e.getMessage());
-                    }
-                });
-            })
-            .addOnFailureListener(e -> {
-                if (locationGeneration != sessionGeneration || moveToCurrentLocationCallback != callback) return;
-                cancelMoveToCurrentLocation();
-                callback.error("Unable to get current location.");
-            });
+            JSONObject result = new JSONObject();
+            try {
+                result.put("latitude", latitude);
+                result.put("longitude", longitude);
+                result.put("accuracy", currentLocationAccuracy);
+                result.put("accuracyLabel", currentLocationAccuracyLabel);
+                pendingCallback.success(result);
+            } catch (JSONException e) {
+                pendingCallback.error(e.getMessage());
+            }
+        });
     }
 
     private String getAccuracyLabel(float accuracy) {
@@ -1897,10 +1901,8 @@ private void startUserTracking(CallbackContext callback) {
     }
 
     private void unregisterMoveToCurrentLocation() {
-        if (moveToCurrentLocationToken != null) {
-            moveToCurrentLocationToken.cancel();
-            moveToCurrentLocationToken = null;
-        }
+        if (recenterTimeout != null) locationWaitHandler.removeCallbacks(recenterTimeout);
+        recenterTimeout = null;
         moveToCurrentLocationCallback = null;
     }
 
@@ -2225,13 +2227,13 @@ private void startUserTracking(CallbackContext callback) {
                 return;
             }
 
-            mapView.getMapboxMap().loadStyle(styleUrl);
+
             mapView.getMapboxMap().setCamera(new CameraOptions.Builder()
                 .center(Point.fromLngLat(longitude, latitude))
                 .zoom(zoom)
                 .build());
 
-            callback.success();
+            loadReadyStyle(styleUrl, null, callback);
         });
     }
 
@@ -2550,7 +2552,9 @@ private void startUserTracking(CallbackContext callback) {
             return;
         }
 
+        final long generation = sessionGeneration;
         mapClickListener = point -> {
+            if (generation != sessionGeneration || mapView == null) return false;
             return handleMapPointSelected(point);
         };
 
@@ -2635,7 +2639,9 @@ private void startUserTracking(CallbackContext callback) {
         }
 
         pointAnnotationManager = PointAnnotationManagerKt.createPointAnnotationManager(annotationPlugin, null);
-        pointAnnotationManager.addClickListener(annotation -> {
+        final long generation = sessionGeneration;
+        markerTapListener = annotation -> {
+            if (generation != sessionGeneration || mapView == null) return true;
             String markerId = markerRecordIds.get(annotation.getId());
             if (markerId == null || markerClickCallback == null) {
                 return true;
@@ -2648,6 +2654,7 @@ private void startUserTracking(CallbackContext callback) {
                 JSONObject payload = new JSONObject();
                 payload.put("id", markerId);
                 payload.put("type", type);
+                payload.put("isOnline", style == null || style.isOnline);
 
                 long now = System.currentTimeMillis();
                 if (now - lastKeepCallbackMarkerMs >= CALLBACK_RATE_LIMIT_MS) {
@@ -2659,7 +2666,8 @@ private void startUserTracking(CallbackContext callback) {
             }
 
             return true;
-        });
+        };
+        pointAnnotationManager.addClickListener(markerTapListener);
 
         return true;
     }
@@ -2720,6 +2728,7 @@ private void startUserTracking(CallbackContext callback) {
             JSONObject payload = new JSONObject();
             payload.put("id", nearestId);
             payload.put("type", type);
+            payload.put("isOnline", style == null || style.isOnline);
             long now = System.currentTimeMillis();
             if (now - lastKeepCallbackMarkerMs >= CALLBACK_RATE_LIMIT_MS) {
                 lastKeepCallbackMarkerMs = now;
@@ -2745,7 +2754,8 @@ private void startUserTracking(CallbackContext callback) {
                 options.optBoolean("isFind", false),
                 options.optString("pinColor", null),
                 options.optString("imageUrl", ""),
-                "photo".equals(options.optString("pinStyle", ""))
+                "photo".equals(options.optString("pinStyle", "")),
+                options.optBoolean("isOnline", true)
             );
 
             if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
@@ -2799,7 +2809,8 @@ private void startUserTracking(CallbackContext callback) {
                     marker.optBoolean("IsFind", false),
                     marker.optString("PinColor", null),
                     marker.optString("ImageUrl", ""),
-                    "photo".equals(marker.optString("PinStyle", ""))
+                    "photo".equals(marker.optString("PinStyle", "")),
+                    marker.optBoolean("IsOnline", true)
                 );
                 if (styles[i] == null) { callback.error(MARKER_IMAGE_NOT_ALLOWED); return; }
                 ids.add(id);
@@ -2868,7 +2879,7 @@ private boolean addMarkerInternal(
             : markerIcons.pin(style.color, style.isFind, style.imageUrl,
                 cordova.getActivity().getResources().getDisplayMetrics().density))
         .withIconAnchor(IconAnchor.BOTTOM)
-        .withIconSize(0.5);
+        .withIconSize(style.photo ? 0.27 : 0.5);
 
     PointAnnotation annotation =
         pointAnnotationManager.create(markerOptions);
@@ -2894,17 +2905,21 @@ private boolean addMarkerInternal(
     }
 
     private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl, boolean photo) {
+        return markerStyle(isFind, pinColor, rawImageUrl, photo, true);
+    }
+
+    private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl, boolean photo, boolean isOnline) {
         int defaultColor = isFind ? MarkerIcons.FIND_PIN_COLOR
             : photo ? MarkerIcons.PHOTO_PIN_COLOR : MarkerIcons.DEFAULT_PIN_COLOR;
         int color = MarkerIcons.parseColor(pinColor, defaultColor);
         String imageUrl = rawImageUrl == null ? "" : rawImageUrl.trim();
         if (imageUrl.isEmpty()) {
-            return new MarkerStyle(color, isFind, null, photo);
+            return new MarkerStyle(color, isFind, null, photo, isOnline);
         }
         if (!MapboxSecurity.markerImageAllowed(imageUrl, allowedMarkerImageHosts())) {
             return null;
         }
-        return new MarkerStyle(color, isFind, imageUrl, photo);
+        return new MarkerStyle(color, isFind, imageUrl, photo, isOnline);
     }
 
     private String allowedMarkerImageHosts() {
@@ -2960,38 +2975,62 @@ private boolean addMarkerInternal(
         final boolean isFind;
         final String imageUrl;
         final boolean photo;
+        /** False for a marker created on the device that has not been synced to the backend yet. */
+        final boolean isOnline;
 
         MarkerStyle(int color, boolean isFind, String imageUrl) {
             this(color, isFind, imageUrl, false);
         }
 
         MarkerStyle(int color, boolean isFind, String imageUrl, boolean photo) {
+            this(color, isFind, imageUrl, photo, true);
+        }
+
+        MarkerStyle(int color, boolean isFind, String imageUrl, boolean photo, boolean isOnline) {
             this.color = color;
             this.isFind = isFind;
             this.imageUrl = imageUrl;
             this.photo = photo;
+            this.isOnline = isOnline;
         }
     }
 
     private void removeMarker(JSONObject options, CallbackContext callback) {
-    runForSession(() -> {
-        removeMarkerInternal(options.optString("id", ""));
-        callback.success();
-    });
-}
+        Object value = options.opt("id");
+        if (!(value instanceof String) || ((String) value).isEmpty()) {
+            callback.error("markerId must be a non-empty string.");
+            return;
+        }
+        String id = (String) value;
+        runForSession(() -> {
+            try {
+                removeMarkerInternal(id);
+                callback.success();
+            } catch (Exception e) {
+                callback.error("Failed to remove marker: " + e.getMessage());
+            }
+        });
+    }
 
     private void removeMarkerInternal(String id) {
-        if (pointAnnotationManager == null || id == null || id.isEmpty()) {
+        if (id == null || id.isEmpty()) {
             return;
         }
 
-        PointAnnotation annotation = markerAnnotationsByRecordId.remove(id);
+        PointAnnotation annotation = markerAnnotationsByRecordId.get(id);
         if (annotation != null) {
-            pointAnnotationManager.delete(annotation);
+            if (pointAnnotationManager != null) {
+                pointAnnotationManager.delete(annotation);
+            }
             markerRecordIds.remove(annotation.getId());
         }
+        markerAnnotationsByRecordId.remove(id);
         markerPointsByRecordId.remove(id);
         markerStylesByRecordId.remove(id);
+        // Keep in-flight downloads for other markers, but forget this subscriber.
+        for (List<String> waiting : pendingMarkerImages.values()) {
+            waiting.removeIf(id::equals);
+        }
     }
 
     private void clearMarkers(CallbackContext callback) {
@@ -3224,6 +3263,24 @@ private boolean addMarkerInternal(
         return Double.NaN;
     }
 
+    /** Path line width in pixels: numeric or numeric string, > 0, capped; otherwise the default. */
+    private double readLineWidth(JSONObject options) {
+        double width = readFiniteDouble(options, "lineWidth");
+        if (Double.isNaN(width) || width <= 0) {
+            return DEFAULT_PATH_WIDTH;
+        }
+        return Math.min(width, MAX_PATH_WIDTH);
+    }
+
+    /** Path line opacity clamped to 0..1; missing or invalid falls back to fully opaque. */
+    private double readLineOpacity(JSONObject options) {
+        double opacity = readFiniteDouble(options, "lineOpacity");
+        if (Double.isNaN(opacity)) {
+            return 1.0;
+        }
+        return Math.max(0.0, Math.min(1.0, opacity));
+    }
+
     private void applyBoundaryVisibility() {
         if (!boundaryVisible) {
             clearBoundaryAnnotations();
@@ -3326,9 +3383,9 @@ private boolean addMarkerInternal(
             pathSegments.clear();
             currentSegment = new ArrayList<>();
 
-            pathLineColor = options.optString("lineColor", "#FF0000");
-            pathLineWidth = (float) options.optDouble("lineWidth", 3.0);
-            pathLineOpacity = (float) options.optDouble("lineOpacity", 1.0);
+            pathLineColor = MarkerIcons.parseColor(options.optString("lineColor", null), DEFAULT_PATH_COLOR);
+            pathLineWidth = (float) readLineWidth(options);
+            pathLineOpacity = (float) readLineOpacity(options);
 
             String trackCamera = options.optString("trackCamera", "true");
             if ("true".equals(trackCamera)) {
@@ -3495,9 +3552,9 @@ private boolean addMarkerInternal(
                 return;
             }
 
-            String lineColor = options.optString("lineColor", "#FF0000");
-            double lineWidth = options.optDouble("lineWidth", 3.0);
-            double lineOpacity = options.optDouble("lineOpacity", 1.0);
+            int lineColor = MarkerIcons.parseColor(options.optString("lineColor", null), DEFAULT_PATH_COLOR);
+            double lineWidth = readLineWidth(options);
+            double lineOpacity = readLineOpacity(options);
 
             pathLineColor = lineColor;
             pathLineWidth = (float) lineWidth;
@@ -3793,22 +3850,69 @@ private boolean addMarkerInternal(
                 return;
             }
 
-            final long styleGeneration = sessionGeneration;
-            mapView.getMapboxMap().loadStyle(
-                styleUrl,
-                style -> {
-                    runForGeneration(styleGeneration, () -> {
-                        JSONObject result = new JSONObject();
-                        try {
-                            result.put("status", "styleChanged");
-                            callback.success(result);
-                        } catch (JSONException ignored) {
-                            callback.success();
-                        }
-                    });
-                }
-            );
+            loadReadyStyle(styleUrl, "styleChanged", callback);
         });
+    }
+
+    // All style replacements use this gate. Never resolve readiness on a timer.
+    private final Handler styleHandler = new Handler(Looper.getMainLooper());
+    private StyleRequest pendingStyle;
+
+    private static final class StyleRequest {
+        final MapView view;
+        final CallbackContext callback;
+        final String status;
+        Cancelable errors;
+        Runnable timeout;
+        StyleRequest(MapView view, CallbackContext callback, String status) {
+            this.view = view; this.callback = callback; this.status = status;
+        }
+    }
+
+    private void cancelPendingStyle() {
+        StyleRequest request = pendingStyle;
+        pendingStyle = null;
+        if (request == null) return;
+        if (request.timeout != null) styleHandler.removeCallbacks(request.timeout);
+        if (request.errors != null) cleanupStep(() -> request.errors.cancel());
+        // closeInternal settles the registered Cordova callback.
+    }
+
+    private void finishStyle(StyleRequest request, String error) {
+        if (pendingStyle != request || mapView != request.view) return;
+        cancelPendingStyle();
+        if (request.callback.isFinished()) return;
+        if (error != null) { request.callback.error(error); return; }
+        if (request.status == null) { request.callback.success(); return; }
+        try {
+            JSONObject result = new JSONObject();
+            result.put("status", request.status);
+            request.callback.success(result);
+        } catch (JSONException e) {
+            request.callback.error("Failed to create style completion result.");
+        }
+    }
+
+    private void loadReadyStyle(String uri, String status, CallbackContext callback) {
+        if (pendingStyle != null) {
+            callback.error("A style load is already in progress. Await its completion first.");
+            return;
+        }
+        final StyleRequest request = new StyleRequest(mapView, callback, status);
+        pendingStyle = request;
+        request.timeout = () -> finishStyle(request, "Style loading timed out after 30 seconds.");
+        styleHandler.postDelayed(request.timeout, 30000L);
+        try {
+            request.errors = request.view.getMapboxMap().subscribeMapLoadingError(event -> {
+                if (event.getType() == com.mapbox.maps.MapLoadingErrorType.STYLE) {
+                    styleHandler.post(() -> finishStyle(request, "Map style failed to load."));
+                }
+            });
+            request.view.getMapboxMap().loadStyle(uri,
+                style -> finishStyle(request, null));
+        } catch (RuntimeException error) {
+            finishStyle(request, "Map style failed to load.");
+        }
     }
 
     private void cancelCurrentDownload() {
@@ -3825,8 +3929,16 @@ private boolean addMarkerInternal(
         activeOfflineTileStore = null;
     }
 
+    private void cleanupStep(Runnable work) {
+        try { work.run(); }
+        catch (RuntimeException error) {
+            Log.w("MapboxPlugin", "Map cleanup step failed; continuing teardown.", error);
+        }
+    }
+
     protected void closeInternal() {
         sessionGeneration++;
+        cancelPendingStyle();
         if (closeCallback != null) { closeCallback.success(); closeCallback = null; }
         for (CallbackContext pending : sessionCallbacks) {
             if (!pending.isFinished()) {
@@ -3838,47 +3950,56 @@ private boolean addMarkerInternal(
             }
         }
         sessionCallbacks.clear();
-        cancelPendingLocationActions();
+        cleanupStep(this::cancelPendingLocationActions);
         compassCallback = null;
         if (compassCameraSubscription != null) {
-            compassCameraSubscription.cancel();
+            cleanupStep(() -> compassCameraSubscription.cancel());
             compassCameraSubscription = null;
         }
-        cancelCurrentDownload();
-        markerIcons.cancelAll();
-        if (bootstrapLocationToken != null) { bootstrapLocationToken.cancel(); bootstrapLocationToken = null; }
+        cleanupStep(this::cancelCurrentDownload);
+        cleanupStep(markerIcons::cancelAll);
+        cleanupStep(() -> stopSharedLocationUpdates("Map closed; operation cancelled."));
         recenterAnimationGeneration++;
         isCameraFollowingUser = true;
         if (mapView != null) {
             MotionEvent cancel = MotionEvent.obtain(android.os.SystemClock.uptimeMillis(),
                 android.os.SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, 0, 0, 0);
-            try { mapView.dispatchTouchEvent(cancel); } finally { cancel.recycle(); }
+            try { cleanupStep(() -> mapView.dispatchTouchEvent(cancel)); } finally { cancel.recycle(); }
+            mapView.setEnabled(false);
         }
-        removeTouchRouter();
-        // Clear callbacks before stopping services so cleanup emits no stale events.
-        trackingStatusCallback = null;
-        stopLocationAccuracyMonitoring();
-        locationAccuracyCallback = null;
-        stopHeadingFollowMode();
-        stopUserTracking();
-        cancelMoveToCurrentLocation();
-
-        if (mapView != null) {
-            try {
-                GesturesPlugin gestures = mapView.getPlugin(Plugin.MAPBOX_GESTURES_PLUGIN_ID);
-                if (gestures != null) {
-                    if (mapClickListener != null) gestures.removeOnMapClickListener(mapClickListener);
-                    if (moveGestureListener != null) gestures.removeOnMoveListener(moveGestureListener);
-                    if (scaleGestureListener != null) gestures.removeOnScaleListener(scaleGestureListener);
-                }
-                try { mapView.onStop(); } finally { mapView.onDestroy(); }
-            } catch (Throwable ignored) {
-                // MapView may already be partially torn down after a failed initialization.
-            }
-        }
-
+        cleanupStep(this::removeTouchRouter);
+        // Remove the visible native map before SDK/service cleanup can fail.
         if (rootView != null && rootView.getParent() instanceof ViewGroup) {
             ((ViewGroup) rootView.getParent()).removeView(rootView);
+        }
+        // Clear callbacks before stopping services so cleanup emits no stale events.
+        trackingStatusCallback = null;
+        cleanupStep(this::stopLocationAccuracyMonitoring);
+        locationAccuracyCallback = null;
+        cleanupStep(this::stopHeadingFollowMode);
+        cleanupStep(this::stopUserTracking);
+        cleanupStep(this::cancelMoveToCurrentLocation);
+
+        if (pointAnnotationManager != null && markerTapListener != null) {
+            cleanupStep(() -> pointAnnotationManager.removeClickListener(markerTapListener));
+        }
+        markerTapListener = null;
+
+        if (mapView != null) {
+            cleanupStep(() -> {
+                GesturesPlugin gestures = mapView.getPlugin(Plugin.MAPBOX_GESTURES_PLUGIN_ID);
+                if (gestures != null) {
+                    if (mapClickListener != null) cleanupStep(() -> gestures.removeOnMapClickListener(mapClickListener));
+                    if (moveGestureListener != null) cleanupStep(() -> gestures.removeOnMoveListener(moveGestureListener));
+                    if (scaleGestureListener != null) cleanupStep(() -> gestures.removeOnScaleListener(scaleGestureListener));
+                }
+            });
+            cleanupStep(() -> {
+                CameraAnimationsPlugin camera = mapView.getPlugin(Plugin.MAPBOX_CAMERA_PLUGIN_ID);
+                if (camera != null) camera.cancelAllAnimators(Collections.emptyList());
+            });
+            cleanupStep(() -> mapView.onStop());
+            cleanupStep(() -> mapView.onDestroy());
         }
 
         mapView = null;
@@ -3896,7 +4017,7 @@ private boolean addMarkerInternal(
         isPathTrackingPaused = false;
         pathTrackingStartTimeMs = 0L;
         isPathVisible = true;
-        pathLineColor = "#FF0000";
+        pathLineColor = DEFAULT_PATH_COLOR;
         pathLineWidth = 3.0f;
         pathLineOpacity = 1.0f;
         pathSegments.clear();
@@ -3912,7 +4033,7 @@ private boolean addMarkerInternal(
         trackingStatusCallback = null;
         locationAccuracyCallback = null;
         lastLocationAccuracyUpdateMs = 0L;
-        cancelCurrentDownload();
+        cleanupStep(this::cancelCurrentDownload);
         isOfflineDownloading = false;
         waypointSelectionEnabled = false;
         autoAddWaypointMarker = false;
@@ -4201,3 +4322,7 @@ private boolean addMarkerInternal(
         super.onReset();
     }
 }
+
+
+
+

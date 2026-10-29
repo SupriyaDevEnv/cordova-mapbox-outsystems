@@ -1,14 +1,65 @@
 # OutSystems Mapbox Native Plugin
 
-## Close cleanup build: 1.0.4-close-cleanup.1
 
-This cleanup release is based on commit `b7ed11a314f4c4085faba61667d8861766f7b882`.
+## Style readiness and sequential OutSystems actions
+
+`initialize()`, `setMapStyle()` and `showOfflineRegion()` resolve only when the requested native style has loaded on Android and iOS. A fatal style-load error or a 30-second timeout rejects the operation. The timeout never signals readiness. Close cancels the pending action; late callbacks cannot complete a newer map session. Concurrent style requests are rejected: await the current request before replacing the style.
+
+In an OutSystems JavaScript element, enable asynchronous execution and call `$resolve()` only after the plugin Promise succeeds. Call `$reject(error)` on failure so the flow does not proceed to layer operations. Keep initialization, marker registration and layer changes as separate sequential actions; do not launch layer toggles from a parallel aggregate/event while initialization is pending. Your existing initialization snippet already awaits `plugin.initialize(options)` and can remain unchanged with this native update.
+
+After initialization resolves, apply layers and saved visibility settings. After each subsequent `setMapStyle()` resolves, recreate any custom sources/layers and reapply their visibility. A loaded style does not imply a GPS fix is available; location acquisition remains a separate asynchronous operation.
+
+Native changes require rebuilding and installing the mobile application. Updating/publishing JavaScript alone does not replace the installed Android/iOS plugin binaries. Verify slow/failed style loads, immediate layer toggles, close during loading, reopen and later style changes on both devices before UAT acceptance.
+
+## Close cleanup build: 1.0.4-close-cleanup.2
+
+This cleanup release extends the existing teardown on `913103a`, retaining the behind-WebView transparency fix.
 
 `MapboxPlugin.close()` stops the owned DOM observer/animation/retry bridge, releases native Cordova callback registrations, cancels pending operations and downloads, stops GPS/tracking/heading/compass work, and removes native touch routing. Android uses a removable routing container without replacing the WebView's touch listener. iOS removes only the plugin-owned overlay recognizers and gesture targets. Previous WebView appearance is restored when still owned by this plugin.
 
 Await `MapboxPlugin.close()` before initializing the next map. Pending Promise operations reject with a cancellation error when the map closes; handle these rejections in your screen actions. Re-register event callbacks after a successful new `initialize()`. Repeated close calls are supported. Native Close buttons also notify JavaScript to stop its bridge. Completed offline regions remain stored; close cancels active transfers and clears the in-memory map session, not downloaded offline data. Retrieve a recorded path before close if it must be saved.
 
 The package has passed JavaScript regression checks and Java/Swift syntax parsing. It has **not** been compiled with the consuming OutSystems application's native dependencies or tested on devices. Perform Android/iOS builds and the supplied device checks before production deployment.
+
+### OutSystems screen OnDestroy
+
+In the map screen's **OnDestroy** client action, add a JavaScript node with this exact code (no input/output parameters needed):
+
+```javascript
+var plugin = window.MapboxPlugin;
+if (plugin && typeof plugin.close === "function") {
+    window.__mapboxScreenClose = plugin.close().catch(function (error) {
+        console.error("Mapbox screen cleanup failed", error);
+        throw error;
+    });
+    // Handle the rejection even when navigation does not wait for OnDestroy.
+    window.__mapboxScreenClose.catch(function () {});
+}
+```
+
+`close()` immediately stops JavaScript listeners/observers and invalidates pending callbacks. Its Promise resolves after the native map and native touch routing are removed. OutSystems navigation need not wait for a Promise started by a JavaScript node. Before initializing a map on the next screen, wait for that close:
+
+```javascript
+Promise.resolve(window.__mapboxScreenClose).then(function () {
+    return window.MapboxPlugin.initialize(/* your existing options */);
+}).catch(function (error) {
+    console.error("Mapbox initialization failed", error);
+});
+```
+
+Keep the existing initialization options in that call. Ensure OnDestroy of the old screen has run before starting the next map; this plugin owns one map at a time. Cancel any application-owned timers or pending screen actions that could call `initialize()` again after exit. Register marker, waypoint, compass, and tracking callbacks only after the new initialization succeeds.
+
+The close path explicitly unregisters Android marker clicks and map/gesture listeners, cancels camera animation, and destroys the map. iOS disables/detaches the map, removes its annotation managers and tap handlers, cancels subscriptions, and removes its touch overlay. Session guards discard delayed taps even after a new map opens. Android SDK cleanup steps are isolated so a runtime exception does not skip later cleanup or retain the visible map.
+
+Legacy scripts using `__mapboxTouchBridge`, `__mapboxTouchHandlers`, `__mapboxTouchObserver`, and `__mapboxResizeObserver` are cleaned even if `stop()` is absent or throws: known frame/retry handles, observer references, and registered DOM handlers are removed. Unrelated DOM listeners are preserved. Remove the obsolete custom bridge from the screen; anonymous listeners, timers, or closure-only state not exposed through those globals cannot be discovered or cancelled by the plugin.
+
+**Location and data caveats:** close stops this plugin's map-owned location, accuracy, heading, and path tracking. It does not stop another plugin's independent background-location service or clear its storage. This plugin does not implement a separate persistent background-location service. Save the path with `stopPathTracking()` before leaving if needed. Active offline downloads are cancelled; completed offline regions remain stored. Repeated close calls are safe. Screen exit does not mean application pause: do not use close for temporary backgrounding if the map session should resume.
+
+**Deploy and verify:** point the existing OutSystems plugin dependency at the updated commit/ref and generate/install new Android and iOS native builds; publishing screen JavaScript alone does not update native code. SDK pins remain Android/iOS Mapbox 11.30.0. CI checks native helpers and Swift syntax, and builds clean Cordova Android/iOS apps against the full SDK. On both physical platforms test: exit during initialization, permission prompts, marker downloads and pinch/pan; tap where the map used to be; reopen repeatedly with the same marker IDs; confirm no old events; confirm independent background tracking continues; and verify the rest of the WebView remains interactive.
+
+The smoke-build baseline uses Cordova CLI 12.0.0, cordova-android 14.0.1 (Java 17 / Android SDK 35), and cordova-ios 8.0.0. The iOS job uses an Xcode 26 toolchain: Mapbox 11.30.0 binary dependencies failed with the Xcode 16.4 compiler. Confirm your OutSystems MABS build stack supports these native dependencies. These clean-app builds do not certify every MABS version or other plugin combination.
+
+Set the consuming iOS application's minimum deployment target explicitly to **14.0 or later**. A plain Cordova app needs `<preference name="deployment-target" value="14.0" />` in its app `config.xml`; the plugin's `default="14.0"` declaration alone did not raise the generated CocoaPods target in the smoke app. This setting is required before installing/resolving the Mapbox pod.
 
 ## Security behavior in 1.0.3
 
@@ -344,6 +395,8 @@ window.MapboxPlugin.clearBoundaries()
 
 ## Path Tracking
 
+Full reference: [docs/path-tracking-api.md](docs/path-tracking-api.md).
+
 Path tracking lets you record the user's GPS movement as a visible polyline on the map. This is useful for hunt tracking, running routes, or any scenario where you need a trail of where the user has been.
 
 ### Start Path Tracking
@@ -549,6 +602,7 @@ Adds one marker. If a marker with the same `id` already exists, it is replaced.
 | `pinColor` | string | No | Red, or blue when `isFind` | `#RRGGBB` or `#RRGGBBAA` (alpha last). Invalid values fall back to the default. |
 | `imageUrl` | string | No | None | Image shown inside the pin. See [Image sources](#marker-image-sources). |
 | `pinStyle` | string | No | Classic pin | `"photo"` for the larger photo pin. See [Marker appearance](#marker-appearance). |
+| `isOnline` | boolean | No | `true` | `true` when the marker is synced with the backend, `false` when it was created on the device and has not been saved yet (so it has no server-assigned ID). The pin looks the same either way; the flag is returned in [`onMarkerClick`](#onmarkerclickcallback-errorcallback) events. |
 
 `latitude` and `longitude` default to `0`, which is a valid coordinate in the Gulf of Guinea. Always pass them.
 
@@ -604,6 +658,7 @@ Adds many markers in one native call. Use this instead of calling `addMarker` in
 | `PinColor` | string | No | Red, or blue when `IsFind` | Same as `pinColor` in `addMarker`. |
 | `ImageUrl` | string | No | None | Same as `imageUrl` in `addMarker`. |
 | `PinStyle` | string | No | Classic pin | Same as `pinStyle` in `addMarker`. |
+| `IsOnline` | boolean | No | `true` | Same as `isOnline` in `addMarker`. `true` if the marker is synced, `false` if it is still offline. |
 
 `options` is optional:
 
@@ -633,7 +688,7 @@ Items with invalid coordinates do not reject the call. They are skipped silently
 #### Example
 
 ```javascript
-// $parameters.Markers: List of { Id, Latitude, Longitude, IsFind, PinColor, ImageUrl }
+// $parameters.Markers: List of { Id, Latitude, Longitude, IsFind, PinColor, ImageUrl, IsOnline }
 window.MapboxPlugin.loadMarkers($parameters.Markers, { replace: true })
   .then($resolve)
   .catch($reject);
@@ -647,11 +702,13 @@ Removes one marker. Resolves with no value, whether or not the marker existed.
 |---|---|---|
 | `id` | string | The marker's ID. |
 
-Pass the ID as a string. iOS ignores numeric IDs here, so `removeMarker(42)` silently does nothing on iOS. Use `removeMarker("42")` instead.
+The ID must be a non-empty string; numeric IDs are rejected on both platforms. See [Remove one marker](#remove-one-marker-android-and-ios) for the optional callbacks and error behavior.
 
 ```javascript
 window.MapboxPlugin.removeMarker(String($parameters.Id)).then($resolve).catch($reject);
 ```
+
+To replace an offline marker with its synced version, remove it by its temporary ID and add it again with the server ID and `isOnline: true`.
 
 ### clearMarkers()
 
@@ -671,6 +728,7 @@ The callback receives:
 |---|---|---|
 | `type` | string | Always `"markerClicked"`. |
 | `id` | string | ID of the tapped marker. |
+| `isOnline` | boolean | The `isOnline` / `IsOnline` value the marker was added with (`true` if it was not set). |
 | `latitude` | number | The marker's latitude. |
 | `longitude` | number | The marker's longitude. |
 
@@ -742,7 +800,6 @@ By default, any HTTPS host is allowed. To allow only specific hosts, set the `MA
 
 - **Pin size.** The pin is drawn 72 Ã— 96 on both platforms, but Android uses physical pixels and iOS uses points. On a typical 3Ã— Android phone the pin appears about one third the size of the iOS pin, so images inside it are smaller too.
 - **Tap area.** Android also reports taps on the map within 150 m of a marker. iOS reports only taps on the pin.
-- **Numeric IDs in `removeMarker`.** Android accepts them; iOS ignores them. Pass strings.
 - **Non-object items in `loadMarkers`.** Android skips `null` items. On iOS, one non-object item makes the whole array read as empty, so with `replace: true` all markers are cleared.
 
 ### Marker changes from earlier versions
@@ -906,3 +963,36 @@ Rebuild the Cordova app using this plugin revision. Keep existing OutSystems ini
 4. Open/close overlays, scroll, and rotate the device. Verify control bounds update. For manual routing, call `setTouchableRects` and verify automatic updates stop until reinitialization.
 
 The JavaScript regression suite exercises both platform configurations and lifecycle races with a simulated DOM/bridge. Native CI checks and device checks are separate; passing the JavaScript suite does not establish end-to-end device behavior.
+
+### Remove one marker (Android and iOS)
+
+`MapboxPlugin.removeMarker(markerId, success?, error?)` removes the marker created
+by `addMarker` or `loadMarkers` with that exact string ID. It returns a Promise and
+also accepts optional success/error callbacks:
+
+```javascript
+await MapboxPlugin.removeMarker('record-123');
+
+// Callback form for Cordova/OutSystems integrations:
+MapboxPlugin.removeMarker('record-123', function () {
+  console.log('Marker removed');
+}, function (error) {
+  console.error(error);
+});
+```
+
+- Success has no payload. Unknown/already removed IDs succeed without changing other markers.
+- Missing, empty, or non-string IDs fail with `markerId must be a non-empty string.`.
+  Numeric record IDs must be converted to strings explicitly.
+- Without an error callback, failures reject the Promise. With callbacks, the returned
+  Promise follows the callback result, just like `promise.then(success, error)`.
+- Removal clears marker metadata and pending image subscriptions, while keeping other
+  markers and the registered marker-click callback active. Closing/reinitializing the
+  map cancels pending operations through the existing cancellation mechanism.
+- The native Cordova action remains `removeMarker` with arguments `[{ id: markerId }]`.
+
+Device verification: add two markers (including an image marker), click both, remove
+one while its image is loading, and confirm only the remaining marker still produces
+clicks. Repeat removal, try an unknown ID and invalid IDs, then re-add the removed ID.
+Run this on Android and iOS; JavaScript bridge tests do not exercise native rendering.
+
