@@ -990,8 +990,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.currentSegment.removeAll()
 
             self.pathLineColor = options["lineColor"] as? String ?? "#FF0000"
-            self.pathLineWidth = options["lineWidth"] as? Double ?? 3.0
-            self.pathLineOpacity = options["lineOpacity"] as? Double ?? 1.0
+            self.pathLineWidth = self.lineWidthOption(options["lineWidth"])
+            self.pathLineOpacity = self.lineOpacityOption(options["lineOpacity"])
 
             if self.boolOption(options["trackCamera"], defaultValue: true) {
                 self.startUserTracking(command)
@@ -1137,8 +1137,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             let lineColorHex = options["lineColor"] as? String ?? "#FF0000"
-            let lineWidth = options["lineWidth"] as? Double ?? 3.0
-            let lineOpacity = options["lineOpacity"] as? Double ?? 1.0
+            let lineWidth = self.lineWidthOption(options["lineWidth"])
+            let lineOpacity = self.lineOpacityOption(options["lineOpacity"])
 
             self.pathLineColor = lineColorHex
             self.pathLineWidth = lineWidth
@@ -2408,6 +2408,20 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             if value.caseInsensitiveCompare("false") == .orderedSame { return false }
         }
         return defaultValue
+    }
+
+    /// Path line width in points: numeric or numeric string, > 0, capped at 30; otherwise 3.
+    private func lineWidthOption(_ value: Any?) -> Double {
+        let width = doubleOption(value, defaultValue: Double.nan)
+        guard width.isFinite, width > 0 else { return 3.0 }
+        return min(width, 30.0)
+    }
+
+    /// Path line opacity clamped to 0...1; missing or invalid falls back to fully opaque.
+    private func lineOpacityOption(_ value: Any?) -> Double {
+        let opacity = doubleOption(value, defaultValue: Double.nan)
+        guard opacity.isFinite else { return 1.0 }
+        return max(0.0, min(1.0, opacity))
     }
 
     private func stringOption(_ value: Any) -> String? {

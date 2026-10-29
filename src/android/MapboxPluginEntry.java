@@ -228,7 +228,10 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private boolean isPathTrackingActive = false;
     private long pathTrackingStartTimeMs = 0L;
     private boolean isPathVisible = true;
-    private String pathLineColor = "#FF0000";
+    private static final int DEFAULT_PATH_COLOR = 0xFFFF0000;
+    private static final double DEFAULT_PATH_WIDTH = 3.0;
+    private static final double MAX_PATH_WIDTH = 30.0;
+    private int pathLineColor = DEFAULT_PATH_COLOR;
     private float pathLineWidth = 3.0f;
     private float pathLineOpacity = 1.0f;
     private boolean isPathTrackingPaused = false;
@@ -3260,6 +3263,24 @@ private boolean addMarkerInternal(
         return Double.NaN;
     }
 
+    /** Path line width in pixels: numeric or numeric string, > 0, capped; otherwise the default. */
+    private double readLineWidth(JSONObject options) {
+        double width = readFiniteDouble(options, "lineWidth");
+        if (Double.isNaN(width) || width <= 0) {
+            return DEFAULT_PATH_WIDTH;
+        }
+        return Math.min(width, MAX_PATH_WIDTH);
+    }
+
+    /** Path line opacity clamped to 0..1; missing or invalid falls back to fully opaque. */
+    private double readLineOpacity(JSONObject options) {
+        double opacity = readFiniteDouble(options, "lineOpacity");
+        if (Double.isNaN(opacity)) {
+            return 1.0;
+        }
+        return Math.max(0.0, Math.min(1.0, opacity));
+    }
+
     private void applyBoundaryVisibility() {
         if (!boundaryVisible) {
             clearBoundaryAnnotations();
@@ -3362,9 +3383,9 @@ private boolean addMarkerInternal(
             pathSegments.clear();
             currentSegment = new ArrayList<>();
 
-            pathLineColor = options.optString("lineColor", "#FF0000");
-            pathLineWidth = (float) options.optDouble("lineWidth", 3.0);
-            pathLineOpacity = (float) options.optDouble("lineOpacity", 1.0);
+            pathLineColor = MarkerIcons.parseColor(options.optString("lineColor", null), DEFAULT_PATH_COLOR);
+            pathLineWidth = (float) readLineWidth(options);
+            pathLineOpacity = (float) readLineOpacity(options);
 
             String trackCamera = options.optString("trackCamera", "true");
             if ("true".equals(trackCamera)) {
@@ -3531,9 +3552,9 @@ private boolean addMarkerInternal(
                 return;
             }
 
-            String lineColor = options.optString("lineColor", "#FF0000");
-            double lineWidth = options.optDouble("lineWidth", 3.0);
-            double lineOpacity = options.optDouble("lineOpacity", 1.0);
+            int lineColor = MarkerIcons.parseColor(options.optString("lineColor", null), DEFAULT_PATH_COLOR);
+            double lineWidth = readLineWidth(options);
+            double lineOpacity = readLineOpacity(options);
 
             pathLineColor = lineColor;
             pathLineWidth = (float) lineWidth;
@@ -3996,7 +4017,7 @@ private boolean addMarkerInternal(
         isPathTrackingPaused = false;
         pathTrackingStartTimeMs = 0L;
         isPathVisible = true;
-        pathLineColor = "#FF0000";
+        pathLineColor = DEFAULT_PATH_COLOR;
         pathLineWidth = 3.0f;
         pathLineOpacity = 1.0f;
         pathSegments.clear();

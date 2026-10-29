@@ -395,6 +395,8 @@ window.MapboxPlugin.clearBoundaries()
 
 ## Path Tracking
 
+Full reference: [docs/path-tracking-api.md](docs/path-tracking-api.md).
+
 Path tracking lets you record the user's GPS movement as a visible polyline on the map. This is useful for hunt tracking, running routes, or any scenario where you need a trail of where the user has been.
 
 ### Start Path Tracking
