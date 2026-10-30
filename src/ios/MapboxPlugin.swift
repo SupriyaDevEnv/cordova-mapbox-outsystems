@@ -1258,7 +1258,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let visible = options["visible"] as? Bool ?? true
+            let visible = self.boolOption(options["visible"], defaultValue: true)
             let wasVisible = self.isPathVisible
 
             self.isPathVisible = visible

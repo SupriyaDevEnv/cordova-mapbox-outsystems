@@ -82,6 +82,12 @@ test('loadPath draws one line per segment and show restores finished segments', 
   assert.match(iosVisibility, /if !wasVisible[\s\S]*self\.drawSegmentAnnotations\(\)/);
 });
 
+test('iOS path visibility accepts the "true"/"false" text OutSystems sends', () => {
+  const visibility = ios.split('func setPathVisibility(command:')[1].split('@objc(downloadOfflineRegion:', 1)[0];
+  assert.match(visibility, /boolOption\(options\["visible"\], defaultValue: true\)/);
+  assert.doesNotMatch(visibility, /options\["visible"\] as\? Bool/);
+});
+
 test('a segment needs two points to be drawn', () => {
   assert.match(android, /private void drawSegmentAnnotations\(\)[\s\S]*segment\.size\(\) < 2/);
   assert.match(ios, /for segment in pathSegments where segment\.count >= 2/);
