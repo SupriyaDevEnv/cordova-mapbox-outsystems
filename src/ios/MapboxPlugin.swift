@@ -78,6 +78,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var isPathTrackingActive = false
     private var isPathTrackingPaused = false
     private var pathTrackingStartTime: TimeInterval = 0
+    private var pathPausedTotal: TimeInterval = 0
+    private var pathPauseStart: TimeInterval = 0
     private var isPathVisible = true
     private var pathLineColor: String = "#FF0000"
     private var pathLineWidth: Double = 3.0
@@ -944,6 +946,19 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         return lineAnnotationManager != nil
     }
 
+    /// Draws one polyline per finished segment. A segment needs two points to be a line.
+    private func drawSegmentAnnotations() {
+        guard ensureLineAnnotationManager() else { return }
+        for segment in pathSegments where segment.count >= 2 {
+            var annotation = PolylineAnnotation(lineCoordinates: segment)
+            annotation.lineColor = StyleColor(colorOption(pathLineColor, defaultColor: .red))
+            annotation.lineWidth = pathLineWidth
+            annotation.lineOpacity = pathLineOpacity
+            pathAnnotations.append(annotation)
+            lineAnnotationManager?.annotations.append(annotation)
+        }
+    }
+
     private func updatePathAnnotation() {
         guard currentSegment.count >= 2, ensureLineAnnotationManager() else { return }
 
@@ -983,6 +998,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.isPathTrackingPaused = false
             self.isPathVisible = true
             self.pathTrackingStartTime = Date().timeIntervalSince1970
+            self.pathPausedTotal = 0
+            self.pathPauseStart = 0
             self.pathPoints.removeAll()
             self.pathAnnotations.removeAll()
             self.currentSegmentAnnotation = nil
@@ -1010,9 +1027,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
+            let wasPaused = self.isPathTrackingPaused
             self.isPathTrackingActive = false
             self.isPathTrackingPaused = false
-            let duration = Date().timeIntervalSince1970 - self.pathTrackingStartTime
+            let now = Date().timeIntervalSince1970
+            if wasPaused {
+                self.pathPausedTotal += now - self.pathPauseStart
+            }
+            // Moving time: wall-clock time minus every pause.
+            let duration = max(0, now - self.pathTrackingStartTime - self.pathPausedTotal)
 
             // Freeze current segment annotation into the permanent list
             if let ann = self.currentSegmentAnnotation {
@@ -1026,11 +1049,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 self.currentSegment.removeAll()
             }
 
+            // Measured inside each segment so the jump across a pause adds nothing.
             var totalDistance: Double = 0
-            for (previous, current) in zip(self.pathPoints, self.pathPoints.dropFirst()) {
-                let from = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
-                let to = CLLocation(latitude: current.latitude, longitude: current.longitude)
-                totalDistance += from.distance(from: to)
+            for segment in self.pathSegments {
+                for (previous, current) in zip(segment, segment.dropFirst()) {
+                    let from = CLLocation(latitude: previous.latitude, longitude: previous.longitude)
+                    let to = CLLocation(latitude: current.latitude, longitude: current.longitude)
+                    totalDistance += from.distance(from: to)
+                }
             }
 
             let pointsArray: [[String: Double]] = self.pathPoints.map { ["lat": $0.latitude, "lon": $0.longitude] }
@@ -1071,6 +1097,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             self.isPathTrackingPaused = true
+            self.pathPauseStart = Date().timeIntervalSince1970
 
             // Freeze current segment annotation into the permanent list
             if let ann = self.currentSegmentAnnotation {
@@ -1106,6 +1133,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             self.isPathTrackingPaused = false
+            self.pathPausedTotal += Date().timeIntervalSince1970 - self.pathPauseStart
+            self.pathPauseStart = 0
             self.currentSegment.removeAll()
 
             self.sendSuccess([
@@ -1145,17 +1174,44 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.pathLineOpacity = lineOpacity
             self.isPathVisible = true
 
-            self.pathPoints.removeAll()
-            for pointDict in pointsArray {
+            // Keep each valid point's original index so segment ranges still line up
+            // when invalid points are skipped.
+            var validPoints: [CLLocationCoordinate2D] = []
+            var validIndexes: [Int] = []
+            for (index, pointDict) in pointsArray.enumerated() {
                 let lat = self.doubleOption(pointDict["lat"] ?? pointDict["latitude"], defaultValue: Double.nan)
                 let lon = self.doubleOption(pointDict["lon"] ?? pointDict["lng"] ?? pointDict["longitude"], defaultValue: Double.nan)
                 guard lat.isFinite, lon.isFinite, self.isValidLatitude(lat), self.isValidLongitude(lon) else { continue }
-                self.pathPoints.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+                validPoints.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+                validIndexes.append(index)
             }
 
-            guard self.pathPoints.count >= 2 else {
+            guard validPoints.count >= 2 else {
                 self.sendError("A path requires at least 2 valid points.", command)
                 return
+            }
+
+            self.pathPoints = validPoints
+
+            // Optional segments keep the pause gaps; without them the path is one line.
+            self.pathSegments.removeAll()
+            if let segmentObjects = options["segments"] as? [[String: Any]] {
+                for segmentObject in segmentObjects.prefix(1000) {
+                    guard let startIndex = (segmentObject["startIndex"] as? NSNumber)?.intValue,
+                          let endIndex = (segmentObject["endIndex"] as? NSNumber)?.intValue,
+                          startIndex >= 0, endIndex >= startIndex else { continue }
+                    var part: [CLLocationCoordinate2D] = []
+                    for (position, original) in validIndexes.enumerated()
+                    where original >= startIndex && original <= endIndex {
+                        part.append(validPoints[position])
+                    }
+                    if !part.isEmpty {
+                        self.pathSegments.append(part)
+                    }
+                }
+            }
+            if self.pathSegments.isEmpty {
+                self.pathSegments.append(validPoints)
             }
 
             guard self.ensureLineAnnotationManager() else {
@@ -1168,17 +1224,12 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.pathAnnotations.removeAll()
             self.currentSegmentAnnotation = nil
 
-            var annotation = PolylineAnnotation(lineCoordinates: self.pathPoints)
-            annotation.lineColor = StyleColor(self.colorOption(self.pathLineColor, defaultColor: .red))
-            annotation.lineWidth = self.pathLineWidth
-            annotation.lineOpacity = self.pathLineOpacity
-            self.pathAnnotations.removeAll()
-            self.pathAnnotations.append(annotation)
-            self.lineAnnotationManager?.annotations.append(annotation)
+            self.drawSegmentAnnotations()
 
             self.sendSuccess([
                 "status": "loaded",
-                "pointCount": self.pathPoints.count
+                "pointCount": self.pathPoints.count,
+                "segmentCount": self.pathSegments.count
             ], command)
         }
     }
@@ -1191,6 +1242,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.pathAnnotations.removeAll()
             self.currentSegmentAnnotation = nil
             self.pathPoints.removeAll()
+            self.pathSegments.removeAll()
             self.sendSuccess(command)
         }
     }
@@ -1207,6 +1259,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
             let visible = options["visible"] as? Bool ?? true
+            let wasVisible = self.isPathVisible
 
             self.isPathVisible = visible
 
@@ -1216,7 +1269,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 self.pathAnnotations.removeAll()
                 self.currentSegmentAnnotation = nil
             } else {
-                // Show: redraw current segment
+                // Show: bring back the finished segments (only if they were hidden, so a
+                // repeated call does not stack duplicates), then the live segment.
+                if !wasVisible {
+                    self.drawSegmentAnnotations()
+                }
                 self.updatePathAnnotation()
             }
 
@@ -2095,6 +2152,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         isPathTrackingActive = false
         isPathTrackingPaused = false
         pathTrackingStartTime = 0
+        pathPausedTotal = 0
+        pathPauseStart = 0
         isPathVisible = true
         pathLineColor = "#FF0000"
         pathLineWidth = 3.0

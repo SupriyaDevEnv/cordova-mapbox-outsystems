@@ -227,10 +227,13 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private final List<Point> pathPoints = new ArrayList<>();
     private boolean isPathTrackingActive = false;
     private long pathTrackingStartTimeMs = 0L;
+    private long pathPausedTotalMs = 0L;
+    private long pathPauseStartMs = 0L;
     private boolean isPathVisible = true;
     private static final int DEFAULT_PATH_COLOR = 0xFFFF0000;
     private static final double DEFAULT_PATH_WIDTH = 3.0;
     private static final double MAX_PATH_WIDTH = 30.0;
+    private static final int MAX_PATH_SEGMENTS = 1000;
     private int pathLineColor = DEFAULT_PATH_COLOR;
     private float pathLineWidth = 3.0f;
     private float pathLineOpacity = 1.0f;
@@ -3332,6 +3335,40 @@ private boolean addMarkerInternal(
         return true;
     }
 
+    /** Length in metres of one segment; segments are never joined to each other. */
+    private double segmentDistance(List<Point> segment) {
+        double total = 0.0;
+        for (int i = 1; i < segment.size(); i++) {
+            float[] results = new float[1];
+            Location.distanceBetween(
+                segment.get(i - 1).latitude(),
+                segment.get(i - 1).longitude(),
+                segment.get(i).latitude(),
+                segment.get(i).longitude(),
+                results
+            );
+            total += results[0];
+        }
+        return total;
+    }
+
+    /** Draws one polyline per finished segment. A segment needs two points to be a line. */
+    private void drawSegmentAnnotations() {
+        if (!ensureLineAnnotationManager()) {
+            return;
+        }
+        for (List<Point> segment : pathSegments) {
+            if (segment.size() < 2) {
+                continue;
+            }
+            pathAnnotations.add(lineAnnotationManager.create(new PolylineAnnotationOptions()
+                .withGeometry(LineString.fromLngLats(segment))
+                .withLineColor(pathLineColor)
+                .withLineWidth(pathLineWidth)
+                .withLineOpacity(pathLineOpacity)));
+        }
+    }
+
     private void updatePathAnnotation() {
         if (currentSegment == null || currentSegment.size() < 2) {
             return;
@@ -3377,6 +3414,8 @@ private boolean addMarkerInternal(
             isPathTrackingPaused = false;
             isPathVisible = true;
             pathTrackingStartTimeMs = System.currentTimeMillis();
+            pathPausedTotalMs = 0L;
+            pathPauseStartMs = 0L;
             pathPoints.clear();
             pathAnnotations.clear();
             currentSegmentAnnotation = null;
@@ -3409,9 +3448,15 @@ private boolean addMarkerInternal(
                 return;
             }
 
+            boolean wasPaused = isPathTrackingPaused;
             isPathTrackingActive = false;
             isPathTrackingPaused = false;
-            long durationMs = System.currentTimeMillis() - pathTrackingStartTimeMs;
+            long nowMs = System.currentTimeMillis();
+            if (wasPaused) {
+                pathPausedTotalMs += nowMs - pathPauseStartMs;
+            }
+            // Moving time: wall-clock time minus every pause.
+            long durationMs = Math.max(0L, nowMs - pathTrackingStartTimeMs - pathPausedTotalMs);
 
             // Freeze current segment annotation into the permanent list
             if (currentSegmentAnnotation != null) {
@@ -3425,17 +3470,10 @@ private boolean addMarkerInternal(
                 currentSegment = null;
             }
 
+            // Measured inside each segment so the jump across a pause adds nothing.
             double totalDistance = 0.0;
-            for (int i = 1; i < pathPoints.size(); i++) {
-                float[] results = new float[1];
-                Location.distanceBetween(
-                    pathPoints.get(i - 1).latitude(),
-                    pathPoints.get(i - 1).longitude(),
-                    pathPoints.get(i).latitude(),
-                    pathPoints.get(i).longitude(),
-                    results
-                );
-                totalDistance += results[0];
+            for (List<Point> segment : pathSegments) {
+                totalDistance += segmentDistance(segment);
             }
 
             try {
@@ -3484,6 +3522,7 @@ private boolean addMarkerInternal(
             }
 
             isPathTrackingPaused = true;
+            pathPauseStartMs = System.currentTimeMillis();
 
             // Freeze current segment annotation into the permanent list
             if (currentSegmentAnnotation != null) {
@@ -3521,6 +3560,8 @@ private boolean addMarkerInternal(
             }
 
             isPathTrackingPaused = false;
+            pathPausedTotalMs += System.currentTimeMillis() - pathPauseStartMs;
+            pathPauseStartMs = 0L;
             currentSegment = new ArrayList<>();
 
             try {
@@ -3561,7 +3602,10 @@ private boolean addMarkerInternal(
             pathLineOpacity = (float) lineOpacity;
             isPathVisible = true;
 
-            pathPoints.clear();
+            // Keep each valid point's original index so segment ranges still line up
+            // when invalid points are skipped.
+            List<Point> validPoints = new ArrayList<>();
+            List<Integer> validIndexes = new ArrayList<>();
             for (int i = 0; i < pointsArray.length(); i++) {
                 JSONObject pointObj = pointsArray.optJSONObject(i);
                 if (pointObj == null) continue;
@@ -3569,13 +3613,44 @@ private boolean addMarkerInternal(
                 double lon = readFiniteDouble(pointObj, "lon", "lng", "longitude");
                 if (!Double.isNaN(lat) && !Double.isNaN(lon)
                         && isValidLatitude(lat) && isValidLongitude(lon)) {
-                    pathPoints.add(Point.fromLngLat(lon, lat));
+                    validPoints.add(Point.fromLngLat(lon, lat));
+                    validIndexes.add(i);
                 }
             }
 
-            if (pathPoints.size() < 2) {
+            if (validPoints.size() < 2) {
                 callback.error("A path requires at least 2 valid points.");
                 return;
+            }
+
+            pathPoints.clear();
+            pathPoints.addAll(validPoints);
+
+            // Optional segments keep the pause gaps; without them the path is one line.
+            pathSegments.clear();
+            JSONArray segmentsArray = options.optJSONArray("segments");
+            if (segmentsArray != null) {
+                int segmentLimit = Math.min(segmentsArray.length(), MAX_PATH_SEGMENTS);
+                for (int s = 0; s < segmentLimit; s++) {
+                    JSONObject segmentObj = segmentsArray.optJSONObject(s);
+                    if (segmentObj == null) continue;
+                    int startIndex = segmentObj.optInt("startIndex", -1);
+                    int endIndex = segmentObj.optInt("endIndex", -1);
+                    if (startIndex < 0 || endIndex < startIndex) continue;
+                    List<Point> part = new ArrayList<>();
+                    for (int k = 0; k < validPoints.size(); k++) {
+                        int original = validIndexes.get(k);
+                        if (original >= startIndex && original <= endIndex) {
+                            part.add(validPoints.get(k));
+                        }
+                    }
+                    if (!part.isEmpty()) {
+                        pathSegments.add(part);
+                    }
+                }
+            }
+            if (pathSegments.isEmpty()) {
+                pathSegments.add(new ArrayList<>(validPoints));
             }
 
             if (!ensureLineAnnotationManager()) {
@@ -3589,20 +3664,13 @@ private boolean addMarkerInternal(
             }
             pathAnnotations.clear();
 
-            LineString lineString = LineString.fromLngLats(pathPoints);
-            PolylineAnnotationOptions annOptions = new PolylineAnnotationOptions()
-                .withGeometry(lineString)
-                .withLineColor(lineColor)
-                .withLineWidth((float) lineWidth)
-                .withLineOpacity((float) lineOpacity);
-
-            PolylineAnnotation ann = lineAnnotationManager.create(annOptions);
-            pathAnnotations.add(ann);
+            drawSegmentAnnotations();
 
             try {
                 JSONObject result = new JSONObject();
                 result.put("status", "loaded");
                 result.put("pointCount", pathPoints.size());
+                result.put("segmentCount", pathSegments.size());
                 callback.success(result);
             } catch (Exception e) {
                 callback.error(sanitizeError("An internal error occurred.", e));
@@ -3623,6 +3691,7 @@ private boolean addMarkerInternal(
             }
             pathAnnotations.clear();
             pathPoints.clear();
+            pathSegments.clear();
             callback.success();
         });
     }
@@ -3635,6 +3704,7 @@ private boolean addMarkerInternal(
             }
 
             boolean visible = options.optBoolean("visible", true);
+            boolean wasVisible = isPathVisible;
 
             isPathVisible = visible;
 
@@ -3651,7 +3721,11 @@ private boolean addMarkerInternal(
                 }
                 pathAnnotations.clear();
             } else {
-                // Show: redraw current segment
+                // Show: bring back the finished segments (only if they were hidden, so a
+                // repeated call does not stack duplicates), then the live segment.
+                if (!wasVisible) {
+                    drawSegmentAnnotations();
+                }
                 updatePathAnnotation();
             }
 
@@ -4016,6 +4090,8 @@ private boolean addMarkerInternal(
         isPathTrackingActive = false;
         isPathTrackingPaused = false;
         pathTrackingStartTimeMs = 0L;
+        pathPausedTotalMs = 0L;
+        pathPauseStartMs = 0L;
         isPathVisible = true;
         pathLineColor = DEFAULT_PATH_COLOR;
         pathLineWidth = 3.0f;

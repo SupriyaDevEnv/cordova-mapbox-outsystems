@@ -423,7 +423,7 @@ window.MapboxPlugin.stopPathTracking()
   .then(function (result) {
     // result.points = [{lat: 17.680, lon: 83.249}, ...]
     // result.distance = 1234.5  (meters)
-    // result.duration = 45000   (milliseconds)
+    // result.duration = 45000   (milliseconds of moving time, pauses excluded)
     // result.segments = [{startIndex: 0, endIndex: 50}, {startIndex: 51, endIndex: 100}]
     // result.segmentCount = 2
 
@@ -492,6 +492,10 @@ window.MapboxPlugin.loadPath({
     { lat: 17.681, lon: 83.250 },
     { lat: 17.682, lon: 83.251 }
   ],
+  segments: [              // optional, from stopPathTracking: keeps the pause gaps
+    { startIndex: 0, endIndex: 1 },
+    { startIndex: 2, endIndex: 2 }
+  ],
   lineColor: "#FF0000",    // optional, default "#FF0000"
   lineWidth: 3.0,          // optional, default 3.0
   lineOpacity: 0.8         // optional, default 1.0
@@ -553,7 +557,8 @@ window.MapboxPlugin.stopPathTracking()
 ```javascript
 // Fetch saved points from your database, then:
 window.MapboxPlugin.loadPath({
-  points: $parameters.SavedPoints
+  points: $parameters.SavedPoints,
+  segments: $parameters.SavedSegments   // optional; without it the hunt draws as one line
 })
 ```
 

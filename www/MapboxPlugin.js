@@ -438,6 +438,13 @@ var api = {
     if (pathData.points.length < 2 || pathData.points.length > 20000) {
       return Promise.reject(new Error('A path requires between 2 and 20000 points.'));
     }
+    // Style and segments may sit on the path object itself, as documented; an
+    // explicit second argument still wins.
+    ['lineColor', 'lineWidth', 'lineOpacity', 'segments'].forEach(function (key) {
+      if (options[key] === undefined && pathData[key] !== undefined) {
+        options[key] = pathData[key];
+      }
+    });
     options.points = pathData.points;
     return call('loadPath', [options]);
   },

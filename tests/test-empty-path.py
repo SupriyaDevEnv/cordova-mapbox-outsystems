@@ -17,6 +17,8 @@ class TestPlugin {
     var isPathTrackingActive = true
     var isPathTrackingPaused = false
     var pathTrackingStartTime = Date().timeIntervalSince1970
+    var pathPausedTotal: TimeInterval = 0
+    var pathPauseStart: TimeInterval = 0
     var pathPoints: [CLLocationCoordinate2D] = []
     var pathSegments: [[CLLocationCoordinate2D]] = []
     var currentSegment: [CLLocationCoordinate2D] = []
@@ -32,6 +34,8 @@ checks = '''
 for count in 0...2 {
     let plugin = TestPlugin()
     plugin.pathPoints = (0..<count).map { CLLocationCoordinate2D(latitude: Double($0) * 0.01, longitude: 0) }
+    // Recording keeps every point in the open segment, which stop folds into pathSegments.
+    plugin.currentSegment = plugin.pathPoints
     plugin.stopPathTracking(command: CDVInvokedUrlCommand())
     precondition(plugin.rememberedCommands == 1)
     precondition(!plugin.isPathTrackingActive)
@@ -39,7 +43,25 @@ for count in 0...2 {
     let distance = plugin.result["distance"] as! Double
     precondition(count < 2 ? distance == 0 : distance > 0)
 }
-print("Actual iOS stopPathTracking: zero, one, two points passed")
+do {
+    // Two walks about 110 km apart: distance covers only the walks, never the gap,
+    // and the 40 s spent paused is not part of the 100 s session.
+    let plugin = TestPlugin()
+    let first = [CLLocationCoordinate2D(latitude: 0, longitude: 0), CLLocationCoordinate2D(latitude: 0.01, longitude: 0)]
+    let second = [CLLocationCoordinate2D(latitude: 1, longitude: 0), CLLocationCoordinate2D(latitude: 1.01, longitude: 0)]
+    plugin.pathPoints = first + second
+    plugin.pathSegments = [first]
+    plugin.currentSegment = second
+    plugin.pathTrackingStartTime = Date().timeIntervalSince1970 - 100
+    plugin.pathPausedTotal = 40
+    plugin.stopPathTracking(command: CDVInvokedUrlCommand())
+    let distance = plugin.result["distance"] as! Double
+    precondition(distance > 2000 && distance < 2500)
+    let duration = plugin.result["duration"] as! Double
+    precondition(duration > 59000 && duration < 62000)
+    precondition(plugin.result["segmentCount"] as! Int == 2)
+}
+print("Actual iOS stopPathTracking: zero, one, two points and a pause gap passed")
 '''
 with tempfile.TemporaryDirectory() as directory:
     swift = Path(directory) / 'main.swift'

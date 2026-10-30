@@ -124,7 +124,7 @@ Ends the session and returns everything recorded. The line stays on the map unti
 window.MapboxPlugin.stopPathTracking().then(function (r) {
   // r.points       = [{ lat: 17.680, lon: 83.249 }, ...]
   // r.distance     = 1234.5   metres, rounded to 2 decimals
-  // r.duration     = 45000    milliseconds from start to stop
+  // r.duration     = 45000    milliseconds of moving time (pauses excluded)
   // r.segments     = [{ startIndex: 0, endIndex: 50 }, { startIndex: 51, endIndex: 100 }]
   // r.segmentCount = 2
 });
@@ -141,9 +141,10 @@ segments:   0 → 4 (A)        5 → 7 (B)   8 → 9 (C)
 
 ### What the numbers mean
 
-- `duration` is wall-clock time from `start` to `stop` and **includes paused time**.
-- `distance` adds up the straight-line distance between consecutive entries in `points`, so it **also counts the jump across each pause gap**. Compute per-segment distances yourself from `segments` if you need to exclude them.
+- `duration` is **moving time**: the time from `start` to `stop` minus every pause.
+- `distance` is measured **inside each segment** and added up, so the jump across a pause adds nothing.
 - A segment with no points is dropped, so `segmentCount` only counts segments that recorded something.
+- A segment holding a single point has no length. It stays in `points` and `segments` but is never drawn.
 
 ---
 
@@ -154,19 +155,24 @@ Draws a saved path, for example to show a past hunt.
 | Option | Type | Description |
 |---|---|---|
 | `points` | array | 2 to 20 000 items shaped `{ lat, lon }`. `latitude`, `lng`, `longitude` are accepted as aliases. Invalid coordinates are skipped. |
+| `segments` | array | Optional. The `segments` list that `stopPathTracking` returned, `{ startIndex, endIndex }` per segment, both inclusive. Each segment is drawn as its own line, so pauses show as gaps. At most 1000 are used. |
 | `lineColor`, `lineWidth`, `lineOpacity` | | See [Line styling](#line-styling). |
 
 ```javascript
 window.MapboxPlugin.loadPath({
-  points: savedPoints,
+  points: hunt.points,
+  segments: hunt.segments,     // keeps the pause gaps
   lineColor: "#43A047",
   lineWidth: 4
-}).then(function (r) { /* r.status === "loaded", r.pointCount */ });
+}).then(function (r) { /* r.status === "loaded", r.pointCount, r.segmentCount */ });
 ```
 
 - Fails while tracking is active. Stop first.
 - Replaces any path already drawn.
-- Draws **one continuous line**. Segment gaps from the original hunt are not reproduced, so a paused hunt shows a straight bridge across each pause.
+- **With `segments`**, each segment is a separate line and nothing is drawn across a pause. Indexes refer to the original `points` array, so they stay correct even if invalid points are skipped.
+- **Without `segments`**, the path is one continuous line. Hunts saved before segments were stored replay this way, and their pause gaps cannot be recovered.
+- A segment with a single point is not drawn.
+- Style and `segments` may be given on the path object as above, or as a second argument. The second argument wins if both are present.
 - `loadPath` also accepts a JSON string of the same shape (max 4 MiB).
 
 ---
@@ -181,7 +187,7 @@ window.MapboxPlugin.clearPaths();
 
 ## `setPathVisibility({ visible })`
 
-Hides or shows the path without deleting it. Safe to call repeatedly.
+Hides or shows the path without deleting it. Works for a live hunt, a finished one and a loaded one, and is safe to call repeatedly.
 
 ```javascript
 window.MapboxPlugin.setPathVisibility({ visible: false });
@@ -223,9 +229,14 @@ const hunt = await MapboxPlugin.stopPathTracking();
 
 // 4. Later: replay it
 await MapboxPlugin.clearPaths();
-await MapboxPlugin.loadPath({ points: hunt.points, lineColor: "#1E88E5", lineWidth: 4 });
+await MapboxPlugin.loadPath({
+  points: hunt.points,
+  segments: hunt.segments,
+  lineColor: "#1E88E5",
+  lineWidth: 4
+});
 ```
 
 ## Saving a hunt (OutSystems)
 
-Store `points` as a JSON text (or one row per point with an index), plus `distance`, `duration` and `segments`. Persisting `segments` lets you split the line yourself later, even though `loadPath` draws it as one line.
+Store `points` as a JSON text (or one row per point with an index), plus `distance`, `duration` and `segments`. Save `segments` together with `points`: it is what lets a replay keep the pause gaps.
