@@ -586,6 +586,8 @@ The map must be initialized before adding markers.
 | Waypoint (`isFind` false or omitted) | Circle with a teardrop tip | `imageBinary` (converted), or `imageUrl`, center-cropped to a circle |
 
 - Until the image loads, or when there is none: a Find shows a light grey tile with a magnifying glass; a Waypoint shows a red compass crosshair on the white card.
+- The classic red teardrop pin with a white dot is used for markers **without an image** that are either **plain location pins** (no `isFind` / `IsFind` sent at all, e.g. a searched place) or **offline** (`isOnline: false`). `pinColor` still overrides the red. Markers that send `isFind` (true or false) and are online keep the Find/Waypoint design; any marker with an image shows it in its card.
+- Example search pin: `addMarker({ id: "selected-location", latitude, longitude })` — reuse the same `id` so each search moves the pin instead of adding another.
 - Private markers (`isPublic: false` / `IsPublic: false`) show a lock tile (soft brown background with a white lock) in the same square or circle. Their image is ignored: a Waypoint binary is not converted and no URL is downloaded. Omitting the field, or `true`, keeps the image.
 - `pinColor` overrides the outline and tip color (default `#1F1F1F`), for example `"#16A34A"` for a green outline.
 - Both shapes use the same 72 × 96 canvas and tip position as the earlier teardrop pin, so markers stay at the same place on the map.
@@ -863,6 +865,7 @@ By default, any HTTPS host is allowed. To allow only specific hosts, set the `MA
 - **New:** `isFind` pins show a magnifying-glass icon on both platforms.
 - **Changed (1.0.6):** Find markers are white rounded-square cards and Waypoint markers are white circles, each with a black outline and tip, replacing the red/blue teardrop pin. Size, anchor and position are unchanged; `pinColor` colours the outline and tip; `pinStyle: "photo"` is accepted but renders the same design.
 - **New:** the `MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS` preference.
+- **New (1.0.8):** markers without an image that send no `isFind` (plain location / search pins) or are offline (`isOnline: false`) use the classic red teardrop pin with a white dot.
 - **New (1.0.7):** `isPublic` / `IsPublic`. `false` draws a lock tile for private Finds and Waypoints, so the app no longer sends a lock image.
 - **New (1.0.5):** `imageBinary` / `ImageBinary` and `imageMimeType` / `ImageMimeType` for Waypoint markers. Find markers are unchanged.
 

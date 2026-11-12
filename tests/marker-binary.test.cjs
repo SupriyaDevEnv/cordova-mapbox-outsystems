@@ -259,3 +259,12 @@ test('private markers (IsPublic false) skip image conversion; public and unset m
   assert.match(sent[3].ImageUrl, /^data:image\/png;base64,/);
   assert.strictEqual(decodes, 2, 'only the two public waypoints were decoded');
 });
+
+test('a plain location pin (only coordinates) reaches native unchanged, without isFind', () => {
+  const { api, calls } = load();
+  const options = { id: 'selected-location', latitude: 17.68, longitude: 83.24 };
+  api.addMarker(options);
+  assert.strictEqual(calls.length, 1, 'synchronous, original path');
+  assert.strictEqual(calls[0].args[0], options);
+  assert.ok(!('isFind' in calls[0].args[0]), 'no isFind is added, so native draws the red pin');
+});

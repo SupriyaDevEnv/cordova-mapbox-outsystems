@@ -3162,7 +3162,8 @@ if (gestures != null) {
                 options.optString("imageUrl", ""),
                 "photo".equals(options.optString("pinStyle", "")),
                 options.optBoolean("isOnline", true),
-                options.optBoolean("isPublic", true)
+                options.optBoolean("isPublic", true),
+                !options.isNull("isFind")
             );
 
             if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
@@ -3218,7 +3219,8 @@ if (gestures != null) {
                     marker.optString("ImageUrl", ""),
                     "photo".equals(marker.optString("PinStyle", "")),
                     marker.optBoolean("IsOnline", true),
-                    marker.optBoolean("IsPublic", true)
+                    marker.optBoolean("IsPublic", true),
+                    !marker.isNull("IsFind")
                 );
                 if (styles[i] == null) { callback.error(MARKER_IMAGE_NOT_ALLOWED); return; }
                 ids.add(id);
@@ -3284,10 +3286,14 @@ private boolean addMarkerInternal(
         // Every marker uses the Find (square) / Waypoint (circle) design; pinStyle "photo"
         // is still accepted from older screens but no longer selects a different pin.
         // Private markers (isPublic: false) show a lock tile instead of their image.
-        .withIconImage(style.isPublic
-            ? markerIcons.pin(style.color, style.isFind, style.imageUrl,
+        // Plain location pins (no isFind) and offline markers without an image show the classic red pin.
+        .withIconImage(!style.isPublic
+            ? markerIcons.lockedPin(style.color, style.isFind,
                 cordova.getActivity().getResources().getDisplayMetrics().density)
-            : markerIcons.lockedPin(style.color, style.isFind,
+            : style.classicPin
+            ? markerIcons.offlinePin(style.color,
+                cordova.getActivity().getResources().getDisplayMetrics().density)
+            : markerIcons.pin(style.color, style.isFind, style.imageUrl,
                 cordova.getActivity().getResources().getDisplayMetrics().density))
         .withIconAnchor(IconAnchor.BOTTOM)
         .withIconSize(0.5);
@@ -3325,15 +3331,28 @@ private boolean addMarkerInternal(
 
     private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl, boolean photo,
             boolean isOnline, boolean isPublic) {
-        int defaultColor = isFind ? MarkerIcons.FIND_PIN_COLOR : MarkerIcons.DEFAULT_PIN_COLOR;
+        return markerStyle(isFind, pinColor, rawImageUrl, photo, isOnline, isPublic, true);
+    }
+
+    /**
+     * findGiven is false when the caller sent no isFind / IsFind at all: a plain location pin
+     * (for example a searched place), not a Find or Waypoint.
+     */
+    private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl, boolean photo,
+            boolean isOnline, boolean isPublic, boolean findGiven) {
+        String trimmedUrl = rawImageUrl == null ? "" : rawImageUrl.trim();
+        // Classic red teardrop: public, no image, and either offline or a plain location pin.
+        boolean classicPin = isPublic && trimmedUrl.isEmpty() && (!isOnline || !findGiven);
+        int defaultColor = classicPin ? MarkerIcons.OFFLINE_PIN_COLOR
+            : isFind ? MarkerIcons.FIND_PIN_COLOR : MarkerIcons.DEFAULT_PIN_COLOR;
         int color = MarkerIcons.parseColor(pinColor, defaultColor);
         if (!isPublic) {
             // Private markers show the lock tile; their image is never validated or downloaded.
             return new MarkerStyle(color, isFind, null, photo, isOnline, false);
         }
-        String imageUrl = rawImageUrl == null ? "" : rawImageUrl.trim();
+        String imageUrl = trimmedUrl;
         if (imageUrl.isEmpty()) {
-            return new MarkerStyle(color, isFind, null, photo, isOnline);
+            return new MarkerStyle(color, isFind, null, photo, isOnline, true, classicPin);
         }
         if (!MapboxSecurity.markerImageAllowed(imageUrl, allowedMarkerImageHosts())) {
             return null;
@@ -3396,6 +3415,8 @@ private boolean addMarkerInternal(
         final boolean isOnline;
         /** False for a private Find or Waypoint: drawn as a lock tile, image never loaded. */
         final boolean isPublic;
+        /** Drawn as the classic red teardrop (offline or plain location pin without an image). */
+        final boolean classicPin;
 
         MarkerStyle(int color, boolean isFind, String imageUrl) {
             this(color, isFind, imageUrl, false);
@@ -3410,12 +3431,18 @@ private boolean addMarkerInternal(
         }
 
         MarkerStyle(int color, boolean isFind, String imageUrl, boolean photo, boolean isOnline, boolean isPublic) {
+            this(color, isFind, imageUrl, photo, isOnline, isPublic, false);
+        }
+
+        MarkerStyle(int color, boolean isFind, String imageUrl, boolean photo, boolean isOnline, boolean isPublic,
+                boolean classicPin) {
             this.color = color;
             this.isFind = isFind;
             this.imageUrl = imageUrl;
             this.photo = photo;
             this.isOnline = isOnline;
             this.isPublic = isPublic;
+            this.classicPin = classicPin;
         }
     }
 
