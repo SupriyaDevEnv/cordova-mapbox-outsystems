@@ -9,6 +9,8 @@ final class MarkerIcons: NSObject, URLSessionDataDelegate {
     // Find (square) and Waypoint (circle) markers share a near-black frame; pinColor overrides it.
     static let defaultPinColor = UIColor(red: 31 / 255, green: 31 / 255, blue: 31 / 255, alpha: 1)
     static let findPinColor = UIColor(red: 31 / 255, green: 31 / 255, blue: 31 / 255, alpha: 1)
+    // Offline marker (isOnline false, no image): the classic red teardrop with a white dot.
+    static let offlinePinColor = UIColor(red: 220 / 255, green: 38 / 255, blue: 38 / 255, alpha: 1)
 
     private static let size = CGSize(width: 72, height: 96)
     // Marker head: a 52x52 white card (rounded square for Find, circle for Waypoint) inside
@@ -95,6 +97,17 @@ final class MarkerIcons: NSObject, URLSessionDataDelegate {
             return .init(image: cached, name: name)
         }
         let drawn = Self.draw(pinColor: color, isFind: isFind, image: image)
+        pins.setObject(drawn, forKey: name as NSString)
+        return .init(image: drawn, name: name)
+    }
+
+    /// Offline marker without an image: the classic red teardrop pin with a white dot.
+    func offlinePin(color: UIColor) -> PointAnnotation.Image {
+        let name = "marker-offline-\(Self.colorKey(color))"
+        if let cached = pins.object(forKey: name as NSString) {
+            return .init(image: cached, name: name)
+        }
+        let drawn = Self.drawOfflinePin(pinColor: color)
         pins.setObject(drawn, forKey: name as NSString)
         return .init(image: drawn, name: name)
     }
@@ -269,6 +282,44 @@ final class MarkerIcons: NSObject, URLSessionDataDelegate {
                 crosshairColor.setFill()
                 star.fill()
             }
+        }
+    }
+
+    /// Classic teardrop: same 72x96 canvas and tip position as the card markers.
+    private static func drawOfflinePin(pinColor: UIColor) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            let cg = context.cgContext
+            let centerX = size.width / 2
+            let pinHeadY: CGFloat = 32
+            let pinHeadRadius: CGFloat = 25
+
+            cg.setFillColor(UIColor.black.withAlphaComponent(0.24).cgColor)
+            cg.fillEllipse(in: CGRect(x: centerX - 16, y: size.height - 16, width: 32, height: 8))
+
+            let path = UIBezierPath()
+            path.addArc(withCenter: CGPoint(x: centerX, y: pinHeadY), radius: pinHeadRadius,
+                        startAngle: 0, endAngle: CGFloat.pi * 2, clockwise: true)
+            path.move(to: CGPoint(x: centerX - 14, y: pinHeadY + 19))
+            path.addQuadCurve(to: CGPoint(x: centerX, y: size.height - 10),
+                              controlPoint: CGPoint(x: centerX - 5, y: pinHeadY + 52))
+            path.addQuadCurve(to: CGPoint(x: centerX + 14, y: pinHeadY + 19),
+                              controlPoint: CGPoint(x: centerX + 5, y: pinHeadY + 52))
+            path.close()
+
+            pinColor.setFill()
+            path.fill()
+            UIColor.white.setStroke()
+            path.lineWidth = 3
+            path.stroke()
+
+            UIColor.white.setFill()
+            UIBezierPath(ovalIn: circle(centerX, pinHeadY, 10)).fill()
+            UIColor.black.withAlphaComponent(0.16).setStroke()
+            let innerRing = UIBezierPath(ovalIn: circle(centerX, pinHeadY, 10))
+            innerRing.lineWidth = 2
+            innerRing.stroke()
         }
     }
 

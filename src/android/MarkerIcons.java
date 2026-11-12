@@ -27,6 +27,8 @@ final class MarkerIcons {
     // Find (square) and Waypoint (circle) markers share a near-black frame; pinColor overrides it.
     static final int DEFAULT_PIN_COLOR = Color.rgb(31, 31, 31);
     static final int FIND_PIN_COLOR = Color.rgb(31, 31, 31);
+    // Offline marker (isOnline false, no image): the classic red teardrop with a white dot.
+    static final int OFFLINE_PIN_COLOR = Color.rgb(220, 38, 38);
 
     interface Loaded {
         void done(Bitmap image);
@@ -124,6 +126,18 @@ final class MarkerIcons {
                 done.done(image);
             }
         });
+    }
+
+    /** Offline marker without an image: the classic red teardrop pin with a white dot. */
+    Bitmap offlinePin(int color, float density) {
+        density = validDensity(density);
+        String key = "offline|" + density + "|" + color;
+        Bitmap cached = pins.get(key);
+        if (cached == null) {
+            cached = drawOfflinePin(color, density);
+            pins.put(key, cached);
+        }
+        return cached;
     }
 
     void shutdown() {
@@ -279,6 +293,49 @@ final class MarkerIcons {
             canvas.drawPath(star, starPaint);
         }
 
+        return bitmap;
+    }
+
+    /** Classic teardrop: same 72x96 canvas and tip position as the card markers. */
+    private static Bitmap drawOfflinePin(int pinColor, float density) {
+        Bitmap bitmap = Bitmap.createBitmap(Math.max(1, Math.round(WIDTH * density)),
+            Math.max(1, Math.round(HEIGHT * density)), Bitmap.Config.ARGB_8888);
+        bitmap.setDensity(Bitmap.DENSITY_NONE);
+        Canvas canvas = new Canvas(bitmap);
+        canvas.scale(density, density);
+        final float headY = 32.0f;
+        final float headRadius = 25.0f;
+
+        Paint groundShadow = new Paint(Paint.ANTI_ALIAS_FLAG);
+        groundShadow.setColor(Color.argb(65, 0, 0, 0));
+        canvas.drawOval(CENTER_X - 16.0f, HEIGHT - 16.0f, CENTER_X + 16.0f, HEIGHT - 8.0f, groundShadow);
+
+        Path pinPath = new Path();
+        pinPath.addCircle(CENTER_X, headY, headRadius, Path.Direction.CW);
+        pinPath.moveTo(CENTER_X - 14.0f, headY + 19.0f);
+        pinPath.quadTo(CENTER_X - 5.0f, headY + 52.0f, CENTER_X, HEIGHT - 10.0f);
+        pinPath.quadTo(CENTER_X + 5.0f, headY + 52.0f, CENTER_X + 14.0f, headY + 19.0f);
+        pinPath.close();
+
+        Paint pinPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        pinPaint.setColor(pinColor);
+        canvas.drawPath(pinPath, pinPaint);
+
+        Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        strokePaint.setStyle(Paint.Style.STROKE);
+        strokePaint.setStrokeWidth(3.0f);
+        strokePaint.setColor(Color.WHITE);
+        canvas.drawPath(pinPath, strokePaint);
+
+        Paint centerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        centerPaint.setColor(Color.WHITE);
+        canvas.drawCircle(CENTER_X, headY, 10.0f, centerPaint);
+
+        Paint innerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        innerPaint.setStyle(Paint.Style.STROKE);
+        innerPaint.setStrokeWidth(2.0f);
+        innerPaint.setColor(Color.argb(40, 0, 0, 0));
+        canvas.drawCircle(CENTER_X, headY, 10.0f, innerPaint);
         return bitmap;
     }
 

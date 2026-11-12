@@ -124,8 +124,8 @@ test('pinStyle "photo" is still accepted but every marker uses the Find/Waypoint
   for (const source of [android, ios, androidIcons, iosMarkerIcons]) {
     assert.doesNotMatch(source, /photoPin|drawPhoto|PHOTO_PIN_COLOR|photoPinColor/);
   }
-  assert.match(android, /\.withIconImage\(style\.isPublic\s*\?\s*markerIcons\.pin\(style\.color, style\.isFind, style\.imageUrl,/);
-  assert.match(ios, /marker\.image = style\.isPublic\s*\?\s*markerIcons\.pin\(color: style\.color, isFind: style\.isFind, source: style\.imageUrl\)/);
+  assert.match(android, /\.withIconImage\(!style\.isPublic[\s\S]*?:\s*markerIcons\.pin\(style\.color, style\.isFind, style\.imageUrl,/);
+  assert.match(ios, /marker\.image = !style\.isPublic[\s\S]*?:\s*markerIcons\.pin\(color: style\.color, isFind: style\.isFind, source: style\.imageUrl\)/);
   // Square Find and circular Waypoint shapes on both platforms.
   assert.match(androidIcons, /if \(isFind\) \{[\s\S]*?addRoundRect[\s\S]*?addCircle/);
   assert.match(iosMarkerIcons, /if isFind \{\s*return UIBezierPath\(roundedRect:[\s\S]*?UIBezierPath\(ovalIn:/);
@@ -187,9 +187,32 @@ test('IsPublic false draws a lock tile on both platforms and never loads the ima
   // Private styles carry no image URL, so nothing is validated or downloaded.
   assert.match(android, /if \(!isPublic\) \{[\s\S]*?new MarkerStyle\(color, isFind, null, photo, isOnline, false\)/);
   assert.match(ios, /if !isPublic \{[\s\S]*?imageUrl: nil, photo: photo, isOnline: isOnline, isPublic: false\)/);
-  assert.match(android, /style\.isPublic\s*\?\s*markerIcons\.pin\([\s\S]*?:\s*markerIcons\.lockedPin\(style\.color, style\.isFind,/);
-  assert.match(ios, /style\.isPublic\s*\?\s*markerIcons\.pin\([\s\S]*?:\s*markerIcons\.lockedPin\(color: style\.color, isFind: style\.isFind\)/);
+  assert.match(android, /!style\.isPublic\s*\?\s*markerIcons\.lockedPin\(style\.color, style\.isFind,/);
+  assert.match(ios, /!style\.isPublic\s*\?\s*markerIcons\.lockedPin\(color: style\.color, isFind: style\.isFind\)/);
   assert.match(androidIcons, /Bitmap lockedPin\(int color, boolean isFind, float density\)/);
   assert.match(iosMarkerIcons, /func lockedPin\(color: UIColor, isFind: Bool\)/);
   for (const source of [androidIcons, iosMarkerIcons]) assert.match(source, /drawLockTile/);
+});
+
+test('plain location pins (no isFind) and offline markers without an image use the classic red teardrop', () => {
+  const androidIcons = fs.readFileSync('src/android/MarkerIcons.java', 'utf8');
+  // "isFind not sent" is detected on both platforms; null counts as not sent.
+  assert.match(android, /!options\.isNull\("isFind"\)/);
+  assert.match(android, /!marker\.isNull\("IsFind"\)/);
+  assert.match(ios, /findGiven: \(options\["isFind"\] as\? Bool\) != nil/);
+  assert.match(ios, /findGiven: \(marker\["IsFind"\] as\? Bool\) != nil/);
+  // Public, no image, and either offline or no isFind. Private (lock) and images win.
+  assert.match(android, /boolean classicPin = isPublic && trimmedUrl\.isEmpty\(\) && \(!isOnline \|\| !findGiven\);/);
+  assert.match(ios, /let classicPin = isPublic && trimmedUrl\.isEmpty && \(!isOnline \|\| !findGiven\)/);
+  assert.match(android, /!style\.isPublic[\s\S]*?: style\.classicPin\s*\?\s*markerIcons\.offlinePin\(style\.color,/);
+  assert.match(ios, /!style\.isPublic[\s\S]*?: style\.classicPin\s*\?\s*markerIcons\.offlinePin\(color: style\.color\)/);
+  // Red by default (pinColor still overrides), same canvas and tip as the other markers.
+  assert.match(androidIcons, /OFFLINE_PIN_COLOR = Color\.rgb\(220, 38, 38\)/);
+  assert.match(iosMarkerIcons, /offlinePinColor = UIColor\(red: 220 \/ 255, green: 38 \/ 255, blue: 38 \/ 255/);
+  assert.match(android, /int defaultColor = classicPin \? MarkerIcons\.OFFLINE_PIN_COLOR/);
+  assert.match(ios, /let defaultColor = classicPin \? MarkerIcons\.offlinePinColor/);
+  assert.match(androidIcons, /quadTo\(CENTER_X - 5\.0f, headY \+ 52\.0f, CENTER_X, HEIGHT - 10\.0f\)/);
+  assert.match(iosMarkerIcons, /addQuadCurve\(to: CGPoint\(x: centerX, y: size\.height - 10\)/);
+  // The map-tap auto marker keeps the Waypoint default (no classic pin).
+  assert.match(android, /static final MarkerStyle DEFAULT = new MarkerStyle\(MarkerIcons\.DEFAULT_PIN_COLOR, false, null\);/);
 });
