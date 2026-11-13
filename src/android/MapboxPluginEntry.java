@@ -56,7 +56,6 @@ import com.mapbox.maps.OfflineManager;
 import com.mapbox.maps.ScreenCoordinate;
 import com.mapbox.maps.Style;
 import com.mapbox.maps.StyleObjectInfo;
-import com.mapbox.maps.StylePropertyValue;
 import com.mapbox.maps.StylePackLoadOptions;
 import com.mapbox.maps.TilesetDescriptorOptions;
 import com.mapbox.maps.extension.style.layers.properties.generated.IconAnchor;
@@ -3735,74 +3734,52 @@ private boolean addMarkerInternal(
                 Style style = mapView.getMapboxMap().getStyle();
 
                 if (style == null) {
-                    callback.error(
-                        "Style is not loaded yet. Try again after the map style loads."
-                    );
+                    callback.error("Style is not loaded.");
                     return;
                 }
 
                 String requestedGroup =
                     options.optString("groupId", "").trim();
 
-                List<String> matchingLayerIds = new ArrayList<>();
-                JSONArray groupLayers = new JSONArray();
+                String styleJson = style.getStyleJSON();
+                JSONObject styleObject = new JSONObject(styleJson);
+                JSONArray layers = styleObject.optJSONArray("layers");
+
+                JSONArray matchingLayers = new JSONArray();
                 JSONArray targetLayerDetails = new JSONArray();
 
                 int totalLayers = 0;
                 int layersWithMetadata = 0;
 
-                for (StyleObjectInfo layer : style.getStyleLayers()) {
-                    totalLayers++;
+                if (layers != null) {
+                    totalLayers = layers.length();
 
-                    String layerId = layer.getId();
+                    for (int i = 0; i < layers.length(); i++) {
+                        JSONObject layer = layers.getJSONObject(i);
+                        String layerId = layer.optString("id", "");
+                        JSONObject metadata =
+                            layer.optJSONObject("metadata");
 
-                    StylePropertyValue metadataValue =
-                        style.getStyleLayerProperty(layerId, "metadata");
+                        if (metadata == null) {
+                            continue;
+                        }
 
-                    String metadataJson = metadataValue != null
-                        ? metadataValue.getValue().toJson()
-                        : null;
-
-                    if (metadataJson == null
-                            || metadataJson.trim().isEmpty()
-                            || "null".equals(metadataJson)) {
-                        continue;
-                    }
-
-                    layersWithMetadata++;
-
-                    JSONObject layerInfo = new JSONObject();
-                    layerInfo.put("layerId", layerId);
-                    layerInfo.put("metadata", metadataJson);
-
-                    if (layerId.equals(
-                            "au-nsw-fossick-district-polygon copy")) {
-                        targetLayerDetails.put(layerInfo);
-                    }
-
-                    try {
-                        JSONObject metadata = new JSONObject(metadataJson);
-                        String actualGroup =
+                        layersWithMetadata++;
+                        String group =
                             metadata.optString("mapbox:group", "");
 
-                        if (!actualGroup.isEmpty()) {
-                            JSONObject groupInfo = new JSONObject();
-                            groupInfo.put("layerId", layerId);
-                            groupInfo.put("group", actualGroup);
-                            groupLayers.put(groupInfo);
+                        JSONObject layerInfo = new JSONObject();
+                        layerInfo.put("layerId", layerId);
+                        layerInfo.put("metadata", metadata);
+
+                        if (layerId.equals(
+                                "au-nsw-fossick-district-polygon copy")) {
+                            targetLayerDetails.put(layerInfo);
                         }
 
-                        if (!requestedGroup.isEmpty()
-                                && requestedGroup.equals(actualGroup)) {
-                            matchingLayerIds.add(layerId);
+                        if (requestedGroup.equals(group)) {
+                            matchingLayers.put(layerInfo);
                         }
-                    } catch (Exception parseError) {
-                        Log.w(
-                            "MapboxPlugin",
-                            "Could not parse metadata for layer " + layerId +
-                                ": " + metadataJson,
-                            parseError
-                        );
                     }
                 }
 
@@ -3810,28 +3787,19 @@ private boolean addMarkerInternal(
                 result.put("requestedGroup", requestedGroup);
                 result.put("totalLayers", totalLayers);
                 result.put("layersWithMetadata", layersWithMetadata);
-                result.put("matchingLayerCount", matchingLayerIds.size());
-                result.put(
-                    "matchingLayerIds",
-                    new JSONArray(matchingLayerIds)
-                );
-                result.put("layersWithMapboxGroups", groupLayers);
+                result.put("matchingLayerCount", matchingLayers.length());
+                result.put("matchingLayers", matchingLayers);
                 result.put("targetLayerDetails", targetLayerDetails);
 
                 Log.d(
                     "MapboxPlugin",
-                    "Layer group diagnostic: " + result.toString(2)
+                    "Runtime style diagnostic: " + result.toString(2)
                 );
 
                 callback.success(result);
             } catch (Throwable e) {
-                Log.e("MapboxPlugin", "Layer group diagnostic failed", e);
-                callback.error(
-                    "Layer diagnostic failed: " +
-                        (e.getMessage() != null
-                            ? e.getMessage()
-                            : e.getClass().getSimpleName())
-                );
+                Log.e("MapboxPlugin", "Diagnostic failed", e);
+                callback.error("Diagnostic failed: " + e.getMessage());
             }
         });
     }
