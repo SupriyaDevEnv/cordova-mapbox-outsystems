@@ -3653,68 +3653,88 @@ private boolean addMarkerInternal(
         JSONObject options,
         CallbackContext callback
     ) {
-        final String group = options.optString("groupId", "").trim();
-        final boolean visible = options.optBoolean("visible", true);
-
-        if (group.isEmpty()) {
-            callback.error("groupId is required");
-            return;
-        }
-
         runForSession(() -> {
-            if (mapView == null) {
-                callback.error("Map is not initialized setLayerGroupVisibility.");
-                return;
-            }
-
-            Style style = mapView.getMapboxMap().getStyle();
-            if (style == null) {
-                callback.error("Style is not loaded yet.");
-                return;
-            }
-
             try {
+                String groupId = options.optString("groupId", "").trim();
+                boolean visible = options.optBoolean("visible", true);
+
+                if (groupId.isEmpty()) {
+                    callback.error("groupId is required");
+                    return;
+                }
+
+                if (mapView == null) {
+                    callback.error("Map is not initialized.");
+                    return;
+                }
+
+                Style style = mapView.getMapboxMap().getStyle();
+                if (style == null) {
+                    callback.error("Style is not loaded.");
+                    return;
+                }
+
+                JSONObject styleObject =
+                    new JSONObject(style.getStyleJSON());
+                JSONArray styleLayers =
+                    styleObject.optJSONArray("layers");
+
+                if (styleLayers == null) {
+                    callback.error("No style layers found.");
+                    return;
+                }
+
                 List<String> matchingLayerIds = new ArrayList<>();
+                for (int i = 0; i < styleLayers.length(); i++) {
+                    JSONObject layer = styleLayers.getJSONObject(i);
+                    JSONObject metadata = layer.optJSONObject("metadata");
 
-                for (StyleObjectInfo layer : style.getStyleLayers()) {
-
-                    String metadataJson = style.getStyleLayerProperty(
-                        layer.getId(),
-                        "metadata"
-                    ).getValue().toJson();
-
-                    if (metadataJson == null ||
-                        !metadataJson.trim().startsWith("{")) {
+                    if (metadata == null ||
+                        !groupId.equals(
+                            metadata.optString("mapbox:group", "")
+                        )) {
                         continue;
                     }
 
-                    JSONObject metadata = new JSONObject(metadataJson);
-
-                    if (group.equals(
-                        metadata.optString("mapbox:group", "")
-                    )) {
-                        matchingLayerIds.add(layer.getId());
+                    String layerId = layer.optString("id", "");
+                    if (!layerId.isEmpty()) {
+                        matchingLayerIds.add(layerId);
                     }
                 }
 
                 if (matchingLayerIds.isEmpty()) {
-                    callback.error("No layers found for group: " + group);
+                    callback.error(
+                        "No layers found for group: " + groupId
+                    );
                     return;
                 }
 
+                String visibility = visible ? "visible" : "none";
+                JSONArray updatedLayers = new JSONArray();
                 for (String layerId : matchingLayerIds) {
                     style.setStyleLayerProperty(
                         layerId,
                         "visibility",
-                        Value.valueOf(visible ? "visible" : "none")
+                        Value.valueOf(visibility)
                     );
+                    updatedLayers.put(layerId);
                 }
 
-                callback.success();
+                JSONObject result = new JSONObject();
+                result.put("groupId", groupId);
+                result.put("visible", visible);
+                result.put("updatedCount", updatedLayers.length());
+                result.put("updatedLayers", updatedLayers);
+                callback.success(result);
 
-            } catch (Throwable e) {
+            } catch (Exception e) {
+                Log.e(
+                    "MapboxPlugin",
+                    "Group visibility update failed",
+                    e
+                );
                 callback.error(
-                    "Failed to change layer group visibility: " +
+                    "Failed to update group visibility: " +
                     (e.getMessage() != null
                         ? e.getMessage()
                         : e.getClass().getSimpleName())

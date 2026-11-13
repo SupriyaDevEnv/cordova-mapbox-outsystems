@@ -173,6 +173,17 @@ test('iOS sets visibility for all layers in a metadata group', () => {
   assert.match(body, /"count": matchingLayerIds\.count/);
 });
 
+test('Android sets visibility for runtime style layers in a metadata group', () => {
+  const body = javaMethod('setLayerGroupVisibility', 'diagnoseLayerGroup');
+  assert.match(body, /new JSONObject\(style\.getStyleJSON\(\)\)/);
+  assert.match(body, /optJSONArray\("layers"\)/);
+  assert.match(body, /metadata\.optString\("mapbox:group", ""\)/);
+  assert.match(body, /style\.setStyleLayerProperty\([\s\S]*?"visibility"/);
+  assert.match(body, /result\.put\("updatedCount", updatedLayers\.length\(\)\)/);
+  assert.match(body, /result\.put\("updatedLayers", updatedLayers\)/);
+  assert.match(body, /callback\.success\(result\)/);
+});
+
 test('path line style is validated the same way on both platforms', () => {
   const androidStart = android.split('private void startPathTracking(')[1].split('private void stopPathTracking(')[0];
   const androidLoad = android.split('private void loadPath(')[1].split('private void clearPaths(')[0];
