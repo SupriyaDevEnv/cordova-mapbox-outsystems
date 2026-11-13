@@ -463,6 +463,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             case "diagnoseLayerGroup":
                 diagnoseLayerGroup(options, callbackContext);
                 return true;
+            case "getLayersByGroup":
+                getLayersByGroup(options, callbackContext);
+                return true;
             case "getLayerIds":
                 getLayerIds(callbackContext);
                 return true;
@@ -3828,6 +3831,76 @@ private boolean addMarkerInternal(
                 callback.error(
                     "Failed to list layers: " +
                     (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())
+                );
+            }
+        });
+    }
+
+    private void getLayersByGroup(
+        JSONObject options,
+        CallbackContext callback
+    ) {
+        runForSession(() -> {
+            try {
+                String groupId = options.optString("groupId", "").trim();
+
+                if (groupId.isEmpty()) {
+                    callback.error("groupId is required");
+                    return;
+                }
+
+                if (mapView == null) {
+                    callback.error("Map is not initialized.");
+                    return;
+                }
+
+                Style style = mapView.getMapboxMap().getStyle();
+
+                if (style == null) {
+                    callback.error("Style is not loaded.");
+                    return;
+                }
+
+                JSONArray resultLayers = new JSONArray();
+
+                for (StyleObjectInfo layer : style.getStyleLayers()) {
+                    String layerId = layer.getId();
+
+                    String metadataJson = style
+                        .getStyleLayerProperty(layerId, "metadata")
+                        .getValue()
+                        .toJson();
+
+                    if (metadataJson == null ||
+                            !metadataJson.trim().startsWith("{")) {
+                        continue;
+                    }
+
+                    JSONObject metadata = new JSONObject(metadataJson);
+
+                    String actualGroup =
+                        metadata.optString("mapbox:group", "");
+
+                    if (!groupId.equals(actualGroup)) {
+                        continue;
+                    }
+
+                    JSONObject layerInfo = new JSONObject();
+                    layerInfo.put("id", layerId);
+                    layerInfo.put("name", layerId);
+                    layerInfo.put("type", layer.getType());
+                    resultLayers.put(layerInfo);
+                }
+
+                JSONObject response = new JSONObject();
+                response.put("groupId", groupId);
+                response.put("totalLayers", resultLayers.length());
+                response.put("layers", resultLayers);
+
+                callback.success(response);
+            } catch (Exception e) {
+                callback.error(
+                    "Failed to retrieve group layers: " + e.getMessage()
                 );
             }
         });

@@ -517,6 +517,10 @@ var api = {
     }]);
   },
 
+  getLayersByGroup: function (options) {
+    return call('getLayersByGroup', [options || {}]);
+  },
+
   getLayerIds: function () {
     return call('getLayerIds', []);
   },
