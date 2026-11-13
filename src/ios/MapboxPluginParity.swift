@@ -191,11 +191,6 @@ class MapboxPluginParity: MapboxPlugin {
                 return
             }
 
-            guard mapView.mapboxMap.isStyleLoaded else {
-                self.sendParityError("Style is not loaded yet.", command: command)
-                return
-            }
-
             let exists = mapView.mapboxMap.allLayerIdentifiers.contains { $0.id == layerId }
             guard exists else {
                 self.sendParityError("Layer not found in current style: \(layerId)", command: command)
@@ -212,27 +207,6 @@ class MapboxPluginParity: MapboxPlugin {
             } catch {
                 self.sendParityError("Failed to change layer visibility.", command: command)
             }
-        }
-    }
-
-    @objc(getLayerIds:)
-    func getLayerIds(command: CDVInvokedUrlCommand) {
-        rememberCommand(command)
-        runForSession {
-            guard let mapView = self.activeMapView() else {
-                self.sendParityError("Map is not initialized.", command: command)
-                return
-            }
-
-            guard mapView.mapboxMap.isStyleLoaded else {
-                self.sendParityError("Style is not loaded yet.", command: command)
-                return
-            }
-
-            let ids = mapView.mapboxMap.allLayerIdentifiers.map { $0.id }
-            let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: ids)
-            self.forgetCallback(command.callbackId)
-            self.commandDelegate.send(result, callbackId: command.callbackId)
         }
     }
 
@@ -508,4 +482,3 @@ class MapboxPluginParity: MapboxPlugin {
         commandDelegate.send(result, callbackId: callbackId)
     }
 }
-
