@@ -457,6 +457,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             case "setLayerVisibility":
                 setLayerVisibility(options, callbackContext);
                 return true;
+            case "setLayerGroupVisibility":
+                setLayerGroupVisibility(options, callbackContext);
+                return true;
             case "getLayerIds":
                 getLayerIds(callbackContext);
                 return true;
@@ -3635,6 +3638,80 @@ private boolean addMarkerInternal(
                 callback.error(
                     "Failed to change layer visibility: " +
                     (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())
+                );
+            }
+        });
+    }
+
+    private void setLayerGroupVisibility(
+        JSONObject options,
+        CallbackContext callback
+    ) {
+        final String group = options.optString("groupId", "").trim();
+        final boolean visible = options.optBoolean("visible", true);
+
+        if (group.isEmpty()) {
+            callback.error("groupId is required");
+            return;
+        }
+
+        runForSession(() -> {
+            if (mapView == null) {
+                callback.error("Map is not initialized setLayerGroupVisibility.");
+                return;
+            }
+
+            Style style = mapView.getMapboxMap().getStyle();
+            if (style == null) {
+                callback.error("Style is not loaded yet.");
+                return;
+            }
+
+            try {
+                List<String> matchingLayerIds = new ArrayList<>();
+
+                for (StyleObjectInfo layer : style.getStyleLayers()) {
+
+                    String metadataJson = style.getStyleLayerProperty(
+                        layer.getId(),
+                        "metadata"
+                    ).getValue().toJson();
+
+                    if (metadataJson == null ||
+                        !metadataJson.trim().startsWith("{")) {
+                        continue;
+                    }
+
+                    JSONObject metadata = new JSONObject(metadataJson);
+
+                    if (group.equals(
+                        metadata.optString("mapbox:group", "")
+                    )) {
+                        matchingLayerIds.add(layer.getId());
+                    }
+                }
+
+                if (matchingLayerIds.isEmpty()) {
+                    callback.error("No layers found for group: " + group);
+                    return;
+                }
+
+                for (String layerId : matchingLayerIds) {
+                    style.setStyleLayerProperty(
+                        layerId,
+                        "visibility",
+                        Value.valueOf(visible ? "visible" : "none")
+                    );
+                }
+
+                callback.success();
+
+            } catch (Throwable e) {
+                callback.error(
+                    "Failed to change layer group visibility: " +
+                    (e.getMessage() != null
+                        ? e.getMessage()
+                        : e.getClass().getSimpleName())
                 );
             }
         });

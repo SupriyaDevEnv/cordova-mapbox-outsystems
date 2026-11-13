@@ -507,6 +507,10 @@ var api = {
     return call('setLayerVisibility', [options || {}]);
   },
 
+  setLayerGroupVisibility: function (options) {
+    return call('setLayerGroupVisibility', [options || {}]);
+  },
+
   getLayerIds: function () {
     return call('getLayerIds', []);
   },

@@ -162,6 +162,17 @@ test('iOS implements boundary drawing actions and live acreage updates', () => {
   assert.match(ios, /completedBoundaryDrawingPolygons\.append\(polygon\)/);
 });
 
+test('iOS sets visibility for all layers in a metadata group', () => {
+  const body = ios.split('func setLayerGroupVisibility(command:')[1]
+    .split('@objc(startBoundaryDrawing:', 1)[0];
+  assert.match(body, /options\["groupId"\]/);
+  assert.match(body, /properties\["metadata"\]/);
+  assert.match(body, /metadata\["mapbox:group"\]/);
+  assert.match(body, /property: "visibility"/);
+  assert.match(body, /"updatedLayers": matchingLayerIds/);
+  assert.match(body, /"count": matchingLayerIds\.count/);
+});
+
 test('path line style is validated the same way on both platforms', () => {
   const androidStart = android.split('private void startPathTracking(')[1].split('private void stopPathTracking(')[0];
   const androidLoad = android.split('private void loadPath(')[1].split('private void clearPaths(')[0];
