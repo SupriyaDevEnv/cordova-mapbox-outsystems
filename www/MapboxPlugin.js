@@ -511,6 +511,12 @@ var api = {
     return call('setLayerGroupVisibility', [options || {}]);
   },
 
+  diagnoseLayerGroup: function (groupId) {
+    return call('diagnoseLayerGroup', [{
+      groupId: groupId || ''
+    }]);
+  },
+
   getLayerIds: function () {
     return call('getLayerIds', []);
   },

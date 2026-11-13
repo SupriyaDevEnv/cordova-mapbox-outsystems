@@ -56,6 +56,7 @@ import com.mapbox.maps.OfflineManager;
 import com.mapbox.maps.ScreenCoordinate;
 import com.mapbox.maps.Style;
 import com.mapbox.maps.StyleObjectInfo;
+import com.mapbox.maps.StylePropertyValue;
 import com.mapbox.maps.StylePackLoadOptions;
 import com.mapbox.maps.TilesetDescriptorOptions;
 import com.mapbox.maps.extension.style.layers.properties.generated.IconAnchor;
@@ -459,6 +460,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
                 return true;
             case "setLayerGroupVisibility":
                 setLayerGroupVisibility(options, callbackContext);
+                return true;
+            case "diagnoseLayerGroup":
+                diagnoseLayerGroup(options, callbackContext);
                 return true;
             case "getLayerIds":
                 getLayerIds(callbackContext);
@@ -3712,6 +3716,121 @@ private boolean addMarkerInternal(
                     (e.getMessage() != null
                         ? e.getMessage()
                         : e.getClass().getSimpleName())
+                );
+            }
+        });
+    }
+
+    private void diagnoseLayerGroup(
+        JSONObject options,
+        CallbackContext callback
+    ) {
+        cordova.getActivity().runOnUiThread(() -> {
+            try {
+                if (mapView == null) {
+                    callback.error("Map is not initialized.");
+                    return;
+                }
+
+                Style style = mapView.getMapboxMap().getStyle();
+
+                if (style == null) {
+                    callback.error(
+                        "Style is not loaded yet. Try again after the map style loads."
+                    );
+                    return;
+                }
+
+                String requestedGroup =
+                    options.optString("groupId", "").trim();
+
+                List<String> matchingLayerIds = new ArrayList<>();
+                JSONArray groupLayers = new JSONArray();
+                JSONArray targetLayerDetails = new JSONArray();
+
+                int totalLayers = 0;
+                int layersWithMetadata = 0;
+
+                for (StyleObjectInfo layer : style.getStyleLayers()) {
+                    totalLayers++;
+
+                    String layerId = layer.getId();
+
+                    StylePropertyValue metadataValue =
+                        style.getStyleLayerProperty(layerId, "metadata");
+
+                    String metadataJson = metadataValue != null
+                        ? metadataValue.getValue().toJson()
+                        : null;
+
+                    if (metadataJson == null
+                            || metadataJson.trim().isEmpty()
+                            || "null".equals(metadataJson)) {
+                        continue;
+                    }
+
+                    layersWithMetadata++;
+
+                    JSONObject layerInfo = new JSONObject();
+                    layerInfo.put("layerId", layerId);
+                    layerInfo.put("metadata", metadataJson);
+
+                    if (layerId.equals(
+                            "au-nsw-fossick-district-polygon copy")) {
+                        targetLayerDetails.put(layerInfo);
+                    }
+
+                    try {
+                        JSONObject metadata = new JSONObject(metadataJson);
+                        String actualGroup =
+                            metadata.optString("mapbox:group", "");
+
+                        if (!actualGroup.isEmpty()) {
+                            JSONObject groupInfo = new JSONObject();
+                            groupInfo.put("layerId", layerId);
+                            groupInfo.put("group", actualGroup);
+                            groupLayers.put(groupInfo);
+                        }
+
+                        if (!requestedGroup.isEmpty()
+                                && requestedGroup.equals(actualGroup)) {
+                            matchingLayerIds.add(layerId);
+                        }
+                    } catch (Exception parseError) {
+                        Log.w(
+                            "MapboxPlugin",
+                            "Could not parse metadata for layer " + layerId +
+                                ": " + metadataJson,
+                            parseError
+                        );
+                    }
+                }
+
+                JSONObject result = new JSONObject();
+                result.put("requestedGroup", requestedGroup);
+                result.put("totalLayers", totalLayers);
+                result.put("layersWithMetadata", layersWithMetadata);
+                result.put("matchingLayerCount", matchingLayerIds.size());
+                result.put(
+                    "matchingLayerIds",
+                    new JSONArray(matchingLayerIds)
+                );
+                result.put("layersWithMapboxGroups", groupLayers);
+                result.put("targetLayerDetails", targetLayerDetails);
+
+                Log.d(
+                    "MapboxPlugin",
+                    "Layer group diagnostic: " + result.toString(2)
+                );
+
+                callback.success(result);
+            } catch (Throwable e) {
+                Log.e("MapboxPlugin", "Layer group diagnostic failed", e);
+                callback.error(
+                    "Layer diagnostic failed: " +
+                        (e.getMessage() != null
+                            ? e.getMessage()
+                            : e.getClass().getSimpleName())
                 );
             }
         });
