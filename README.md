@@ -896,11 +896,31 @@ On Android and iOS, a gesture starting in an overlay exclusion rectangle stays w
 
 `initialize({ behindWebView: true, ... })` starts plugin-owned DOM tracking by default on Android and iOS. No separate OutSystems touch script is needed. It tracks standard interactive HTML controls and roles, OutSystems bottom sheets, popups, modals and sidebars, `.map-control-btn`, `.map-touchable`, `.map-touch-region`, `[data-map-touch-region]`, and inline `cursor: pointer` tag controls inside `.tags-container`.
 
-- Keep your existing map initialization and `setViewport`/`resizeMap` calls. Automatic tracking discovers overlays only; it does not infer which DOM element is your map container.
+- Keep your existing map initialization and `setViewport`/`resizeMap` calls. Without a marked map element, automatic tracking finds only the control types above.
 - Mark custom clickable or draggable containers with the `map-touch-region` class. Do not put this class on the map container or the whole screen unless all touches there should go to the WebView.
 - Rectangles are clipped to the viewport and scroll containers, converted from CSS coordinates to native pixels using device pixel ratio, and deduplicated. Hidden and `pointer-events: none` controls are excluded.
 - The plugin updates regions after DOM changes, scrolling, resizing, loads, and relevant CSS animations/transitions. It disconnects observers and listeners on `close()`, reinitialization, or page exit. Call `close()` when leaving the map screen in an OutSystems single-page navigation flow.
-- Updates are serialized and failed updates are retried. If more than 50 independent regions on Android or 20 on iOS remain, the plugin temporarily routes the entire viewport to the WebView and warns in the console. Group related controls under `map-touch-region` to reduce the count and restore map gestures.
+- Updates are serialized and failed updates are retried. Android and iOS accept up to 256 regions. Beyond that, the plugin merges neighbouring regions and warns in the console; every control stays in the WebView and map gestures keep working, but some map area next to merged controls also goes to the WebView. Earlier versions allowed 50 regions on Android and 20 on iOS, and then routed the entire viewport to the WebView, which disabled map gestures.
+
+#### Recommended: mark the map element
+
+Add the `data-mapbox-map` attribute to the transparent element the map shows through (the container you size the map to):
+
+```html
+<div class="map-area" data-mapbox-map></div>
+```
+
+With this attribute, tracking no longer depends on element types. **Anything drawn over the map takes its touches**: clickable containers (OutSystems Containers with an OnClick render as plain `div`s), cards, chips, scrollable rows and lists, labels, images and custom bottom sheets. Touches reach the map only where nothing is drawn.
+
+- The marked element and the layout containers around it belong to the map.
+- An element counts as drawn when it has a visible background colour or image, its own text, is an image/SVG/video/canvas/iframe/form field, scrolls, has `cursor: pointer`, or matches the control list above.
+- Transparent wrappers with no text of their own let touches through, so a full-height column holding the map buttons does not block the map between them. A border or shadow alone does not claim the area inside it.
+- Set `pointer-events: none` on decorations (scale bar, attribution, crosshair) that should never take touches. Add `map-touch-region` to a transparent element that must keep its touches, such as a transparent backdrop that closes a menu.
+- A tap on the map never reaches the page. Close menus or blur inputs from your `onMapTap` callback, or use a backdrop with `map-touch-region`.
+- Each update visits every element once and reads styles only for elements over the map that are not already covered; in browser tests a map screen took well under a millisecond, so updates can run on every frame of a sheet drag or animation.
+- `autoTouchRouting: false` ignores the attribute and keeps protecting only `.map-control-btn`.
+
+[docs/touch-routing-demo.html](docs/touch-routing-demo.html) is a browser simulation of a map screen that compares this mode with the control-type list.
 - Normal WebView events handle clicks. The plugin does not simulate `.click()` or intercept DOM touch events. Controls must be reachable through normal DOM hit testing; check overlapping elements and `pointer-events` if a custom control still fails.
 
 After rebuilding the Android and iOS apps with this version, disable/remove the old standalone touch script. Its `window.__mapboxTouchBridge.stop()` is also called at automatic initialization if present, but the old script must not run again afterward. Remove the standalone touch script on both Android and iOS.

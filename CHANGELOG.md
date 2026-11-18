@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.10
+
+- **New:** mark the element the map shows through with `data-mapbox-map`, and behind-WebView touch routing gives the page every touch on anything drawn over the map: clickable containers, cards, chips, scrollable rows, labels and custom bottom sheets, not only buttons, links and known OutSystems classes. Transparent wrappers still let touches through to the map. Without the attribute, tracking is unchanged.
+- **Changed:** Android and iOS accept up to 256 overlay regions, up from 50 on Android and 20 on iOS. Beyond the limit, neighbouring regions are merged instead of routing the whole screen to the WebView, so map gestures no longer stop working on busy screens.
+- **New:** `docs/touch-routing-demo.html`, a browser simulation that compares the two tracking modes on a map screen.
+
 ## 1.0.9
 
 - **New (iOS):** `getLayerIds`, `getLayersByGroup`, `setLayerGroupVisibility` and `diagnoseLayerGroup`, matching Android. Previously these calls never returned on iOS.

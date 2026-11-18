@@ -1,6 +1,6 @@
 {
   "name": "cordova-plugin-outsystems-mapbox",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "files": [
     "plugin.xml",
     "CHANGELOG.md",
