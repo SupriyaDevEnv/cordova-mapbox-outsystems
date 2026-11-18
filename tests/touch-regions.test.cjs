@@ -93,12 +93,21 @@ test('ignores hidden ancestors and pointer-events:none; clips to scrolling ances
   controller.stop();
 });
 
-test('over 50 independent regions preserves WebView controls instead of dropping them', async () => {
-  const h = host(Array.from({ length: 51 }, (_, index) => element(index * 10, 0, 2, 2)));
+test('over 256 independent regions merges neighbours instead of dropping controls or freezing the map', async () => {
+  const sources = Array.from({ length: 300 }, (_, index) => element((index % 30) * 30, Math.floor(index / 30) * 30, 2, 2));
+  const h = host(sources);
   const sent = [];
   const controller = start(h.win, rects => sent.push(rects));
   await controller.ready;
-  assert.deepEqual(sent[0], [{ x: 0, y: 0, width: 2000, height: 1600 }]);
+  assert.ok(sent[0].length <= start.MAX_RECTS && sent[0].length > 1);
+  const viewport = sent[0].find(r => r.width >= 2000 && r.height >= 1600);
+  assert.equal(viewport, undefined, 'never routes the whole viewport to the WebView');
+  for (const node of sources) {
+    const b = node.bounds;
+    const rect = { x: b.left * 2, y: b.top * 2, width: 4, height: 4 };
+    assert.ok(sent[0].some(r => rect.x >= r.x && rect.y >= r.y &&
+      rect.x + rect.width <= r.x + r.width && rect.y + rect.height <= r.y + r.height), 'every control stays covered');
+  }
   assert.equal(h.warnings.length, 1);
   h.doc.elements = [element(1, 1, 2, 2)]; h.win.emit('resize'); await h.frame();
   assert.deepEqual(sent[1], [{ x: 2, y: 2, width: 4, height: 4 }]);
@@ -196,7 +205,7 @@ test('unsupported platforms and foreground maps retain existing bridge behavior'
   }
 });
 
-test('iOS uses native pixels and its 20-region budget, then clears dismissed overlays', async () => {
+test('iOS uses native pixels and the shared 256-region budget, then clears dismissed overlays', async () => {
   const h = host(Array.from({ length: 20 }, (_, i) => element(i * 10, 10, 2, 2)));
   h.win.cordova.platformId = 'ios';
   h.win.devicePixelRatio = 3;
@@ -207,7 +216,9 @@ test('iOS uses native pixels and its 20-region budget, then clears dismissed ove
   assert.deepEqual(rects[1], { x: 30, y: 30, width: 6, height: 6 });
   h.doc.elements.push(element(300, 10, 2, 2));
   h.win.emit('resize'); await h.frame();
-  assert.deepEqual(b.calls.at(-1).args[0], [{ x: 0, y: 0, width: 3000, height: 2400 }]);
+  rects = b.calls.at(-1).args[0];
+  assert.equal(rects.length, 21, 'a 21st control no longer freezes iOS map gestures');
+  assert.deepEqual(rects[20], { x: 900, y: 30, width: 6, height: 6 });
   h.doc.elements = [];
   h.win.emit('resize'); await h.frame();
   assert.deepEqual(b.calls.at(-1).args[0], []);

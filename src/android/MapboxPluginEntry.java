@@ -816,7 +816,7 @@ if (gestures != null) {
             return;
         }
 
-        int maxRects = 50;
+        int maxRects = 256;
 
         if (rects.length() > maxRects) {
             callback.error(

@@ -14,18 +14,108 @@ var selector = [
   '.tags-container [style*="cursor: pointer"]', '.tags-container [style*="cursor:pointer"]'
 ].join(',');
 
+// Native setTouchableRects accepts at most this many regions on Android and iOS.
+var MAX_RECTS = 256;
+// Marks the transparent element the native map shows through. When present,
+// every element drawn over the map is tracked, not only known control types.
+var MAP_ELEMENT = '[data-mapbox-map]';
+var CLIPS = /^(hidden|clip|scroll|auto)$/;
+var SCROLLS = /^(auto|scroll)$/;
+var REPLACED = /^(img|svg|video|canvas|iframe|object|embed|picture|input|textarea|select)$/i;
+
 function contains(outer, inner) {
   return inner.x >= outer.x && inner.y >= outer.y &&
     inner.x + inner.width <= outer.x + outer.width &&
     inner.y + inner.height <= outer.y + outer.height;
 }
 
+function union(a, b) {
+  var x = Math.min(a.x, b.x);
+  var y = Math.min(a.y, b.y);
+  return {
+    x: x, y: y,
+    width: Math.max(a.x + a.width, b.x + b.width) - x,
+    height: Math.max(a.y + a.height, b.y + b.height) - y
+  };
+}
+
+function area(rect) { return rect.width * rect.height; }
+
+// Adds rect unless an existing region already covers it; drops regions it covers.
+function addRect(rects, rect) {
+  if (rects.some(function (existing) { return contains(existing, rect); })) return false;
+  for (var i = rects.length - 1; i >= 0; i--) if (contains(rect, rects[i])) rects.splice(i, 1);
+  rects.push(rect);
+  return true;
+}
+
+// Merges neighbouring regions (cheapest added area first) until at most
+// `limit` remain. Merging only grows WebView-owned area, so no control is
+// ever dropped; at worst a little map area next to merged controls is lost.
+function mergeToLimit(rects, limit) {
+  while (rects.length > limit) {
+    rects.sort(function (a, b) { return a.y - b.y || a.x - b.x; });
+    var pairs = [];
+    for (var i = 0; i + 1 < rects.length; i++) {
+      pairs.push({ index: i, cost: area(union(rects[i], rects[i + 1])) - area(rects[i]) - area(rects[i + 1]) });
+    }
+    pairs.sort(function (a, b) { return a.cost - b.cost; });
+    var excess = rects.length - limit;
+    var partner = {};
+    for (var p = 0; p < pairs.length && excess > 0; p++) {
+      var at = pairs[p].index;
+      if (partner[at] !== undefined || partner[at + 1] !== undefined) continue;
+      partner[at] = at + 1; partner[at + 1] = at;
+      excess--;
+    }
+    var merged = [];
+    rects.forEach(function (rect, index) {
+      var other = partner[index];
+      if (other === undefined) addRect(merged, rect);
+      else if (other > index) addRect(merged, union(rect, rects[other]));
+    });
+    rects = merged;
+  }
+  return rects;
+}
+
+function alpha(color) {
+  if (!color || color === 'transparent') return 0;
+  var match = /rgba?\(([^)]*)\)/.exec(color);
+  if (!match) return 1;
+  var parts = match[1].split(/[\s,\/]+/).filter(Boolean);
+  if (parts.length < 4) return 1;
+  var value = parseFloat(parts[3]);
+  return /%$/.test(parts[3]) ? value / 100 : value;
+}
+
+function scrollable(element, style) {
+  return (SCROLLS.test(style.overflowX) && element.scrollWidth > element.clientWidth) ||
+    (SCROLLS.test(style.overflowY) && element.scrollHeight > element.clientHeight);
+}
+
+// True when an element draws or handles something over the map. Wrappers that
+// draw nothing (transparent background, no text of their own) let touches
+// through. A border or shadow alone does not claim the area inside it, so a
+// framed map container stays usable.
+function ownsTouches(element, style) {
+  if ((element.matches && element.matches(selector)) || style.cursor === 'pointer') return true;
+  if (REPLACED.test(element.tagName || '')) return true;
+  if (scrollable(element, style)) return true;
+  if (alpha(style.backgroundColor) > 0 ||
+      (style.backgroundImage && style.backgroundImage !== 'none')) return true;
+  for (var node = element.firstChild; node; node = node.nextSibling) {
+    if (node.nodeType === 3 && /\S/.test(node.nodeValue)) return true;
+  }
+  return false;
+}
+
 module.exports = function start(win, send, options) {
   var doc = win.document;
   // Older OutSystems initialization disables broad discovery while still using
   // map-control-btn overlays. Protect only those controls in compatibility mode.
-  var activeSelector = options && options.controlsOnly ? '.map-control-btn' : selector;
-  var maxRects = win.cordova && win.cordova.platformId === 'ios' ? 20 : 50;
+  var controlsOnly = !!(options && options.controlsOnly);
+  var activeSelector = controlsOnly ? '.map-control-btn' : selector;
   var stopped = false;
   var frame = null;
   var retry = null;
@@ -36,8 +126,7 @@ module.exports = function start(win, send, options) {
   var observed = [];
   var resizeObserver = win.ResizeObserver ? new win.ResizeObserver(schedule) : null;
 
-  function collect() {
-    var elements = Array.prototype.slice.call(doc.querySelectorAll(activeSelector));
+  function observe(elements) {
     if (resizeObserver && (elements.length !== observed.length ||
         elements.some(function (element, index) { return element !== observed[index]; }))) {
       resizeObserver.disconnect();
@@ -45,43 +134,84 @@ module.exports = function start(win, send, options) {
       elements.forEach(function (element) { resizeObserver.observe(element); });
     }
     observed = elements;
-    var dpr = win.devicePixelRatio || 1;
+  }
+
+  // Visible part of an element in native pixels, clipped to the viewport and
+  // to scrolling/overflow ancestors; null when hidden or fully clipped.
+  function nativeRect(element, style, dpr) {
+    if (style.pointerEvents === 'none' || style.visibility === 'hidden' ||
+        style.visibility === 'collapse') return null;
+    var bounds = element.getBoundingClientRect();
+    var left = Math.max(0, bounds.left);
+    var top = Math.max(0, bounds.top);
+    var right = Math.min(win.innerWidth, bounds.right);
+    var bottom = Math.min(win.innerHeight, bounds.bottom);
+    for (var ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+      var css = ancestor === element ? style : win.getComputedStyle(ancestor);
+      if (css.display === 'none' || css.opacity === '0' || ancestor.hidden) return null;
+      if (ancestor !== element) {
+        var clip = ancestor.getBoundingClientRect();
+        if (CLIPS.test(css.overflowX)) { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
+        if (CLIPS.test(css.overflowY)) { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
+      }
+    }
+    if (right <= left || bottom <= top) return null;
+    var x = Math.floor(left * dpr);
+    var y = Math.floor(top * dpr);
+    return { x: x, y: y, width: Math.ceil(right * dpr) - x, height: Math.ceil(bottom * dpr) - y };
+  }
+
+  // Known control types only (no map element marked, or compatibility mode).
+  function collectSelected(dpr) {
+    var elements = Array.prototype.slice.call(doc.querySelectorAll(activeSelector));
+    observe(elements);
     var rects = [];
     elements.forEach(function (element) {
-      var style = win.getComputedStyle(element);
-      if (style.pointerEvents === 'none' || style.visibility === 'hidden' ||
-          style.visibility === 'collapse') return;
+      var rect = nativeRect(element, win.getComputedStyle(element), dpr);
+      if (rect) addRect(rects, rect);
+    });
+    return rects;
+  }
+
+  // Everything drawn over the map. Elements are visited once in document
+  // order, so a registered parent (sheet, card, chip) covers its children,
+  // which are then skipped by a rectangle test before any style lookup.
+  function collectDrawn(mapElement, dpr) {
+    var all = doc.getElementsByTagName('*');
+    var rects = [];
+    var owners = [];
+    for (var i = 0; i < all.length; i++) {
+      var element = all[i];
+      // The map element and the layout containers around it are the map itself.
+      if (element === mapElement || element.contains(mapElement)) continue;
       var bounds = element.getBoundingClientRect();
       var left = Math.max(0, bounds.left);
       var top = Math.max(0, bounds.top);
       var right = Math.min(win.innerWidth, bounds.right);
       var bottom = Math.min(win.innerHeight, bounds.bottom);
-      for (var ancestor = element; ancestor; ancestor = ancestor.parentElement) {
-        var css = win.getComputedStyle(ancestor);
-        if (css.display === 'none' || css.opacity === '0' || ancestor.hidden) return;
-        if (ancestor !== element) {
-          var clip = ancestor.getBoundingClientRect();
-          if (/^(hidden|clip|scroll|auto)$/.test(css.overflowX)) {
-            left = Math.max(left, clip.left); right = Math.min(right, clip.right);
-          }
-          if (/^(hidden|clip|scroll|auto)$/.test(css.overflowY)) {
-            top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
-          }
-        }
-      }
-      if (right <= left || bottom <= top) return;
+      if (right <= left || bottom <= top) continue; // off screen or display: none
       var x = Math.floor(left * dpr);
       var y = Math.floor(top * dpr);
-      var rect = { x: x, y: y, width: Math.ceil(right * dpr) - x, height: Math.ceil(bottom * dpr) - y };
-      if (rects.some(function (existing) { return contains(existing, rect); })) return;
-      rects = rects.filter(function (existing) { return !contains(rect, existing); });
-      rects.push(rect);
-    });
-    if (rects.length > maxRects) {
-      // Never silently drop controls: temporarily keep the whole viewport in WebView.
-      if (!warned) win.console.warn('Mapbox: more than ' + maxRects + ' overlay regions. Group controls with map-touch-region; map gestures are temporarily disabled.');
+      var quick = { x: x, y: y, width: Math.ceil(right * dpr) - x, height: Math.ceil(bottom * dpr) - y };
+      if (rects.some(function (existing) { return contains(existing, quick); })) continue;
+      var style = win.getComputedStyle(element);
+      if (!ownsTouches(element, style)) continue;
+      var rect = nativeRect(element, style, dpr);
+      if (rect && addRect(rects, rect)) owners.push(element);
+    }
+    observe([mapElement].concat(owners));
+    return rects;
+  }
+
+  function collect() {
+    var dpr = win.devicePixelRatio || 1;
+    var mapElement = !controlsOnly && doc.querySelector ? doc.querySelector(MAP_ELEMENT) : null;
+    var rects = mapElement ? collectDrawn(mapElement, dpr) : collectSelected(dpr);
+    if (rects.length > MAX_RECTS) {
+      if (!warned) win.console.warn('Mapbox: ' + rects.length + ' overlay regions; merging nearby regions to ' +
+        MAX_RECTS + '. Group controls with map-touch-region for exact map edges.');
       warned = true;
-      return [{ x: 0, y: 0, width: Math.ceil(win.innerWidth * dpr), height: Math.ceil(win.innerHeight * dpr) }];
+      return mergeToLimit(rects, MAX_RECTS);
     }
     warned = false;
     return rects;
@@ -131,7 +261,7 @@ module.exports = function start(win, send, options) {
   observer.observe(doc.documentElement, {
     childList: true, subtree: true, attributes: true,
     attributeFilter: ['class', 'style', 'hidden', 'aria-expanded', 'aria-hidden',
-      'role', 'data-button', 'data-map-touch-region', 'contenteditable']
+      'role', 'data-button', 'data-map-touch-region', 'data-mapbox-map', 'contenteditable']
   });
   var events = ['transitionrun', 'transitionend', 'transitioncancel', 'animationstart', 'animationend', 'animationcancel', 'load'];
   events.forEach(function (name) { doc.addEventListener(name, schedule, true); });
@@ -158,3 +288,7 @@ module.exports = function start(win, send, options) {
 
   return { stop: stop, ready: update() };
 };
+
+// Exposed for tests.
+module.exports.mergeToLimit = mergeToLimit;
+module.exports.MAX_RECTS = MAX_RECTS;

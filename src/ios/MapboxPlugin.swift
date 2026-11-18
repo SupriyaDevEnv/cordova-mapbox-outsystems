@@ -418,7 +418,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         runForSession {
             let rects = command.argument(at: 0) as? [[String: Any]] ?? []
 
-            let maxRects = 20
+            let maxRects = 256
             guard rects.count <= maxRects else {
                 self.sendError("Too many touchable rects. Maximum is \(maxRects).", command)
                 return
