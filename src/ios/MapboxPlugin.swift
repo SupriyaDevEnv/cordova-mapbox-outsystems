@@ -60,7 +60,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
-    private var mapView: MapView?
+    private(set) var mapView: MapView?
     private var mapTouchOverlay: MapTouchOverlayView?
     private var annotations: PointAnnotationManager?
     private var markers: [String: PointAnnotation] = [:]
@@ -118,8 +118,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var cancelables = Set<AnyCancelable>()
     private var compassSubscription: AnyCancelable?
     private var headingLocationManager: CLLocationManager?
-    private var moveToCurrentLocationCallbackId: String?
-    private var moveToCurrentLocationZoom: Double?
     private var lastHeadingBearing: CLLocationDirection = -1
     private var lastHeadingUpdate: TimeInterval = 0
     private var isUserTrackingEnabled = false
@@ -536,45 +534,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
-    @objc(moveToCurrentLocation:)
-    func moveToCurrentLocation(command: CDVInvokedUrlCommand) {
-        rememberCommand(command)
-        runForSession {
-            guard self.mapView != nil else {
-                self.sendError("Map is not initialized.", command)
-                return
-            }
-
-            let options = command.argument(at: 0) as? [String: Any] ?? [:]
-            guard self.validInput(options, command) else { return }
-            self.moveToCurrentLocationZoom = options["zoom"] == nil
-                ? nil
-                : self.doubleOption(options["zoom"], defaultValue: 0)
-
-            self.resumeCameraFollowing()
-            self.requestLocationAuthorizationIfNeeded()
-            self.moveToCurrentLocationCallbackId = command.callbackId
-            self.headingLocationManager?.startUpdatingLocation()
-        }
-    }
-
     private func startHeadingFollowMode(_ command: CDVInvokedUrlCommand) {
         guard CLLocationManager.headingAvailable() else {
             sendError("Device heading sensor is not available.", command)
             return
         }
 
-        if headingLocationManager == nil {
-            let manager = CLLocationManager()
-            manager.delegate = self
-            manager.headingFilter = 1
-            headingLocationManager = manager
-        }
-
-        if CLLocationManager.authorizationStatus() == .notDetermined {
-            headingLocationManager?.requestWhenInUseAuthorization()
-        }
-
+        requestLocationAuthorizationIfNeeded()
         headingLocationManager?.startUpdatingHeading()
         isHeadingFollowModeEnabled = true
         fireTrackingStatusChanged()
@@ -582,18 +548,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func startUserTracking(_ command: CDVInvokedUrlCommand) {
-        if headingLocationManager == nil {
-            let manager = CLLocationManager()
-            manager.delegate = self
-            manager.headingFilter = 1
-            manager.desiredAccuracy = kCLLocationAccuracyBest
-            headingLocationManager = manager
-        }
-
-        if CLLocationManager.authorizationStatus() == .notDetermined {
-            headingLocationManager?.requestWhenInUseAuthorization()
-        }
-
+        requestLocationAuthorizationIfNeeded()
         isUserTrackingEnabled = true
         resumeCameraFollowing()
         fireTrackingStatusChanged()
@@ -605,9 +560,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         isUserTrackingEnabled = false
         isCameraFollowingUser = false
         fireTrackingStatusChanged()
-        if moveToCurrentLocationCallbackId == nil {
-            headingLocationManager?.stopUpdatingLocation()
-        }
+        headingLocationManager?.stopUpdatingLocation()
         lastUserTrackingUpdate = 0
     }
 
@@ -654,6 +607,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         fireTrackingStatusChanged()
     }
 
+    /// Creates the shared heading/location manager once and asks for permission if needed.
     private func requestLocationAuthorizationIfNeeded() {
         if headingLocationManager == nil {
             let manager = CLLocationManager()
@@ -711,32 +665,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             return
         }
 
-        if let callbackId = moveToCurrentLocationCallbackId {
-            moveToCurrentLocationCallbackId = nil
-
-            let coordinate = location.coordinate
-            var camera = CameraOptions(center: coordinate)
-            if let zoom = moveToCurrentLocationZoom {
-                camera = CameraOptions(center: coordinate, zoom: zoom)
-            }
-            moveToCurrentLocationZoom = nil
-
-            runForSession {
-                if self.isCameraFollowingUser {
-                    self.runRecenterAnimation(to: camera)
-                }
-                if !self.isUserTrackingEnabled {
-                    manager.stopUpdatingLocation()
-                }
-
-                self.sendSuccess([
-                    "latitude": coordinate.latitude,
-                    "longitude": coordinate.longitude
-                ], callbackId: callbackId)
-            }
-            return
-        }
-
         guard isUserTrackingEnabled else {
             return
         }
@@ -772,18 +700,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        guard let callbackId = moveToCurrentLocationCallbackId else {
-            return
-        }
-
-        moveToCurrentLocationCallbackId = nil
-        moveToCurrentLocationZoom = nil
-
-        if !isUserTrackingEnabled {
-            manager.stopUpdatingLocation()
-        }
-
-        sendError(sanitizeError(contextMessage: "Failed to get current location.", error: error), callbackId: callbackId)
+        // Tracking keeps running after a transient failure; one-shot location requests are
+        // answered by MapboxPluginParity, which overrides this method.
     }
 
     private func shortestBearingDelta(from: CLLocationDirection, to: CLLocationDirection) -> CLLocationDirection {
@@ -2566,8 +2484,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         lastCompassBearing = -1
         lastCompassVisible = false
         trackingStatusCallbackId = nil
-        moveToCurrentLocationCallbackId = nil
-        moveToCurrentLocationZoom = nil
         cancelCurrentDownload()
         isOfflineDownloading = false
         isUserLocationEnabled = false
@@ -2865,7 +2781,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         return nil
     }
 
-    private func doubleOption(_ value: Any?, defaultValue: Double) -> Double {
+    func doubleOption(_ value: Any?, defaultValue: Double) -> Double {
         let parsed: Double?
         if let value = value as? Double {
             parsed = value
@@ -2889,7 +2805,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         return number
     }
 
-    private func boolOption(_ value: Any?, defaultValue: Bool) -> Bool {
+    func boolOption(_ value: Any?, defaultValue: Bool) -> Bool {
         if let value = value as? Bool { return value }
         if let value = value as? String {
             if value.caseInsensitiveCompare("true") == .orderedSame { return true }
@@ -2974,19 +2890,19 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         scrollView?.backgroundColor = UIColor.clear
     }
 
-    private func sendSuccess(_ command: CDVInvokedUrlCommand) {
+    func sendSuccess(_ command: CDVInvokedUrlCommand) {
         let result = CDVPluginResult(status: CDVCommandStatus_OK)
         forgetCallback(command.callbackId)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
-    private func sendSuccess(_ payload: [String: Any], _ command: CDVInvokedUrlCommand) {
+    func sendSuccess(_ payload: [String: Any], _ command: CDVInvokedUrlCommand) {
         let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
         forgetCallback(command.callbackId)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
-    private func sendSuccess(_ payload: [String: Any], callbackId: String) {
+    func sendSuccess(_ payload: [String: Any], callbackId: String) {
         let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
         forgetCallback(callbackId)
         commandDelegate.send(result, callbackId: callbackId)
@@ -3008,13 +2924,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         commandDelegate.send(result, callbackId: callbackId)
     }
 
-    private func sendError(_ message: String, _ command: CDVInvokedUrlCommand) {
+    func sendError(_ message: String, _ command: CDVInvokedUrlCommand) {
         let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: message)
         forgetCallback(command.callbackId)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
-    private func sendError(_ message: String, callbackId: String) {
+    func sendError(_ message: String, callbackId: String) {
         let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: message)
         forgetCallback(callbackId)
         commandDelegate.send(result, callbackId: callbackId)

@@ -87,7 +87,7 @@ with tempfile.TemporaryDirectory() as temp:
 # Cordova exposes webView as UIView, even when the instance is WKWebView.
 # Keep that base type in this host so unguarded .scrollView access fails to compile.
 ios = Path('src/ios/MapboxPlugin.swift').read_text()
-apply = ios.split('    private func makeWebViewTransparent() {', 1)[1].split('\n    private func sendSuccess', 1)[0]
+apply = ios.split('    private func makeWebViewTransparent() {', 1)[1].split('\n    func sendSuccess', 1)[0]
 restore = ios.split('        if let saved = savedWebViewAppearance {', 1)[1].split('        trackingStatusCallbackId = nil', 1)[0]
 swift_host = '''
 enum UIColor { static let clear = "clear" }

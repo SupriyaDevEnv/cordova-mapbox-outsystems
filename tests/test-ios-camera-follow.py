@@ -31,7 +31,7 @@ for name in ['handleMapOverlayPan', 'handleMapOverlayPinch']:
     assert 'pauseCameraFollowForGesture(recognizer)' in method(base, 'func ' + name)
 assert 'resumeCameraFollowing()' in method(base, 'private func startUserTracking(')
 assert 'isCameraFollowingUser = false' in method(base, 'private func stopUserTracking(')
-assert 'self.resumeCameraFollowing()' in method(parity, 'override func moveToCurrentLocation(')
+assert 'self.resumeCameraFollowing()' in method(parity, 'func moveToCurrentLocation(command:')
 assert 'if self.isCameraFollowingUser' in method(parity, 'private func handleMoveToCurrentLocation(')
 recenter = method(parity, 'private func handleMoveToCurrentLocation(')
 assert 'self.runRecenterAnimation(to: CameraOptions(center: coordinate, zoom: zoom.map { CGFloat($0) }))' in recenter
@@ -79,8 +79,6 @@ class Base {
     var isUserTrackingEnabled = true
     var headingLocationManager: CLLocationManager? = CLLocationManager()
     var mapView: MapView? = MapView()
-    var moveToCurrentLocationCallbackId: String?
-    var moveToCurrentLocationZoom: Double?
     var lastUserTrackingUpdate: Double = 0
     var isPathTrackingActive = true
     var isPathTrackingPaused = false
@@ -106,7 +104,6 @@ class Parity: Base {
     var smoothedTrackingCoordinate: CLLocationCoordinate2D?
     var parityPathTrackingActive = true
     var accuracyUpdates = 0
-    func activeMapView() -> MapView? { mapView }
     func handleMoveToCurrentLocation(_ location: CLLocation, manager: CLLocationManager) {}
     func sendLocationAccuracyUpdate(_ location: CLLocation) { accuracyUpdates += 1 }
 '''
@@ -196,25 +193,6 @@ plugin.drain()
 precondition(plugin.mapView!.camera.moves == beforeStop)
 precondition(plugin.pathPoints.count == pointCount, "Stopped tracking ignores queued points")
 
-// The base one-shot location completion must also honor a gesture before its fix.
-let oneShot = Base()
-oneShot.resumeCameraFollowing()
-oneShot.moveToCurrentLocationCallbackId = "request"
-oneShot.locationManager(oneShot.headingLocationManager!, didUpdateLocations: [CLLocation(latitude: 10, longitude: 20)])
-gesture.state = .began
-oneShot.pauseCameraFollowForGesture(gesture)
-oneShot.drain()
-precondition(oneShot.mapView!.camera.moves == 0)
-precondition(oneShot.results == 1, "Location result still resolves while camera is paused")
-let animatedOneShot = Base()
-animatedOneShot.resumeCameraFollowing()
-animatedOneShot.moveToCurrentLocationCallbackId = "animated"
-animatedOneShot.moveToCurrentLocationZoom = 16
-animatedOneShot.locationManager(animatedOneShot.headingLocationManager!, didUpdateLocations: [CLLocation(latitude: 12, longitude: 23)])
-animatedOneShot.drain()
-precondition(animatedOneShot.mapView!.camera.flights.count == 1)
-precondition(animatedOneShot.mapView!.camera.flights[0].zoom == 16)
-precondition(animatedOneShot.results == 1, "Match Android: resolve once flight is started")
 print("iOS camera pause/resume, queued updates, recording and accuracy checks passed")
 '''
 with tempfile.TemporaryDirectory() as temp:

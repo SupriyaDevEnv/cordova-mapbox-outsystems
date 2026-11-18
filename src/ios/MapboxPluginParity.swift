@@ -58,13 +58,7 @@ class MapboxPluginParity: MapboxPlugin {
         commandDelegate.send(result, callbackId: command.callbackId)
 
         runForSession {
-            if self.accuracyLocationManager == nil {
-                let manager = CLLocationManager()
-                manager.delegate = self
-                manager.desiredAccuracy = kCLLocationAccuracyBest
-                manager.distanceFilter = kCLDistanceFilterNone
-                self.accuracyLocationManager = manager
-            }
+            self.ensureAccuracyLocationManager()
 
             if CLLocationManager.authorizationStatus() == .notDetermined {
                 self.accuracyLocationManager?.requestWhenInUseAuthorization()
@@ -84,13 +78,7 @@ class MapboxPluginParity: MapboxPlugin {
                 return
             }
 
-            if self.accuracyLocationManager == nil {
-                let manager = CLLocationManager()
-                manager.delegate = self
-                manager.desiredAccuracy = kCLLocationAccuracyBest
-                manager.distanceFilter = kCLDistanceFilterNone
-                self.accuracyLocationManager = manager
-            }
+            self.ensureAccuracyLocationManager()
 
             guard let location = self.accuracyLocationManager?.location,
                   location.horizontalAccuracy >= 0,
@@ -137,30 +125,30 @@ class MapboxPluginParity: MapboxPlugin {
     }
 
     @objc(moveToCurrentLocation:)
-    override func moveToCurrentLocation(command: CDVInvokedUrlCommand) {
+    func moveToCurrentLocation(command: CDVInvokedUrlCommand) {
         rememberCommand(command)
         runForSession {
-            guard self.activeMapView() != nil else {
-                self.sendParityError("Map is not initialized.", command: command)
+            guard self.mapView != nil else {
+                self.sendError("Map is not initialized.", command)
                 return
             }
 
             let authorization = CLLocationManager.authorizationStatus()
             if authorization == .denied || authorization == .restricted {
-                self.sendParityError("Location permission is not granted.", command: command)
+                self.sendError("Location permission is not granted.", command)
                 return
             }
 
             if let previous = self.moveLocationCallbackId {
                 // Settle the earlier request, as Android does, instead of orphaning it.
                 self.stopMoveLocationUpdates()
-                self.sendParityError("Location request superseded.", callbackId: previous)
+                self.sendError("Location request superseded.", callbackId: previous)
             }
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             self.moveLocationZoom = options["zoom"] == nil
                 ? nil
-                : self.doubleValue(options["zoom"], defaultValue: 0)
+                : self.doubleOption(options["zoom"], defaultValue: 0)
             self.resumeCameraFollowing()
             self.moveLocationCallbackId = command.callbackId
 
@@ -184,7 +172,7 @@ class MapboxPluginParity: MapboxPlugin {
             let timeout = DispatchWorkItem { [weak self] in
                 guard let self = self, self.moveLocationCallbackId == callbackId else { return }
                 self.stopMoveLocationUpdates()
-                self.sendParityError("No valid location update received within 15 seconds.", callbackId: callbackId)
+                self.sendError("No valid location update received within 15 seconds.", callbackId: callbackId)
             }
             self.moveLocationTimeoutWork = timeout
             DispatchQueue.main.asyncAfter(deadline: .now() + self.moveLocationTimeout, execute: timeout)
@@ -201,18 +189,18 @@ class MapboxPluginParity: MapboxPlugin {
             let visible = options["visible"] as? Bool ?? true
 
             guard !layerId.isEmpty else {
-                self.sendParityError("layerId is required", command: command)
+                self.sendError("layerId is required", command)
                 return
             }
 
-            guard let mapView = self.activeMapView() else {
-                self.sendParityError("Map is not initialized.", command: command)
+            guard let mapView = self.mapView else {
+                self.sendError("Map is not initialized.", command)
                 return
             }
 
             let exists = mapView.mapboxMap.allLayerIdentifiers.contains { $0.id == layerId }
             guard exists else {
-                self.sendParityError("Layer not found in current style: \(layerId)", command: command)
+                self.sendError("Layer not found in current style: \(layerId)", command)
                 return
             }
 
@@ -222,9 +210,9 @@ class MapboxPluginParity: MapboxPlugin {
                     property: "visibility",
                     value: visible ? "visible" : "none"
                 )
-                self.sendParitySuccess(command)
+                self.sendSuccess(command)
             } catch {
-                self.sendParityError("Failed to change layer visibility.", command: command)
+                self.sendError("Failed to change layer visibility.", command)
             }
         }
     }
@@ -257,11 +245,11 @@ class MapboxPluginParity: MapboxPlugin {
             let layers: [[String: Any]] = map.allLayerIdentifiers
                 .filter { self.layerGroup(map, $0.id) == groupId }
                 .map { ["id": $0.id, "name": $0.id, "type": $0.type.rawValue] }
-            self.sendParityPayload([
+            self.sendSuccess([
                 "groupId": groupId,
                 "totalLayers": layers.count,
                 "layers": layers
-            ], command: command)
+            ], command)
         }
     }
 
@@ -277,7 +265,7 @@ class MapboxPluginParity: MapboxPlugin {
 
             let layerIds = map.allLayerIdentifiers.map { $0.id }.filter { self.layerGroup(map, $0) == groupId }
             guard !layerIds.isEmpty else {
-                self.sendParityError("No layers found for group: \(groupId)", command: command)
+                self.sendError("No layers found for group: \(groupId)", command)
                 return
             }
 
@@ -288,16 +276,16 @@ class MapboxPluginParity: MapboxPlugin {
                                              value: visible ? "visible" : "none")
                     updated.append(layerId)
                 } catch {
-                    self.sendParityError("Failed to update group visibility.", command: command)
+                    self.sendError("Failed to update group visibility.", command)
                     return
                 }
             }
-            self.sendParityPayload([
+            self.sendSuccess([
                 "groupId": groupId,
                 "visible": visible,
                 "updatedCount": updated.count,
                 "updatedLayers": updated
-            ], command: command)
+            ], command)
         }
     }
 
@@ -325,14 +313,14 @@ class MapboxPluginParity: MapboxPlugin {
                     ])
                 }
             }
-            self.sendParityPayload([
+            self.sendSuccess([
                 "requestedGroup": requestedGroup,
                 "totalLayers": layerInfos.count,
                 "layersWithMetadata": layersWithMetadata,
                 "matchingLayerCount": matching.count,
                 "matchingLayers": matching,
                 "targetLayerDetails": [Any]()
-            ], command: command)
+            ], command)
         }
     }
 
@@ -340,7 +328,7 @@ class MapboxPluginParity: MapboxPlugin {
         let options = command.argument(at: 0) as? [String: Any] ?? [:]
         let groupId = (options["groupId"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !groupId.isEmpty else {
-            sendParityError("groupId is required", command: command)
+            sendError("groupId is required", command)
             return nil
         }
         return groupId
@@ -348,14 +336,14 @@ class MapboxPluginParity: MapboxPlugin {
 
     private func loadedStyleMap(_ command: CDVInvokedUrlCommand, notInitialized: String,
                                 notLoaded: String) -> MapboxMap? {
-        guard let mapView = activeMapView() else {
-            sendParityError(notInitialized, command: command)
+        guard let mapView = mapView else {
+            sendError(notInitialized, command)
             return nil
         }
         // A style that has not finished loading reports no layers. (isStyleLoaded is
         // deliberately avoided: it was removed from this file in the Nov 13 iOS build fix.)
         guard !mapView.mapboxMap.allLayerIdentifiers.isEmpty else {
-            sendParityError(notLoaded, command: command)
+            sendError(notLoaded, command)
             return nil
         }
         return mapView.mapboxMap
@@ -368,12 +356,6 @@ class MapboxPluginParity: MapboxPlugin {
 
     private func layerGroup(_ map: MapboxMap, _ layerId: String) -> String? {
         layerMetadata(map, layerId)?["mapbox:group"] as? String
-    }
-
-    private func sendParityPayload(_ payload: [String: Any], command: CDVInvokedUrlCommand) {
-        let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
-        forgetCallback(command.callbackId)
-        commandDelegate.send(result, callbackId: command.callbackId)
     }
 
     override func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -447,7 +429,7 @@ class MapboxPluginParity: MapboxPlugin {
         runForSession {
             guard self.isTrackingLocationManager(manager), self.isCameraFollowingUser,
                   !self.isRecenterAnimating else { return }
-            guard let mapView = self.activeMapView() else {
+            guard let mapView = self.mapView else {
                 return
             }
             mapView.camera.ease(
@@ -460,7 +442,7 @@ class MapboxPluginParity: MapboxPlugin {
     override func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         if manager === moveLocationManager, let callbackId = moveLocationCallbackId {
             stopMoveLocationUpdates()
-            sendParityError(
+            sendError(
                 "Failed to get current location.",
                 callbackId: callbackId
             )
@@ -476,6 +458,15 @@ class MapboxPluginParity: MapboxPlugin {
         parityPathTrackingActive = false
         resetTrackingSmoothing()
         super.closeInternal()
+    }
+
+    private func ensureAccuracyLocationManager() {
+        guard accuracyLocationManager == nil else { return }
+        let manager = CLLocationManager()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = kCLDistanceFilterNone
+        accuracyLocationManager = manager
     }
 
     private func resetTrackingSmoothing() {
@@ -500,7 +491,7 @@ class MapboxPluginParity: MapboxPlugin {
               coordinate.latitude >= -90, coordinate.latitude <= 90,
               coordinate.longitude >= -180, coordinate.longitude <= 180 else {
             stopMoveLocationUpdates()
-            sendParityError(
+            sendError(
                 "Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].",
                 callbackId: callbackId
             )
@@ -511,8 +502,8 @@ class MapboxPluginParity: MapboxPlugin {
         stopMoveLocationUpdates()
 
         runForSession {
-            guard self.activeMapView() != nil else {
-                self.sendParityError("Map is not initialized.", callbackId: callbackId)
+            guard self.mapView != nil else {
+                self.sendError("Map is not initialized.", callbackId: callbackId)
                 return
             }
 
@@ -611,53 +602,4 @@ class MapboxPluginParity: MapboxPlugin {
         moveLocationZoom = nil
     }
 
-    private func activeMapView() -> MapView? {
-        guard let root = webView.superview else {
-            return nil
-        }
-        return findMapView(in: root)
-    }
-
-    private func findMapView(in view: UIView) -> MapView? {
-        if let mapView = view as? MapView {
-            return mapView
-        }
-
-        for subview in view.subviews {
-            if let mapView = findMapView(in: subview) {
-                return mapView
-            }
-        }
-
-        return nil
-    }
-
-    private func doubleValue(_ value: Any?, defaultValue: Double) -> Double {
-        let parsed: Double?
-        if let value = value as? Double { parsed = value }
-        else if let value = value as? Float { parsed = Double(value) }
-        else if let value = value as? Int { parsed = Double(value) }
-        else if let value = value as? NSNumber { parsed = value.doubleValue }
-        else if let value = value as? String { parsed = Double(value) }
-        else { parsed = nil }
-        // Reject "NaN"/"Infinity": non-finite camera values must never reach the SDK.
-        guard let number = parsed, number.isFinite else { return defaultValue }
-        return number
-    }
-
-    private func sendParitySuccess(_ command: CDVInvokedUrlCommand) {
-        let result = CDVPluginResult(status: CDVCommandStatus_OK)
-        forgetCallback(command.callbackId)
-        commandDelegate.send(result, callbackId: command.callbackId)
-    }
-
-    private func sendParityError(_ message: String, command: CDVInvokedUrlCommand) {
-        sendParityError(message, callbackId: command.callbackId)
-    }
-
-    private func sendParityError(_ message: String, callbackId: String) {
-        let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: message)
-        forgetCallback(callbackId)
-        commandDelegate.send(result, callbackId: callbackId)
-    }
 }

@@ -20,10 +20,11 @@ function between(source, start, end) {
 
 test('non-finite numeric strings never reach UIKit or the map camera', () => {
   // "NaN" in a frame raised CALayerInvalidGeometry and terminated the iOS app.
-  const iosDouble = between(ios, 'private func doubleOption(', 'private func boolOption(');
+  const iosDouble = between(ios, 'func doubleOption(', 'func boolOption(');
   assert.match(iosDouble, /number\.isFinite/);
-  const parityDouble = between(iosParity, 'private func doubleValue(', 'private func sendParitySuccess(');
-  assert.match(parityDouble, /number\.isFinite/);
+  // The parity subclass uses the base parser instead of keeping its own copy.
+  assert.doesNotMatch(iosParity, /func doubleValue\(/);
+  assert.match(iosParity, /self\.doubleOption\(options\["zoom"\]/);
   const frame = between(ios, 'private func frameFromOptions', 'private func touchRectFromOptions');
   assert.match(frame, /16384 \/ scale/);
 
@@ -73,7 +74,7 @@ test('legacy credential caches are cleared when the plugin loads', () => {
 });
 
 test('iOS recenter skips stale fixes, times out, and settles superseded requests', () => {
-  const start = between(iosParity, 'override func moveToCurrentLocation(', '@objc(setLayerVisibility:)');
+  const start = between(iosParity, 'func moveToCurrentLocation(command:', '@objc(setLayerVisibility:)');
   assert.match(start, /Location request superseded\./);
   assert.ok(start.indexOf('superseded') < start.indexOf('self.moveLocationZoom ='),
     'Settle the old request before replacing its state');
@@ -81,7 +82,7 @@ test('iOS recenter skips stale fixes, times out, and settles superseded requests
   const handle = between(iosParity, 'private func handleMoveToCurrentLocation(', 'private func sendLocationAccuracyUpdate(');
   assert.match(handle, /location\.horizontalAccuracy >= 0/);
   assert.match(handle, /timeIntervalSinceNow\) <= maxLocationAge/);
-  assert.match(between(iosParity, 'private func stopMoveLocationUpdates()', 'private func activeMapView()'),
+  assert.match(between(iosParity, 'private func stopMoveLocationUpdates()', 'moveLocationZoom = nil'),
     /moveLocationTimeoutWork\?\.cancel\(\)/);
 });
 
