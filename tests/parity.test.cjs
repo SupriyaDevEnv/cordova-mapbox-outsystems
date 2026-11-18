@@ -104,10 +104,14 @@ test('markers accept imageUrl and pinColor on both platforms and reject disallow
 
 test('location accuracy subscriptions actively monitor and clean up on both platforms', () => {
   const androidRegistration = javaMethod('registerLocationAccuracyCallback', 'stopLocationAccuracyMonitoring');
-  assert.match(androidRegistration, /requestLocationUpdates/);
-  assert.match(androidRegistration, /sendLocationAccuracyUpdate/);
+  // Android uses the one shared GPS stream, which reports accuracy for every fix.
+  assert.match(androidRegistration, /ensureLocationUpdates\(/);
+  assert.doesNotMatch(androidRegistration, /requestLocationUpdates/);
+  const sharedStream = android.split('private void ensureLocationUpdates(')[1].split('private void stopSharedLocationUpdates(')[0];
+  assert.match(sharedStream, /sendLocationAccuracyUpdate\(location\)/);
+  assert.strictEqual((android.match(/requestLocationUpdates\(/g) || []).length, 1, 'one GPS subscription');
   assert.match(androidPermissions, /"registerLocationAccuracyCallback"\.equals\(action\)/);
-  assert.match(android, /stopLocationAccuracyMonitoring\(\);[\s\S]*locationAccuracyCallback = null/);
+  assert.match(android, /cleanupStep\(this::stopLocationAccuracyMonitoring\);\s*locationAccuracyCallback = null;/);
 
   const iosParity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
   const iosRegistration = iosParity.split('func registerLocationAccuracyCallback(command:')[1]

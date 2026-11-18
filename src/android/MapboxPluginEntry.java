@@ -300,8 +300,6 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private boolean isHeadingFollowModeEnabled = false;
     private CallbackContext trackingStatusCallback;
     private CallbackContext locationAccuracyCallback;
-    private FusedLocationProviderClient accuracyFusedLocationClient;
-    private LocationCallback accuracyFusedLocationCallback;
     private Cancelable compassCameraSubscription;
     private CallbackContext compassCallback;
 
@@ -2460,54 +2458,32 @@ if (gestures != null) {
                 return;
             }
 
-            stopLocationAccuracyMonitoring();
             releaseCallback(locationAccuracyCallback);
-        locationAccuracyCallback = callback;
+            locationAccuracyCallback = callback;
             lastLocationAccuracyUpdateMs = 0L;
 
             PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
             result.setKeepCallback(true);
             callback.sendPluginResult(result);
 
-            accuracyFusedLocationClient = LocationServices
-                .getFusedLocationProviderClient(cordova.getActivity());
+            // Accuracy comes from the shared location stream that also feeds the puck,
+            // recentering and recording (it calls sendLocationAccuracyUpdate), so GPS is
+            // never subscribed to twice.
             final long accuracyGeneration = sessionGeneration;
-            accuracyFusedLocationCallback = new LocationCallback() {
-                @Override
-                public void onLocationResult(LocationResult locationResult) {
-                    if (accuracyGeneration != sessionGeneration || this != accuracyFusedLocationCallback) return;
-                    if (locationResult == null || locationResult.getLastLocation() == null) {
-                        return;
-                    }
-                    sendLocationAccuracyUpdate(locationResult.getLastLocation());
+            ensureLocationUpdates(new LocationStartCallback() {
+                public void ready() { }
+                public void failed(String message) {
+                    if (accuracyGeneration != sessionGeneration || locationAccuracyCallback != callback) return;
+                    locationAccuracyCallback = null;
+                    callback.error(message);
                 }
-            };
-
-            LocationRequest request = new LocationRequest.Builder(
-                Priority.PRIORITY_HIGH_ACCURACY,
-                1000L
-            ).setMinUpdateIntervalMillis(500L).build();
-
-            try {
-                accuracyFusedLocationClient.requestLocationUpdates(
-                    request,
-                    accuracyFusedLocationCallback,
-                    Looper.getMainLooper()
-                );
-            } catch (SecurityException e) {
-                stopLocationAccuracyMonitoring();
-                callback.error("Location permission is not granted.");
-            }
+            });
         });
     }
 
     private void stopLocationAccuracyMonitoring() {
-        if (accuracyFusedLocationClient != null && accuracyFusedLocationCallback != null) {
-            try { accuracyFusedLocationClient.removeLocationUpdates(accuracyFusedLocationCallback); }
-            catch (SecurityException ignored) { }
-        }
-        accuracyFusedLocationClient = null;
-        accuracyFusedLocationCallback = null;
+        // Only the callback is dropped: the shared location stream belongs to the map session.
+        locationAccuracyCallback = null;
     }
 
     private void registerCompassCallback(CallbackContext callback) {
