@@ -76,6 +76,23 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - Native inputs are limited to approximately 4 MiB; at most 10,000 markers may exist at once, with marker IDs limited to 256 characters/bytes. Boundary batches allow 1,000 boundaries and 20,000 total vertices. Imported paths allow 2–20,000 points. Tracking stops location updates at the recording limit; call `stopPathTracking()` to retrieve the retained points. Stopping an empty recording returns an empty path with zero distance.
 - Offline zooms must be between 2 and 18, with `minZoom <= maxZoom`; invalid values are rejected. Both circle and rectangle downloads are checked against a conservative bounding-box diagonal of 100 km and an estimated 50,000-tile budget (including lower zooms). This can reject large/high-zoom requests that older releases accepted. Polar and antimeridian-crossing bounds are rejected. The budget is an estimate, not a byte quota; Mapbox's tile-store constraints still apply. At most 20 offline regions can be stored: downloading a new region beyond that fails with `Offline region limit reached`; delete a region first. Re-downloading an existing `regionId` always works. Pass `wifiOnly: true` to `downloadOfflineRegion` or `downloadOfflineRegionForRect` so tiles are never downloaded over mobile data (the small style download is not restricted).
 - `deleteOfflineRegion` keeps the region's style pack unless you pass `deleteStylePack: true`, because other offline regions usually use the same style. Earlier releases deleted it by default.
+- `downloadOfflineRegion` can download a known area instead of a centre and radius. Pass either `bounds` (`{ south, west, north, east }`) or `polygon` (a GeoJSON Polygon, positions as `[longitude, latitude]`, up to 1,000 positions in total; open rings are closed for you). Passing both is rejected, and `latitude`, `longitude` and `radiusKm` are then ignored. The same zoom, 100 km and tile-budget limits apply. Without `regionId`, the id defaults to `offline-area-<timestamp>`; pass your own id so you can re-download the same area later ("Update now").
+- `downloadOfflineRegion` and `downloadOfflineRegionForRect` resolve with the details to store in your app database:
+
+  ```javascript
+  {
+    regionId: 'trail-42',
+    latitude: -34.92, longitude: 138.6, radiusKm: 0,  // centre; radius is 0 for rect/area downloads
+    sizeBytes: 356515840,                             // tiles for this region only; the shared style pack is not counted
+    bounds: { south: -34.95, west: 138.55, north: -34.89, east: 138.65 },
+    polygon: { type: 'Polygon', coordinates: [[[138.55, -34.95], /* ... */]] }, // exact area downloaded
+    minZoom: 10, maxZoom: 16,                         // zooms actually used
+    styleUrl: 'mapbox://styles/mapbox/outdoors-v12',
+    downloadedAt: '2026-11-18T09:30:00.000Z'          // UTC
+  }
+  ```
+
+  To update a map, call `downloadOfflineRegion` again with the stored `regionId`, `polygon`, zooms and `styleUrl`; Mapbox only fetches what changed.
 - Style URLs and underlying SDK error details are no longer included in plugin diagnostic logs.
 
 ## Actions

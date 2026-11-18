@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **New:** `downloadOfflineRegion` accepts `bounds` (`{ south, west, north, east }`) or a GeoJSON `polygon` to download a known area, such as a recommended trail, instead of a centre and radius.
+- **New:** `downloadOfflineRegion` and `downloadOfflineRegionForRect` resolve with `sizeBytes`, `bounds`, `polygon` (the exact area downloaded), `minZoom`, `maxZoom`, `styleUrl` and `downloadedAt`, alongside the existing `regionId`, `latitude`, `longitude` and `radiusKm`.
+
 ## 1.0.10
 
 - **New:** mark the element the map shows through with `data-mapbox-map`, and behind-WebView touch routing gives the page every touch on anything drawn over the map: clickable containers, cards, chips, scrollable rows, labels and custom bottom sheets, not only buttons, links and known OutSystems classes. Transparent wrappers still let touches through to the map. Without the attribute, tracking is unchanged.

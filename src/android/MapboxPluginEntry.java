@@ -30,11 +30,15 @@ import com.google.android.gms.location.LocationResult;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.Priority;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.TimeZone;
 
 
 import com.mapbox.bindgen.Value;
@@ -107,6 +111,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final int MAX_OFFLINE_REGIONS = 20;
     private static final double MIN_OFFLINE_ZOOM = 2.0;
     private static final double MAX_OFFLINE_ZOOM = 18.0;
+    // Total vertices accepted in a downloadOfflineRegion polygon (all rings).
+    private static final int MAX_OFFLINE_POLYGON_POINTS = 1000;
     private static final long MAX_LOCATION_AGE_MS = 30_000L;
     private static final float VERY_ACCURATE_METERS = 5f;
     private static final float ACCURATE_METERS = 15f;
@@ -1989,15 +1995,29 @@ if (gestures != null) {
                     return;
                 }
 
+                // Optional area (bounds or GeoJSON polygon) instead of centre + radius.
+                final Polygon area;
+                try {
+                    area = offlineAreaPolygon(options);
+                } catch (IllegalArgumentException e) {
+                    callback.error(e.getMessage());
+                    return;
+                }
+
                 double latitude = options.optDouble("latitude", 0.0);
                 double longitude = options.optDouble("longitude", 0.0);
+                if (area != null) {
+                    double[] box = polygonBounds(area);
+                    longitude = (box[0] + box[2]) / 2.0;
+                    latitude = (box[1] + box[3]) / 2.0;
+                }
 
                 if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
                     callback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
                     return;
                 }
 
-                double radiusKm = options.optDouble("radiusKm", 10.0);
+                double radiusKm = area != null ? 0.0 : options.optDouble("radiusKm", 10.0);
                 double minZoom = options.optDouble("minZoom", 10.0);
                 double maxZoom = options.optDouble("maxZoom", 16.0);
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
@@ -2007,7 +2027,9 @@ if (gestures != null) {
             }
                 String regionId = options.optString(
                     "regionId",
-                    "offline-" + Math.round(latitude * 100000.0) + "-" + Math.round(longitude * 100000.0)
+                    area != null
+                        ? "offline-area-" + System.currentTimeMillis()
+                        : "offline-" + Math.round(latitude * 100000.0) + "-" + Math.round(longitude * 100000.0)
                 );
 
                 startOfflineDownload(
@@ -2018,7 +2040,7 @@ if (gestures != null) {
                     minZoom,
                     maxZoom,
                     styleUrl,
-                    null,
+                    area,
                     options.optBoolean("wifiOnly", false),
                     callback
                 );
@@ -2135,8 +2157,9 @@ if (gestures != null) {
                     return;
                 }
             }
+            // Pass the final area (circle already built) so the result reports exactly what was downloaded.
             beginOfflineDownload(downloadGeneration, regionId, latitude, longitude, clampedRadiusKm,
-                clampedMinZoom, clampedMaxZoom, styleUrl, geometry, wifiOnly, callback);
+                clampedMinZoom, clampedMaxZoom, styleUrl, downloadGeometry, wifiOnly, callback);
         }));
     }
 
@@ -2223,8 +2246,9 @@ if (gestures != null) {
 
                 TilesetDescriptor descriptor = offlineManager.createTilesetDescriptor(descriptorOptions);
 
+                final Polygon area = geometry == null ? createCirclePolygon(longitude, latitude, radiusKm) : geometry;
                 TileRegionLoadOptions tileRegionOptions = new TileRegionLoadOptions.Builder()
-                    .geometry(geometry == null ? createCirclePolygon(longitude, latitude, radiusKm) : geometry)
+                    .geometry(area)
                     .descriptors(Collections.singletonList(descriptor))
                     .metadata(metadataValue(regionId))
                     .acceptExpired(false)
@@ -2248,12 +2272,10 @@ if (gestures != null) {
                             if (downloadGeneration != sessionGeneration) return null;
                             isOfflineDownloading = false;
                             try {
-                                JSONObject result = new JSONObject();
-                                result.put("regionId", regionId);
-                                result.put("latitude", latitude);
-                                result.put("longitude", longitude);
-                                result.put("radiusKm", radiusKm);
-                                callback.success(result);
+                                callback.success(offlineDownloadResult(
+                                    regionId, latitude, longitude, radiusKm, minZoom, maxZoom,
+                                    styleUrl, area, tileRegion.getCompletedResourceSize()
+                                ));
                             } catch (Exception e) {
                                 callback.error(sanitizeError("An internal error occurred.", e));
                             }
@@ -2266,6 +2288,143 @@ if (gestures != null) {
                 callback.error(sanitizeError("Failed to download offline tiles.", e));
             }
         });
+    }
+
+    /**
+     * Download area from {@code bounds} ({south, west, north, east}) or a GeoJSON
+     * {@code polygon}. Returns null when neither is given; throws with a user-facing
+     * message when the area is invalid.
+     */
+    private static Polygon offlineAreaPolygon(JSONObject options) {
+        boolean hasBounds = options.has("bounds") && !options.isNull("bounds");
+        boolean hasPolygon = options.has("polygon") && !options.isNull("polygon");
+        if (hasBounds && hasPolygon) {
+            throw new IllegalArgumentException("Pass either bounds or polygon, not both.");
+        }
+        if (hasBounds) {
+            JSONObject bounds = options.optJSONObject("bounds");
+            if (bounds == null) throw new IllegalArgumentException("bounds must be an object with south, west, north and east.");
+            double south = bounds.optDouble("south", Double.NaN);
+            double west = bounds.optDouble("west", Double.NaN);
+            double north = bounds.optDouble("north", Double.NaN);
+            double east = bounds.optDouble("east", Double.NaN);
+            if (!isValidLatitude(south) || !isValidLatitude(north)
+                    || !isValidLongitude(west) || !isValidLongitude(east)) {
+                throw new IllegalArgumentException("Invalid offline bounds: latitudes must be in [-90, 90], longitudes in [-180, 180].");
+            }
+            if (south >= north || west >= east) {
+                throw new IllegalArgumentException("Invalid offline bounds: south must be less than north and west less than east.");
+            }
+            List<Point> ring = new ArrayList<>();
+            ring.add(Point.fromLngLat(west, south));
+            ring.add(Point.fromLngLat(east, south));
+            ring.add(Point.fromLngLat(east, north));
+            ring.add(Point.fromLngLat(west, north));
+            ring.add(Point.fromLngLat(west, south));
+            return Polygon.fromLngLats(Collections.singletonList(ring));
+        }
+        if (hasPolygon) {
+            JSONObject polygon = options.optJSONObject("polygon");
+            JSONArray rings = polygon == null ? null : polygon.optJSONArray("coordinates");
+            if (polygon == null || !"Polygon".equals(polygon.optString("type")) || rings == null || rings.length() == 0) {
+                throw new IllegalArgumentException("polygon must be a GeoJSON Polygon with coordinates.");
+            }
+            List<List<Point>> out = new ArrayList<>();
+            int total = 0;
+            for (int i = 0; i < rings.length(); i++) {
+                JSONArray ring = rings.optJSONArray(i);
+                if (ring == null) throw new IllegalArgumentException("Each polygon ring must be an array of [longitude, latitude] positions.");
+                List<Point> points = new ArrayList<>();
+                for (int j = 0; j < ring.length(); j++) {
+                    JSONArray position = ring.optJSONArray(j);
+                    double lng = position == null ? Double.NaN : position.optDouble(0, Double.NaN);
+                    double lat = position == null ? Double.NaN : position.optDouble(1, Double.NaN);
+                    if (!isValidLongitude(lng) || !isValidLatitude(lat)) {
+                        throw new IllegalArgumentException("Invalid polygon position: use [longitude, latitude] within valid ranges.");
+                    }
+                    points.add(Point.fromLngLat(lng, lat));
+                }
+                if (points.isEmpty()) throw new IllegalArgumentException("Each polygon ring needs at least 3 positions.");
+                Point first = points.get(0);
+                Point last = points.get(points.size() - 1);
+                if (first.longitude() != last.longitude() || first.latitude() != last.latitude()) {
+                    points.add(first);
+                }
+                if (points.size() < 4) throw new IllegalArgumentException("Each polygon ring needs at least 3 positions.");
+                total += points.size();
+                if (total > MAX_OFFLINE_POLYGON_POINTS) {
+                    throw new IllegalArgumentException("Polygon has too many positions (maximum " + MAX_OFFLINE_POLYGON_POINTS + ").");
+                }
+                out.add(points);
+            }
+            return Polygon.fromLngLats(out);
+        }
+        return null;
+    }
+
+    /** Returns {west, south, east, north}. */
+    private static double[] polygonBounds(Polygon polygon) {
+        double south = 90, west = 180, north = -90, east = -180;
+        for (List<Point> ring : polygon.coordinates()) {
+            for (Point point : ring) {
+                south = Math.min(south, point.latitude()); north = Math.max(north, point.latitude());
+                west = Math.min(west, point.longitude()); east = Math.max(east, point.longitude());
+            }
+        }
+        return new double[] { west, south, east, north };
+    }
+
+    private static JSONObject offlineDownloadResult(
+        String regionId,
+        double latitude,
+        double longitude,
+        double radiusKm,
+        double minZoom,
+        double maxZoom,
+        String styleUrl,
+        Polygon area,
+        long sizeBytes
+    ) throws JSONException {
+        JSONObject result = new JSONObject();
+        result.put("regionId", regionId);
+        result.put("latitude", latitude);
+        result.put("longitude", longitude);
+        result.put("radiusKm", radiusKm);
+        // Tile data for this region only; the shared style pack is not included.
+        result.put("sizeBytes", sizeBytes);
+
+        double[] box = polygonBounds(area);
+        JSONObject bounds = new JSONObject();
+        bounds.put("south", box[1]);
+        bounds.put("west", box[0]);
+        bounds.put("north", box[3]);
+        bounds.put("east", box[2]);
+        result.put("bounds", bounds);
+
+        JSONArray rings = new JSONArray();
+        for (List<Point> ring : area.coordinates()) {
+            JSONArray positions = new JSONArray();
+            for (Point point : ring) {
+                JSONArray position = new JSONArray();
+                position.put(point.longitude());
+                position.put(point.latitude());
+                positions.put(position);
+            }
+            rings.put(positions);
+        }
+        JSONObject polygon = new JSONObject();
+        polygon.put("type", "Polygon");
+        polygon.put("coordinates", rings);
+        result.put("polygon", polygon);
+
+        result.put("minZoom", (int) toZoomByte(minZoom));
+        result.put("maxZoom", (int) toZoomByte(maxZoom));
+        result.put("styleUrl", styleUrl);
+
+        SimpleDateFormat iso = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+        iso.setTimeZone(TimeZone.getTimeZone("UTC"));
+        result.put("downloadedAt", iso.format(new Date()));
+        return result;
     }
 
     private Polygon createRectPolygon(double x, double y, double width, double height) {

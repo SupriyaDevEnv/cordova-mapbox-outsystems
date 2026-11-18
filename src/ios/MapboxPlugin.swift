@@ -140,6 +140,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private let maxOfflineRegions = 20
     private let minOfflineZoom: UInt8 = 2
     private let maxOfflineZoom: UInt8 = 18
+    // Total vertices accepted in a downloadOfflineRegion polygon (all rings).
+    private let maxOfflinePolygonPoints = 1000
     private var boundaryVisible = true
 
     @objc(ping:)
@@ -1357,15 +1359,33 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let latitude = self.doubleOption(options["latitude"], defaultValue: 0)
-            let longitude = self.doubleOption(options["longitude"], defaultValue: 0)
+
+            // Optional area (bounds or GeoJSON polygon) instead of centre + radius.
+            let area: Polygon?
+            do {
+                area = try self.offlineAreaPolygon(options)
+            } catch let error as OfflineAreaError {
+                self.sendError(error.message, command)
+                return
+            } catch {
+                self.sendError("Invalid offline area.", command)
+                return
+            }
+
+            var latitude = self.doubleOption(options["latitude"], defaultValue: 0)
+            var longitude = self.doubleOption(options["longitude"], defaultValue: 0)
+            if let area = area {
+                let box = self.polygonBounds(area)
+                latitude = (box.south + box.north) / 2
+                longitude = (box.west + box.east) / 2
+            }
 
             guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
                 self.sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
                 return
             }
 
-            let radiusKm = self.doubleOption(options["radiusKm"], defaultValue: 10)
+            let radiusKm = area != nil ? 0 : self.doubleOption(options["radiusKm"], defaultValue: 10)
             guard let minZoom = MapboxSecurity.zoom(self.doubleOption(options["minZoom"], defaultValue: 10)),
                   let maxZoom = MapboxSecurity.zoom(self.doubleOption(options["maxZoom"], defaultValue: 16)), minZoom <= maxZoom else {
                 self.sendError("Offline zoom must be between 2 and 18 with minZoom <= maxZoom.", command); return
@@ -1375,8 +1395,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 self.sendError("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.", command)
                 return
             }
-            let regionId = options["regionId"] as? String
-                ?? "offline-\(Int(latitude * 100000))-\(Int(longitude * 100000))"
+            let defaultRegionId = area != nil
+                ? "offline-area-\(Int(Date().timeIntervalSince1970 * 1000))"
+                : "offline-\(Int(latitude * 100000))-\(Int(longitude * 100000))"
+            let regionId = options["regionId"] as? String ?? defaultRegionId
 
             guard let styleURI = StyleURI(rawValue: styleUrl) else {
                 self.sendError("Invalid styleUrl.", command)
@@ -1391,7 +1413,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 minZoom: minZoom,
                 maxZoom: maxZoom,
                 styleURI: styleURI,
-                geometry: nil,
+                geometry: area?.geometry,
                 wifiOnly: self.boolOption(options["wifiOnly"], defaultValue: false),
                 command: command
             )
@@ -1531,7 +1553,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                     boundedMinZoom: boundedMinZoom,
                     boundedMaxZoom: boundedMaxZoom,
                     styleURI: styleURI,
-                    geometry: geometry,
+                    // Final area (circle already built) so the result reports exactly what was downloaded.
+                    geometry: regionGeometry,
                     wifiOnly: wifiOnly,
                     command: command
                 )
@@ -1627,9 +1650,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         let descriptor = offlineManager.createTilesetDescriptor(for: descriptorOptions)
         let center = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
         let polygon = Polygon(center: center, radius: radiusKm * 1000.0, vertices: 64)
+        let area = geometry ?? polygon.geometry
 
         guard let loadOptions = TileRegionLoadOptions(
-            geometry: geometry ?? polygon.geometry,
+            geometry: area,
             descriptors: [descriptor],
             metadata: ["regionId": regionId],
             acceptExpired: false,
@@ -1656,18 +1680,152 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.runForGeneration(downloadGeneration) {
                 self.isOfflineDownloading = false
                 switch result {
-                case .success:
-                    self.sendSuccess([
-                        "regionId": regionId,
-                        "latitude": latitude,
-                        "longitude": longitude,
-                        "radiusKm": radiusKm
-                    ], command)
+                case .success(let region):
+                    self.sendSuccess(self.offlineDownloadResult(
+                        regionId: regionId,
+                        latitude: latitude,
+                        longitude: longitude,
+                        radiusKm: radiusKm,
+                        minZoom: minZoom,
+                        maxZoom: maxZoom,
+                        styleURI: styleURI,
+                        area: area,
+                        sizeBytes: region.completedResourceSize
+                    ), command)
                 case .failure(let error):
                     self.sendError(self.sanitizeError(contextMessage: "Failed to download tile region.", error: error), command)
                 }
             }
         }
+    }
+
+    struct OfflineAreaError: Error {
+        let message: String
+    }
+
+    /// Download area from `bounds` ({south, west, north, east}) or a GeoJSON `polygon`.
+    /// Returns nil when neither is given; throws a user-facing message when invalid.
+    private func offlineAreaPolygon(_ options: [String: Any]) throws -> Polygon? {
+        let boundsValue: Any? = options["bounds"] is NSNull ? nil : options["bounds"]
+        let polygonValue: Any? = options["polygon"] is NSNull ? nil : options["polygon"]
+        if boundsValue != nil && polygonValue != nil {
+            throw OfflineAreaError(message: "Pass either bounds or polygon, not both.")
+        }
+        if let value = boundsValue {
+            guard let bounds = value as? [String: Any] else {
+                throw OfflineAreaError(message: "bounds must be an object with south, west, north and east.")
+            }
+            let south = doubleOption(bounds["south"], defaultValue: .nan)
+            let west = doubleOption(bounds["west"], defaultValue: .nan)
+            let north = doubleOption(bounds["north"], defaultValue: .nan)
+            let east = doubleOption(bounds["east"], defaultValue: .nan)
+            guard isValidLatitude(south), isValidLatitude(north),
+                  isValidLongitude(west), isValidLongitude(east) else {
+                throw OfflineAreaError(message: "Invalid offline bounds: latitudes must be in [-90, 90], longitudes in [-180, 180].")
+            }
+            guard south < north, west < east else {
+                throw OfflineAreaError(message: "Invalid offline bounds: south must be less than north and west less than east.")
+            }
+            return Polygon([[
+                CLLocationCoordinate2D(latitude: south, longitude: west),
+                CLLocationCoordinate2D(latitude: south, longitude: east),
+                CLLocationCoordinate2D(latitude: north, longitude: east),
+                CLLocationCoordinate2D(latitude: north, longitude: west),
+                CLLocationCoordinate2D(latitude: south, longitude: west)
+            ]])
+        }
+        if let value = polygonValue {
+            guard let polygon = value as? [String: Any],
+                  polygon["type"] as? String == "Polygon",
+                  let rings = polygon["coordinates"] as? [Any], !rings.isEmpty else {
+                throw OfflineAreaError(message: "polygon must be a GeoJSON Polygon with coordinates.")
+            }
+            var out: [[CLLocationCoordinate2D]] = []
+            var total = 0
+            for ringValue in rings {
+                guard let ring = ringValue as? [Any] else {
+                    throw OfflineAreaError(message: "Each polygon ring must be an array of [longitude, latitude] positions.")
+                }
+                var points: [CLLocationCoordinate2D] = []
+                for positionValue in ring {
+                    let position = positionValue as? [Any] ?? []
+                    let lng = position.count >= 2 ? doubleOption(position[0], defaultValue: .nan) : .nan
+                    let lat = position.count >= 2 ? doubleOption(position[1], defaultValue: .nan) : .nan
+                    guard isValidLongitude(lng), isValidLatitude(lat) else {
+                        throw OfflineAreaError(message: "Invalid polygon position: use [longitude, latitude] within valid ranges.")
+                    }
+                    points.append(CLLocationCoordinate2D(latitude: lat, longitude: lng))
+                }
+                guard let first = points.first, let last = points.last else {
+                    throw OfflineAreaError(message: "Each polygon ring needs at least 3 positions.")
+                }
+                if first.latitude != last.latitude || first.longitude != last.longitude {
+                    points.append(first)
+                }
+                guard points.count >= 4 else {
+                    throw OfflineAreaError(message: "Each polygon ring needs at least 3 positions.")
+                }
+                total += points.count
+                guard total <= maxOfflinePolygonPoints else {
+                    throw OfflineAreaError(message: "Polygon has too many positions (maximum \(maxOfflinePolygonPoints)).")
+                }
+                out.append(points)
+            }
+            return Polygon(out)
+        }
+        return nil
+    }
+
+    private func polygonBounds(_ polygon: Polygon) -> (south: Double, west: Double, north: Double, east: Double) {
+        let points = polygon.coordinates.flatMap { $0 }
+        return (
+            south: points.map { $0.latitude }.min() ?? 0,
+            west: points.map { $0.longitude }.min() ?? 0,
+            north: points.map { $0.latitude }.max() ?? 0,
+            east: points.map { $0.longitude }.max() ?? 0
+        )
+    }
+
+    private func offlineDownloadResult(
+        regionId: String,
+        latitude: Double,
+        longitude: Double,
+        radiusKm: Double,
+        minZoom: UInt8,
+        maxZoom: UInt8,
+        styleURI: StyleURI,
+        area: Geometry,
+        sizeBytes: UInt64
+    ) -> [String: Any] {
+        var rings: [[CLLocationCoordinate2D]] = []
+        if case .polygon(let polygon) = area {
+            rings = polygon.coordinates
+        }
+        let box = polygonBounds(Polygon(rings))
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return [
+            "regionId": regionId,
+            "latitude": latitude,
+            "longitude": longitude,
+            "radiusKm": radiusKm,
+            // Tile data for this region only; the shared style pack is not included.
+            "sizeBytes": NSNumber(value: sizeBytes),
+            "bounds": [
+                "south": box.south,
+                "west": box.west,
+                "north": box.north,
+                "east": box.east
+            ],
+            "polygon": [
+                "type": "Polygon",
+                "coordinates": rings.map { ring in ring.map { [$0.longitude, $0.latitude] } }
+            ],
+            "minZoom": Int(minZoom),
+            "maxZoom": Int(maxZoom),
+            "styleUrl": styleURI.rawValue,
+            "downloadedAt": formatter.string(from: Date())
+        ]
     }
 
     @objc(showOfflineRegion:)
