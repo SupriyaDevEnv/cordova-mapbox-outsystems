@@ -573,9 +573,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             }
                 double latitude = options.optDouble("latitude", 0.0);
                 double longitude = options.optDouble("longitude", 0.0);
-                double zoom = finiteOr(options.optDouble("zoom", 12.0), 12.0);
-                double bearing = finiteOr(options.optDouble("bearing", 0.0), 0.0);
-                double pitch = finiteOr(options.optDouble("pitch", 0.0), 0.0);
+                double zoom = finiteOption(options, "zoom", 12.0);
+                double bearing = finiteOption(options, "bearing", 0.0);
+                double pitch = finiteOption(options, "pitch", 0.0);
 
                 if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
                     callback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
@@ -918,26 +918,9 @@ if (gestures != null) {
 
     private void enableUserLocation(CallbackContext callback) {
         runForSession(() -> {
-            if (mapView == null) {
-                callback.error("Map is not initialized in enableuserlocation.");
-                return;
-            }
-
-            boolean hasFineLocation = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION);
-            boolean hasCoarseLocation = hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
-
-            if (!hasFineLocation && !hasCoarseLocation) {
-                callback.error("Location permission is not granted.");
-                return;
-            }
-
             LocationComponentPlugin location =
-                mapView.getPlugin(Plugin.MAPBOX_LOCATION_COMPONENT_PLUGIN_ID);
-
-            if (location == null) {
-                callback.error("Location component is not available.");
-                return;
-            }
+                readyLocationComponent(callback, "Map is not initialized in enableuserlocation.");
+            if (location == null) return;
 
             if (smoothedLocationProvider == null) {
                 smoothedLocationProvider =
@@ -969,33 +952,36 @@ if (gestures != null) {
         return cordova.getActivity().checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
     }
 
-    private boolean hasLocationPermission() {
+    protected boolean hasLocationPermission() {
         return hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
             || hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
     }
 
+    /**
+     * The location component when the map is ready and location is permitted;
+     * otherwise reports why to the callback and returns null.
+     */
+    private LocationComponentPlugin readyLocationComponent(CallbackContext callback, String notInitialized) {
+        if (mapView == null) {
+            callback.error(notInitialized);
+            return null;
+        }
+        if (!hasLocationPermission()) {
+            callback.error("Location permission is not granted.");
+            return null;
+        }
+        LocationComponentPlugin location = mapView.getPlugin(Plugin.MAPBOX_LOCATION_COMPONENT_PLUGIN_ID);
+        if (location == null) {
+            callback.error("Location component is not available.");
+        }
+        return location;
+    }
+
     private void setDeviceHeadingEnabled(JSONObject options, CallbackContext callback) {
         runForSession(() -> {
-            if (mapView == null) {
-                callback.error("Map is not initialized setDeviceHeadingEnabled.");
-                return;
-            }
-
-            boolean hasFineLocation = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION);
-            boolean hasCoarseLocation = hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
-
-            if (!hasFineLocation && !hasCoarseLocation) {
-                callback.error("Location permission is not granted.");
-                return;
-            }
-
             LocationComponentPlugin location =
-                mapView.getPlugin(Plugin.MAPBOX_LOCATION_COMPONENT_PLUGIN_ID);
-
-            if (location == null) {
-                callback.error("Location component is not available.");
-                return;
-            }
+                readyLocationComponent(callback, "Map is not initialized setDeviceHeadingEnabled.");
+            if (location == null) return;
 
             boolean enabled = options.optBoolean("enabled", true);
             location.setEnabled(true);
@@ -2963,22 +2949,8 @@ if (gestures != null) {
                     boundaryDrawingPolygon = null;
                 }
 
-                // Remove only the active drawing line.
-                if (boundaryDrawingLine != null
-                        && boundaryDrawingLineManager != null) {
-                    boundaryDrawingLineManager.delete(boundaryDrawingLine);
-                    boundaryDrawingLine = null;
-                }
-
-                // Remove only the active vertex markers.
-                if (boundaryDrawingPointManager != null) {
-                    for (CircleAnnotation annotation :
-                            new ArrayList<>(boundaryDrawingPointAnnotations)) {
-                        boundaryDrawingPointManager.delete(annotation);
-                    }
-                }
-
-                boundaryDrawingPointAnnotations.clear();
+                // Remove only the active drawing line and vertex markers.
+                removeBoundaryDrawingLineAndVertices();
 
                 // Reset active drawing state.
                 boundaryDrawingPoints.clear();
@@ -3050,22 +3022,26 @@ if (gestures != null) {
         isBoundaryDrawing = false;
 
         boundaryDrawingPoints.clear();
+        removeBoundaryDrawingLineAndVertices();
+        removeBoundaryDrawingPolygon();
+    }
 
+    /** Removes the in-progress line and vertex circles; a saved polygon is kept. */
+    private void removeBoundaryDrawingLineAndVertices() {
         if (boundaryDrawingLine != null
                 && boundaryDrawingLineManager != null) {
             boundaryDrawingLineManager.delete(boundaryDrawingLine);
             boundaryDrawingLine = null;
         }
 
-        if (boundaryDrawingPointManager != null) {
-            for (CircleAnnotation annotation :
-                    new ArrayList<>(boundaryDrawingPointAnnotations)) {
-                boundaryDrawingPointManager.delete(annotation);
-            }
+        if (boundaryDrawingPointManager != null && !boundaryDrawingPointAnnotations.isEmpty()) {
+            boundaryDrawingPointManager.delete(new ArrayList<>(boundaryDrawingPointAnnotations));
         }
 
         boundaryDrawingPointAnnotations.clear();
+    }
 
+    private void removeBoundaryDrawingPolygon() {
         if (boundaryDrawingPolygon != null
                 && boundaryDrawingPolygonManager != null) {
             boundaryDrawingPolygonManager.delete(boundaryDrawingPolygon);
@@ -3079,23 +3055,8 @@ if (gestures != null) {
             return;
         }
 
-        if (boundaryDrawingLine != null) {
-            boundaryDrawingLineManager.delete(boundaryDrawingLine);
-            boundaryDrawingLine = null;
-        }
-
-        for (CircleAnnotation annotation :
-                new ArrayList<>(boundaryDrawingPointAnnotations)) {
-            boundaryDrawingPointManager.delete(annotation);
-        }
-
-        boundaryDrawingPointAnnotations.clear();
-
-        if (boundaryDrawingPolygon != null
-                && boundaryDrawingPolygonManager != null) {
-            boundaryDrawingPolygonManager.delete(boundaryDrawingPolygon);
-            boundaryDrawingPolygon = null;
-        }
+        removeBoundaryDrawingLineAndVertices();
+        removeBoundaryDrawingPolygon();
 
         if (boundaryDrawingPoints.isEmpty()) return;
 
@@ -3751,6 +3712,42 @@ private boolean addMarkerInternal(
         });
     }
 
+    /** A style layer with its Mapbox Studio metadata. */
+    private static final class LayerMetadata {
+        final String id;
+        final String type;
+        final JSONObject metadata;
+
+        LayerMetadata(String id, String type, JSONObject metadata) {
+            this.id = id;
+            this.type = type;
+            this.metadata = metadata;
+        }
+
+        /** The Mapbox Studio folder the layer belongs to, or "". */
+        String group() {
+            return metadata.optString("mapbox:group", "");
+        }
+    }
+
+    /**
+     * Every layer that has metadata, in drawing order. Reads each layer's metadata
+     * instead of parsing the whole style JSON, which can be large.
+     */
+    private List<LayerMetadata> layersWithMetadata(Style style) {
+        List<LayerMetadata> result = new ArrayList<>();
+        for (StyleObjectInfo layer : style.getStyleLayers()) {
+            try {
+                String json = style.getStyleLayerProperty(layer.getId(), "metadata").getValue().toJson();
+                if (json == null || !json.trim().startsWith("{")) continue;
+                result.add(new LayerMetadata(layer.getId(), layer.getType(), new JSONObject(json)));
+            } catch (Exception ignored) {
+                // A layer without readable metadata belongs to no group.
+            }
+        }
+        return result;
+    }
+
     private void setLayerGroupVisibility(
         JSONObject options,
         CallbackContext callback
@@ -3776,50 +3773,17 @@ private boolean addMarkerInternal(
                     return;
                 }
 
-                JSONObject styleObject =
-                    new JSONObject(style.getStyleJSON());
-                JSONArray styleLayers =
-                    styleObject.optJSONArray("layers");
-
-                if (styleLayers == null) {
-                    callback.error("No style layers found.");
-                    return;
-                }
-
-                List<String> matchingLayerIds = new ArrayList<>();
-                for (int i = 0; i < styleLayers.length(); i++) {
-                    JSONObject layer = styleLayers.getJSONObject(i);
-                    JSONObject metadata = layer.optJSONObject("metadata");
-
-                    if (metadata == null ||
-                        !groupId.equals(
-                            metadata.optString("mapbox:group", "")
-                        )) {
-                        continue;
-                    }
-
-                    String layerId = layer.optString("id", "");
-                    if (!layerId.isEmpty()) {
-                        matchingLayerIds.add(layerId);
-                    }
-                }
-
-                if (matchingLayerIds.isEmpty()) {
-                    callback.error(
-                        "No layers found for group: " + groupId
-                    );
-                    return;
-                }
-
-                String visibility = visible ? "visible" : "none";
+                Value visibility = Value.valueOf(visible ? "visible" : "none");
                 JSONArray updatedLayers = new JSONArray();
-                for (String layerId : matchingLayerIds) {
-                    style.setStyleLayerProperty(
-                        layerId,
-                        "visibility",
-                        Value.valueOf(visibility)
-                    );
-                    updatedLayers.put(layerId);
+                for (LayerMetadata layer : layersWithMetadata(style)) {
+                    if (!groupId.equals(layer.group())) continue;
+                    style.setStyleLayerProperty(layer.id, "visibility", visibility);
+                    updatedLayers.put(layer.id);
+                }
+
+                if (updatedLayers.length() == 0) {
+                    callback.error("No layers found for group: " + groupId);
+                    return;
                 }
 
                 JSONObject result = new JSONObject();
@@ -3828,19 +3792,8 @@ private boolean addMarkerInternal(
                 result.put("updatedCount", updatedLayers.length());
                 result.put("updatedLayers", updatedLayers);
                 callback.success(result);
-
             } catch (Exception e) {
-                Log.e(
-                    "MapboxPlugin",
-                    "Group visibility update failed",
-                    e
-                );
-                callback.error(
-                    "Failed to update group visibility: " +
-                    (e.getMessage() != null
-                        ? e.getMessage()
-                        : e.getClass().getSimpleName())
-                );
+                callback.error("Failed to update group visibility.");
             }
         });
     }
@@ -3857,61 +3810,30 @@ private boolean addMarkerInternal(
                 }
 
                 Style style = mapView.getMapboxMap().getStyle();
-
                 if (style == null) {
                     callback.error("Style is not loaded.");
                     return;
                 }
 
-                String requestedGroup =
-                    options.optString("groupId", "").trim();
-
-                String styleJson = style.getStyleJSON();
-                JSONObject styleObject = new JSONObject(styleJson);
-                JSONArray layers = styleObject.optJSONArray("layers");
-
+                String requestedGroup = options.optString("groupId", "").trim();
+                List<LayerMetadata> layers = layersWithMetadata(style);
                 JSONArray matchingLayers = new JSONArray();
-                JSONArray targetLayerDetails = new JSONArray();
-
-                int totalLayers = 0;
-                int layersWithMetadata = 0;
-
-                if (layers != null) {
-                    totalLayers = layers.length();
-
-                    for (int i = 0; i < layers.length(); i++) {
-                        JSONObject layer = layers.getJSONObject(i);
-                        String layerId = layer.optString("id", "");
-                        JSONObject metadata =
-                            layer.optJSONObject("metadata");
-
-                        if (metadata == null) {
-                            continue;
-                        }
-
-                        layersWithMetadata++;
-                        String group =
-                            metadata.optString("mapbox:group", "");
-
-                        JSONObject layerInfo = new JSONObject();
-                        layerInfo.put("layerId", layerId);
-                        layerInfo.put("metadata", metadata);
-
-                        if (requestedGroup.equals(group)) {
-                            matchingLayers.put(layerInfo);
-                        }
-                    }
+                for (LayerMetadata layer : layers) {
+                    if (!requestedGroup.equals(layer.group())) continue;
+                    JSONObject layerInfo = new JSONObject();
+                    layerInfo.put("layerId", layer.id);
+                    layerInfo.put("metadata", layer.metadata);
+                    matchingLayers.put(layerInfo);
                 }
 
                 JSONObject result = new JSONObject();
                 result.put("requestedGroup", requestedGroup);
-                result.put("totalLayers", totalLayers);
-                result.put("layersWithMetadata", layersWithMetadata);
+                result.put("totalLayers", style.getStyleLayers().size());
+                result.put("layersWithMetadata", layers.size());
                 result.put("matchingLayerCount", matchingLayers.length());
                 result.put("matchingLayers", matchingLayers);
                 // Kept for response-shape compatibility; no project-specific layer is inspected.
-                result.put("targetLayerDetails", targetLayerDetails);
-
+                result.put("targetLayerDetails", new JSONArray());
                 callback.success(result);
             } catch (Throwable e) {
                 callback.error("Diagnostic failed.");
@@ -3966,40 +3888,18 @@ private boolean addMarkerInternal(
                 }
 
                 Style style = mapView.getMapboxMap().getStyle();
-
                 if (style == null) {
                     callback.error("Style is not loaded.");
                     return;
                 }
 
                 JSONArray resultLayers = new JSONArray();
-
-                for (StyleObjectInfo layer : style.getStyleLayers()) {
-                    String layerId = layer.getId();
-
-                    String metadataJson = style
-                        .getStyleLayerProperty(layerId, "metadata")
-                        .getValue()
-                        .toJson();
-
-                    if (metadataJson == null ||
-                            !metadataJson.trim().startsWith("{")) {
-                        continue;
-                    }
-
-                    JSONObject metadata = new JSONObject(metadataJson);
-
-                    String actualGroup =
-                        metadata.optString("mapbox:group", "");
-
-                    if (!groupId.equals(actualGroup)) {
-                        continue;
-                    }
-
+                for (LayerMetadata layer : layersWithMetadata(style)) {
+                    if (!groupId.equals(layer.group())) continue;
                     JSONObject layerInfo = new JSONObject();
-                    layerInfo.put("id", layerId);
-                    layerInfo.put("name", layerId);
-                    layerInfo.put("type", layer.getType());
+                    layerInfo.put("id", layer.id);
+                    layerInfo.put("name", layer.id);
+                    layerInfo.put("type", layer.type);
                     resultLayers.put(layerInfo);
                 }
 
@@ -4007,12 +3907,9 @@ private boolean addMarkerInternal(
                 response.put("groupId", groupId);
                 response.put("totalLayers", resultLayers.length());
                 response.put("layers", resultLayers);
-
                 callback.success(response);
             } catch (Exception e) {
-                callback.error(
-                    "Failed to retrieve group layers: " + e.getMessage()
-                );
+                callback.error("Failed to retrieve group layers.");
             }
         });
     }
@@ -4097,14 +3994,12 @@ private boolean addMarkerInternal(
 
     /** JSONObject.optDouble parses the strings "NaN" and "Infinity"; never pass those on. */
     private static double finiteOption(JSONObject options, String key, double fallback) {
-        return finiteOr(options.optDouble(key, fallback), fallback);
+        double value = readFiniteDouble(options, key);
+        return Double.isNaN(value) ? fallback : value;
     }
 
-    private static double finiteOr(double value, double fallback) {
-        return Double.isFinite(value) ? value : fallback;
-    }
-
-    private double readFiniteDouble(JSONObject object, String... keys) {
+    /** The first present key's finite number (numbers or numeric strings), else NaN. */
+    private static double readFiniteDouble(JSONObject object, String... keys) {
         for (String key : keys) {
             if (!object.has(key)) {
                 continue;

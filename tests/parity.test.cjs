@@ -26,8 +26,8 @@ test('camera actions preserve omitted center coordinates on both platforms', () 
 
 test('initial camera applies bearing and pitch on both platforms', () => {
   const androidInitialize = android.split('private void initialize(')[1].split('private String getAccessToken')[0];
-  assert.match(androidInitialize, /optDouble\("bearing", 0\.0\)/);
-  assert.match(androidInitialize, /optDouble\("pitch", 0\.0\)/);
+  assert.match(androidInitialize, /finiteOption\(options, "bearing", 0\.0\)/);
+  assert.match(androidInitialize, /finiteOption\(options, "pitch", 0\.0\)/);
   assert.match(androidInitialize, /\.bearing\(bearing\)/);
   assert.match(androidInitialize, /\.pitch\(pitch\)/);
 
@@ -228,9 +228,10 @@ test('diagnoseLayerGroup logs nothing and inspects no project-specific layer', (
 
 test('Android sets visibility for runtime style layers in a metadata group', () => {
   const body = javaMethod('setLayerGroupVisibility', 'diagnoseLayerGroup');
-  assert.match(body, /new JSONObject\(style\.getStyleJSON\(\)\)/);
-  assert.match(body, /optJSONArray\("layers"\)/);
-  assert.match(body, /metadata\.optString\("mapbox:group", ""\)/);
+  // One metadata reader for every layer-group action; none parses the whole style JSON.
+  assert.match(body, /layersWithMetadata\(style\)/);
+  assert.match(android, /metadata\.optString\("mapbox:group", ""\)/);
+  assert.doesNotMatch(android, /getStyleJSON\(\)/);
   assert.match(body, /style\.setStyleLayerProperty\([\s\S]*?"visibility"/);
   assert.match(body, /result\.put\("updatedCount", updatedLayers\.length\(\)\)/);
   assert.match(body, /result\.put\("updatedLayers", updatedLayers\)/);

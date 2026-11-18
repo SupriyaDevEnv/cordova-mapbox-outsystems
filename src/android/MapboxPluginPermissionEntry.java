@@ -49,10 +49,6 @@ public class MapboxPluginPermissionEntry extends MapboxPluginEntry {
             || "registerLocationAccuracyCallback".equals(action);
     }
 
-    private boolean hasLocationPermission() {
-        return cordova.hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-            || cordova.hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION);
-    }
 
     private void requestLocationPermissionIfNeeded() {
         synchronized (pendingLocationActions) {
