@@ -43,10 +43,12 @@ public class MarkerDensityTest {
                 Bitmap image = new Bitmap();
                 Bitmap loaded = icons.pin(123, find, "photo", image, ratio);
                 for (Bitmap pin : new Bitmap[] {plain, loaded}) {
-                    // Mapbox image scale defaults to map pixel ratio, iconSize remains 0.5.
-                    check(Math.abs(pin.width * 0.5 / ratio - 36) <= 0.5 / ratio, "Width varies by density");
-                    check(Math.abs(pin.height * 0.5 / ratio - 48) <= 0.5 / ratio, "Height varies by density");
-                    check(pin.scaleX == ratio && pin.scaleY == ratio, "Artwork not scaled with bitmap");
+                    // Mapbox image scale defaults to map pixel ratio; pins are drawn at half
+                    // scale and shown at ICON_SIZE 1.0, so they stay 36x48 dp.
+                    check(ICON_SIZE == 1.0, "Icon size changed");
+                    check(Math.abs(pin.width * ICON_SIZE / ratio - 36) <= 0.5 / ratio, "Width varies by density");
+                    check(Math.abs(pin.height * ICON_SIZE / ratio - 48) <= 0.5 / ratio, "Height varies by density");
+                    check(pin.scaleX == ratio * 0.5f && pin.scaleY == ratio * 0.5f, "Artwork not scaled with bitmap");
                     check(pin.density == Bitmap.DENSITY_NONE, "Implicit Android bitmap scaling enabled");
                 }
                 check(plain == icons.pin(123, find, null, ratio), "Plain pin cache miss");

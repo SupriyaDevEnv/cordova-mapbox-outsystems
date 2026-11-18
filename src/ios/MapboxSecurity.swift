@@ -19,7 +19,8 @@ enum MapboxSecurity {
         }
     }
 
-    static let maxMarkerImageBytes = 1024 * 1024
+    /// Marker images are shown as small thumbnails; serve them at about 256 px.
+    static let maxMarkerImageBytes = 256 * 1024
 
     /// HTTPS URLs (optionally limited to a host list) or base64 image data URIs.
     static func markerImageAllowed(_ value: String, hosts: String) -> Bool {

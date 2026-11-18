@@ -11,6 +11,11 @@
 - **Performance:** Android creates and deletes markers and boundaries in batches.
 - **Changed:** `loadMarkers`, `loadBoundaries` and `loadPath` no longer modify the options object you pass in.
 - **Changed:** `diagnoseLayerGroup` no longer writes style metadata to the Android log.
+- **Performance:** `loadMarkers` with many Waypoint photos draws every marker at once, converts photos one at a time and fills them in as they finish, instead of waiting for all photos and decoding four at once.
+- **Memory (Android):** marker pins are drawn at the size they are shown, using a quarter of the memory per pin. Pins look the same.
+- **Changed:** marker images (URLs and data URIs) are limited to 256 KiB, down from 1 MiB. Serve thumbnails of about 256 px; larger files show a plain pin.
+- **New:** `wifiOnly` option for offline downloads, and a limit of 20 stored offline regions.
+- **Performance:** a long path recording redraws only its newest 500 points on each GPS fix.
 
 ## Marker changes in earlier versions
 

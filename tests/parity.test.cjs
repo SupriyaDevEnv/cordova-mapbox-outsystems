@@ -96,7 +96,9 @@ test('markers accept imageUrl and pinColor on both platforms and reject disallow
   assert.match(iosLoad, /marker\["ImageUrl"\]/);
   assert.match(iosLoad, /marker\["PinColor"\]/);
   assert.match(ios, /marker\.iconSize = 0\.5/);
-  assert.match(android, /\.withIconSize\(0\.5\)/);
+  // Android draws pins at half scale and shows them at 1.0: the same 36x48 dp as iOS at 0.5.
+  assert.match(android, /\.withIconSize\(MarkerIcons\.ICON_SIZE\)/);
+  assert.match(fs.readFileSync('src/android/MarkerIcons.java', 'utf8'), /static final double ICON_SIZE = 1\.0;/);
   assert.match(ios, /MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS/);
 });
 
@@ -160,6 +162,35 @@ test('iOS implements boundary drawing actions and live acreage updates', () => {
   assert.match(ios, /"pointCount": boundaryDrawingPoints\.count/);
   assert.match(ios, /"areaAcres": self\.calculateBoundaryAreaAcres\(self\.boundaryDrawingPoints\)/);
   assert.match(ios, /completedBoundaryDrawingPolygons\.append\(polygon\)/);
+});
+
+test('marker image size limit and offline limits match on both platforms', () => {
+  const androidSecurity = fs.readFileSync('src/android/MapboxSecurity.java', 'utf8');
+  const iosSecurity = fs.readFileSync('src/ios/MapboxSecurity.swift', 'utf8');
+  const markerSource = fs.readFileSync('www/MarkerImageSource.js', 'utf8');
+  assert.match(androidSecurity, /MAX_MARKER_IMAGE_BYTES = 256 \* 1024;/);
+  assert.match(iosSecurity, /maxMarkerImageBytes = 256 \* 1024/);
+  assert.match(markerSource, /MAX_NATIVE_BYTES = 256 \* 1024;/);
+  assert.match(markerSource, /MAX_PARALLEL_DECODES = 1;/);
+  assert.match(android, /MAX_OFFLINE_REGIONS = 20;/);
+  assert.match(ios, /maxOfflineRegions = 20/);
+  assert.match(android, /optBoolean\("wifiOnly", false\)/);
+  assert.match(ios, /options\["wifiOnly"\]/);
+  assert.match(android, /NetworkRestriction\.DISALLOW_EXPENSIVE/);
+  assert.match(ios, /networkRestriction: wifiOnly \? \.disallowExpensive : \.none/);
+  assert.match(android, /getAllTileRegions\(/);
+  assert.match(ios, /allTileRegions \{/);
+});
+
+test('the live recording line is redrawn in 500-point pieces on both platforms', () => {
+  const androidUpdate = android.split('private void updatePathAnnotation()')[1].split('private PolylineAnnotationOptions pathLineOptions(')[0];
+  assert.match(android, /PATH_CHUNK_POINTS = 500;/);
+  assert.match(androidUpdate, /currentSegment\.subList\(liveChunkStart, currentSegment\.size\(\)\)/);
+  assert.doesNotMatch(androidUpdate, /LineString\.fromLngLats\(currentSegment\)/);
+  const iosUpdate = ios.split('private func updatePathAnnotation()')[1].split('private func pathLine(')[0];
+  assert.match(ios, /pathChunkPoints = 500/);
+  assert.match(iosUpdate, /currentSegment\[liveChunkStart\.\.\.\]/);
+  assert.doesNotMatch(iosUpdate, /lineCoordinates: currentSegment\)/);
 });
 
 test('every Android action has an iOS implementation, and the reverse', () => {

@@ -41,6 +41,8 @@ import com.mapbox.bindgen.Value;
 
 import com.mapbox.common.MapboxOptions;
 import com.mapbox.common.Cancelable;
+import com.mapbox.common.NetworkRestriction;
+import com.mapbox.common.TileRegion;
 import com.mapbox.common.TileRegionLoadOptions;
 import com.mapbox.common.TileStore;
 import com.mapbox.common.TilesetDescriptor;
@@ -98,9 +100,11 @@ import org.json.JSONObject;
 public class MapboxPluginEntry extends CordovaPlugin {
     private static final int MAX_MARKERS = 10000;
     private static final String MARKER_IMAGE_NOT_ALLOWED =
-        "Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 1 MiB.";
+        "Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 256 KiB.";
     private static final int MAX_BOUNDARIES = 1000;
     private static final double MAX_OFFLINE_RADIUS_KM = 50.0;
+    // Stored offline regions; each is already limited to about 50,000 tiles.
+    private static final int MAX_OFFLINE_REGIONS = 20;
     private static final double MIN_OFFLINE_ZOOM = 2.0;
     private static final double MAX_OFFLINE_ZOOM = 18.0;
     private static final long MAX_LOCATION_AGE_MS = 30_000L;
@@ -245,6 +249,13 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private PolylineAnnotationManager lineAnnotationManager;
     private final List<PolylineAnnotation> pathAnnotations = new ArrayList<>();
     private PolylineAnnotation currentSegmentAnnotation = null;
+    // The live line is drawn in pieces of PATH_CHUNK_POINTS, so each GPS fix redraws only
+    // the newest piece instead of the whole recording. Finished pieces are kept in
+    // pathAnnotations like any other drawn line.
+    private static final int PATH_CHUNK_POINTS = 500;
+    private final List<PolylineAnnotation> liveChunks = new ArrayList<>();
+    private List<Point> liveChunkSegment = null;
+    private int liveChunkStart = 0;
     private final List<Point> pathPoints = new ArrayList<>();
     private boolean isPathTrackingActive = false;
     private long pathTrackingStartTimeMs = 0L;
@@ -2024,6 +2035,7 @@ if (gestures != null) {
                     maxZoom,
                     styleUrl,
                     null,
+                    options.optBoolean("wifiOnly", false),
                     callback
                 );
             } catch (Throwable e) {
@@ -2075,6 +2087,7 @@ if (gestures != null) {
                     maxZoom,
                     styleUrl,
                     polygon,
+                    options.optBoolean("wifiOnly", false),
                     callback
                 );
             } catch (Throwable e) {
@@ -2092,6 +2105,7 @@ if (gestures != null) {
         double maxZoom,
         String styleUrl,
         Polygon geometry,
+        boolean wifiOnly,
         CallbackContext callback
     ) {
         if (isOfflineDownloading) {
@@ -2119,6 +2133,42 @@ if (gestures != null) {
         final double clampedMinZoom = clamp(minZoom, MIN_OFFLINE_ZOOM, MAX_OFFLINE_ZOOM);
         final double clampedMaxZoom = clamp(maxZoom, clampedMinZoom, MAX_OFFLINE_ZOOM);
         isOfflineDownloading = true;
+        // Cap the number of stored regions so offline storage cannot grow without limit.
+        // Re-downloading an existing region always works. If the list cannot be read,
+        // the download goes ahead.
+        TileStore.create().getAllTileRegions(regions -> runForGeneration(downloadGeneration, () -> {
+            if (downloadGeneration != sessionGeneration) return;
+            List<TileRegion> stored = regions.isValue() ? regions.getValue() : null;
+            if (stored != null && stored.size() >= MAX_OFFLINE_REGIONS) {
+                boolean exists = false;
+                for (TileRegion region : stored) {
+                    if (regionId.equals(region.getId())) { exists = true; break; }
+                }
+                if (!exists) {
+                    isOfflineDownloading = false;
+                    callback.error("Offline region limit reached: delete a region before downloading another (maximum "
+                        + MAX_OFFLINE_REGIONS + ").");
+                    return;
+                }
+            }
+            beginOfflineDownload(downloadGeneration, regionId, latitude, longitude, clampedRadiusKm,
+                clampedMinZoom, clampedMaxZoom, styleUrl, geometry, wifiOnly, callback);
+        }));
+    }
+
+    private void beginOfflineDownload(
+        long downloadGeneration,
+        String regionId,
+        double latitude,
+        double longitude,
+        double clampedRadiusKm,
+        double clampedMinZoom,
+        double clampedMaxZoom,
+        String styleUrl,
+        Polygon geometry,
+        boolean wifiOnly,
+        CallbackContext callback
+    ) {
         cancelCurrentDownload();
         activeOfflineManager = new OfflineManager();
         sendOfflineProgress("style-start", 0, 100);
@@ -2154,6 +2204,7 @@ if (gestures != null) {
                         clampedMaxZoom,
                         styleUrl,
                         geometry,
+                        wifiOnly,
                         callback
                     );
                     return null;
@@ -2173,6 +2224,7 @@ if (gestures != null) {
         double maxZoom,
         String styleUrl,
         Polygon geometry,
+        boolean wifiOnly,
         CallbackContext callback
     ) {
         runForSession(() -> {
@@ -2192,6 +2244,8 @@ if (gestures != null) {
                     .descriptors(Collections.singletonList(descriptor))
                     .metadata(metadataValue(regionId))
                     .acceptExpired(false)
+                    // wifiOnly: never use mobile data (or other metered networks) for tiles.
+                    .networkRestriction(wifiOnly ? NetworkRestriction.DISALLOW_EXPENSIVE : NetworkRestriction.NONE)
                     .build();
 
                 activeOfflineTileStore = TileStore.create();
@@ -3367,7 +3421,7 @@ private boolean addMarkerInternal(
                 ? markerIcons.offlinePin(style.color, density)
                 : markerIcons.pin(style.color, style.isFind, style.imageUrl, density))
             .withIconAnchor(IconAnchor.BOTTOM)
-            .withIconSize(0.5);
+            .withIconSize(MarkerIcons.ICON_SIZE);
     }
 
     private void registerMarker(String id, PointAnnotation annotation, Point point, MarkerStyle style) {
@@ -4190,14 +4244,43 @@ private boolean addMarkerInternal(
             return;
         }
 
-        LineString lineString = LineString.fromLngLats(currentSegment);
-        PolylineAnnotationOptions options = new PolylineAnnotationOptions()
-            .withGeometry(lineString)
+        if (liveChunkSegment != currentSegment) {
+            // A new segment: earlier pieces now belong to finished segments.
+            liveChunkSegment = currentSegment;
+            liveChunkStart = 0;
+            liveChunks.clear();
+        } else if (!liveChunks.isEmpty() && !lineAnnotationManager.getAnnotations().contains(liveChunks.get(0))) {
+            // The path was hidden and shown again: draw this segment's finished pieces again.
+            List<PolylineAnnotationOptions> pieces = new ArrayList<>();
+            for (int start = 0; start < liveChunkStart; start += PATH_CHUNK_POINTS) {
+                pieces.add(pathLineOptions(currentSegment.subList(start, start + PATH_CHUNK_POINTS + 1)));
+            }
+            liveChunks.clear();
+            List<PolylineAnnotation> created = lineAnnotationManager.create(pieces);
+            liveChunks.addAll(created);
+            pathAnnotations.addAll(created);
+        }
+
+        // Freeze full pieces; consecutive pieces share an end point so the line is continuous.
+        while (currentSegment.size() - liveChunkStart > PATH_CHUNK_POINTS + 1) {
+            PolylineAnnotation piece = lineAnnotationManager.create(pathLineOptions(
+                currentSegment.subList(liveChunkStart, liveChunkStart + PATH_CHUNK_POINTS + 1)));
+            liveChunks.add(piece);
+            pathAnnotations.add(piece);
+            liveChunkStart += PATH_CHUNK_POINTS;
+        }
+
+        currentSegmentAnnotation = lineAnnotationManager.create(
+            pathLineOptions(currentSegment.subList(liveChunkStart, currentSegment.size())));
+    }
+
+    private PolylineAnnotationOptions pathLineOptions(List<Point> points) {
+        // Copied: the live segment keeps growing after this line is drawn.
+        return new PolylineAnnotationOptions()
+            .withGeometry(LineString.fromLngLats(new ArrayList<>(points)))
             .withLineColor(pathLineColor)
             .withLineWidth(pathLineWidth)
             .withLineOpacity(pathLineOpacity);
-
-        currentSegmentAnnotation = lineAnnotationManager.create(options);
     }
 
     private void startPathTracking(JSONObject options, CallbackContext callback) {

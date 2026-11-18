@@ -29,6 +29,18 @@ The JavaScript regression suite exercises both platform configurations and lifec
 
 Add two markers (including an image marker), click both, remove one while its image is loading, and confirm only the remaining marker still produces clicks. Repeat removal, try an unknown ID and invalid IDs, then re-add the removed ID.
 
+## Many marker photos
+
+Load about 100 Waypoint markers with camera photos in one `loadMarkers` call. All pins should appear at once and photos fill in over the next seconds while the map stays usable. Remove one marker and clear the map while photos are still filling in: removed markers must not come back.
+
+## Long path recordings
+
+Record for 30 minutes or more (or simulate over 1,000 GPS fixes). The line must stay continuous across the 500-point pieces, the map must not get slower, and hide/show, pause/continue and stop must show the whole line.
+
+## Offline limits
+
+Download with `wifiOnly: true` on mobile data and confirm no tiles download until Wi-Fi is available. Download 20 regions, then confirm a 21st fails with the limit message and re-downloading an existing region still works.
+
 ## Style layers
 
 On both platforms: call `getLayerIds()` after `initialize` resolves; call `getLayersByGroup` and `setLayerGroupVisibility` with a real Mapbox Studio folder name and confirm its layers hide and show; confirm an unknown group returns an error rather than waiting forever.

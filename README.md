@@ -71,10 +71,10 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - Closing the map (including the native Close button) or resetting the WebView stops location/heading services, cancels downloads and pending permission actions, and clears map-session data and callbacks. Re-register callbacks after initializing a new map session.
 - `MAPBOX_ACCESS_TOKEN` must be a public `pk.*` token. Both platform builds reject configured secret tokens. Initialization always reads the current configuration and removes legacy cached values, so token rotation works after app upgrades. Unconfigured build templates may still be prepared, but cannot initialize the map.
 - Style URLs must be `mapbox://styles/<owner>/<style>` or HTTPS on an explicitly approved host. `MAPBOX_ALLOWED_STYLE_HOSTS` is a comma-separated build preference, defaulting to `api.mapbox.com`. Configure additional trusted style hosts through OutSystems Extensibility Configuration. Credentials in URLs, non-443 ports, fragments, HTTP and local-file URLs are rejected. Only allow hosts serving trusted styles: this entry-point policy does not inspect redirects or every resource referenced by a style.
-- Marker `imageUrl` values must be HTTPS URLs or base64 `data:image/(png|jpeg|webp|gif)` URIs, up to 1 MiB of image data. `MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS` is an optional comma-separated build preference; when set, only those hosts (including redirect targets) are allowed. When empty (the default), any HTTPS host is allowed; set it for production builds. Android follows at most three redirects and checks each target before connecting to it. Images wider or taller than 4096 px, or larger than 4 megapixels, are rejected before decoding.
+- Marker `imageUrl` values must be HTTPS URLs or base64 `data:image/(png|jpeg|webp|gif)` URIs, up to 256 KiB of image data. Serve thumbnails of about 256 px; larger files show a plain pin. `MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS` is an optional comma-separated build preference; when set, only those hosts (including redirect targets) are allowed. When empty (the default), any HTTPS host is allowed; set it for production builds. Android follows at most three redirects and checks each target before connecting to it. Images wider or taller than 4096 px, or larger than 4 megapixels, are rejected before decoding.
 - Numeric options that are not finite numbers, such as the strings `"NaN"` or `"Infinity"`, fall back to their defaults on both platforms. `flyTo` durations are limited to 0-10,000 ms, line widths to 0-50 and opacities to 0-1.
 - Native inputs are limited to approximately 4 MiB; at most 10,000 markers may exist at once, with marker IDs limited to 256 characters/bytes. Boundary batches allow 1,000 boundaries and 20,000 total vertices. Imported paths allow 2–20,000 points. Tracking stops location updates at the recording limit; call `stopPathTracking()` to retrieve the retained points. Stopping an empty recording returns an empty path with zero distance.
-- Offline zooms must be between 2 and 18, with `minZoom <= maxZoom`; invalid values are rejected. Both circle and rectangle downloads are checked against a conservative bounding-box diagonal of 100 km and an estimated 50,000-tile budget (including lower zooms). This can reject large/high-zoom requests that older releases accepted. Polar and antimeridian-crossing bounds are rejected. The budget is an estimate, not a byte quota; Mapbox's tile-store constraints still apply. The consuming app should manage retained offline regions and its storage budget.
+- Offline zooms must be between 2 and 18, with `minZoom <= maxZoom`; invalid values are rejected. Both circle and rectangle downloads are checked against a conservative bounding-box diagonal of 100 km and an estimated 50,000-tile budget (including lower zooms). This can reject large/high-zoom requests that older releases accepted. Polar and antimeridian-crossing bounds are rejected. The budget is an estimate, not a byte quota; Mapbox's tile-store constraints still apply. At most 20 offline regions can be stored: downloading a new region beyond that fails with `Offline region limit reached`; delete a region first. Re-downloading an existing `regionId` always works. Pass `wifiOnly: true` to `downloadOfflineRegion` or `downloadOfflineRegionForRect` so tiles are never downloaded over mobile data (the small style download is not restricted).
 - `deleteOfflineRegion` keeps the region's style pack unless you pass `deleteStylePack: true`, because other offline regions usually use the same style. Earlier releases deleted it by default.
 - Style URLs and underlying SDK error details are no longer included in plugin diagnostic logs.
 
@@ -643,7 +643,7 @@ The Promise rejects with one of these messages:
 |---|---|
 | `Map is not initialized.` | `initialize` has not completed, or the map was closed. |
 | `Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].` | Coordinates out of range. |
-| `Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 1 MiB.` | `imageUrl` is not an [allowed image source](#marker-image-sources). |
+| `Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 256 KiB.` | `imageUrl` is not an [allowed image source](#marker-image-sources). |
 | `Marker unavailable or marker/id limit exceeded.` (Android)<br>`Marker/id limit exceeded.` (iOS) | 10,000 markers already exist, or the `id` is empty or longer than 256 characters. |
 | `Invalid id: must be a string, number, or boolean.` / `Invalid id: must not be empty.` (iOS only) | Unusable `id`. |
 | `Map input exceeds the 4 MiB limit.` | The options, including any data URI, exceed 4 MiB. |
@@ -707,7 +707,7 @@ Every marker is validated before any marker is changed. The whole call is reject
 | `Too many markers: maximum allowed is 10000.` | More than 10,000 items in the array. Checked in JavaScript. |
 | `Too many markers: maximum total is 10000.` | Existing plus new markers would exceed 10,000 when `replace` is `false`. |
 | `Invalid marker id.` | An `Id` is empty or longer than 256 characters. |
-| `Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 1 MiB.` | An `ImageUrl` is not an [allowed image source](#marker-image-sources). |
+| `Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 256 KiB.` | An `ImageUrl` is not an [allowed image source](#marker-image-sources). |
 | `Map is not initialized.` | The map is not ready. |
 | `Map input exceeds the 4 MiB limit.` | The call's JSON exceeds 4 MiB. Many data URIs add up quickly; prefer HTTPS URLs for bulk loads. |
 
@@ -777,7 +777,7 @@ window.MapboxPlugin.onMarkerClick(function (event) {
 
 - **One download per URL.** Markers sharing an `imageUrl` share one download, even if they are added while it is still in progress.
 - **Cached in memory.** Up to 64 recent images are kept, so re-adding markers with the same image is instant. The cache is not saved to disk and is cleared when the app restarts.
-- **Failures keep the plain pin.** This covers network errors, timeouts (10 seconds), non-200 responses, files over 1 MiB, and data that is not an image. Nothing is reported to JavaScript. The download is retried the next time a marker uses that URL.
+- **Failures keep the plain pin.** This covers network errors, timeouts (10 seconds), non-200 responses, files over 256 KiB, and data that is not an image. Nothing is reported to JavaScript. The download is retried the next time a marker uses that URL.
 - **Images are scaled down** to at most 128 pixels on the long side before drawing. Animated GIFs show their first frame.
 - **Replaced or removed markers are safe.** If a marker is removed or given a different image before its download finishes, the late download does not affect it. Downloads that finish after the map is closed are ignored.
 
@@ -788,7 +788,7 @@ window.MapboxPlugin.onMarkerClick(function (event) {
 | Form | Example | Rules |
 |---|---|---|
 | HTTPS URL | `https://cdn.example.com/a.png` | HTTPS only, no user name or password in the URL. Must pass the host allowlist, if one is configured, including every redirect. |
-| Base64 data URI | `data:image/png;base64,iVBORw0...` | Type `png`, `jpeg`, `jpg`, `webp`, or `gif`. Base64 only, up to 1 MiB of image data. Useful for OutSystems binary data, for example `"data:image/png;base64," + BinaryToBase64(Image)`. |
+| Base64 data URI | `data:image/png;base64,iVBORw0...` | Type `png`, `jpeg`, `jpg`, `webp`, or `gif`. Base64 only, up to 256 KiB of image data. Useful for OutSystems binary data, for example `"data:image/png;base64," + BinaryToBase64(Image)`. |
 
 ### Waypoint binary images
 
@@ -805,9 +805,21 @@ Conversion of each Waypoint binary:
 1. Accepts OutSystems Binary Data (a base64 string), a data URI, URL-safe or line-wrapped base64, `ArrayBuffer`, `Uint8Array` or an array of bytes.
 2. Detects PNG, JPEG, GIF, WebP and BMP from the file signature, so a wrong or `application/octet-stream` type is fine.
 3. Decodes the image with the WebView, takes the center square (what the round pin shows anyway) and redraws it at up to 192 x 192: JPEG stays JPEG, everything else becomes PNG (keeps transparency). EXIF rotation is applied, and photos up to 10 MiB are accepted because they are reduced before crossing the bridge.
-4. If the WebView cannot decode it, a PNG/JPEG/GIF/WebP up to 1 MiB is sent as-is; otherwise the marker shows a plain pin (or its `imageUrl`, if also given) and a console warning is logged, like a failed image download.
+4. If the WebView cannot decode it, a PNG/JPEG/GIF/WebP up to 256 KiB is sent as-is; otherwise the marker shows a plain pin (or its `imageUrl`, if also given) and a console warning is logged, like a failed image download.
 
 Data that is not binary at all (for example invalid base64) rejects the call before any marker changes. Markers that carry identical bytes share one conversion and one native image. Each Waypoint keeps its own image, ID, coordinates, color and `pinStyle`.
+
+#### Many photos in one call
+
+A `loadMarkers` list may carry many Waypoint photos (for example 100). To keep the map responsive and memory low:
+
+1. Every marker is drawn at once, as a plain pin, before any photo is converted.
+2. Photos are converted one at a time, so only one full-size photo is ever decoded in the WebView.
+3. Finished photos are sent to the map in small groups (up to 10, at least every 250 ms) using `replace: false` updates by `Id`. Markers without an `Id` get their list index.
+4. A marker removed, re-added or cleared while its photo is still converting keeps the newer state; its photo is dropped.
+5. The returned Promise resolves when every photo has been applied.
+
+Photos from the camera can take 100–300 ms each to convert, so 100 photos fill in over roughly 10–30 seconds while the map stays usable. Sending smaller images (for example 256 px thumbnails resized on the server) makes this much faster.
 
 OutSystems example (`Markers` is a List of `{ Id, Latitude, Longitude, IsFind, ImageUrl, ImageBinary, ... }`):
 
@@ -830,8 +842,8 @@ window.MapboxPlugin.addMarker({
 
 Notes:
 
-- Calls with a binary image resolve after conversion. Await them before `clearMarkers()`, `removeMarker()` or another load that must run after them. Calls without binary fields run exactly as before.
-- If the converted list is larger than the 4 MiB bridge limit, `loadMarkers` sends it in several native calls: the first applies `replace`, the rest append. Missing `Id`s keep their list index. If a later batch fails, earlier batches stay on the map.
+- Calls with a binary image resolve after every photo is applied. You do not need to wait before `clearMarkers()`, `removeMarker()` or another load: photos for markers changed meanwhile are dropped. Calls without binary fields run exactly as before.
+- If a list is larger than the 4 MiB bridge limit, `loadMarkers` sends it in several native calls: the first applies `replace`, the rest append. Missing `Id`s keep their list index. If a later call fails, markers already sent stay on the map.
 - `close()` during conversion rejects the call with a cancellation error and nothing is drawn.
 
 Rejected examples: `http://...`, `file:///...`, `https://user:pass@host/...`, `data:text/html;base64,...`, `data:image/png,<raw data>`.
@@ -864,7 +876,7 @@ By default, any HTTPS host is allowed. To allow only specific hosts, set the `MA
 | Marker ID length | 256 characters |
 | Items per `loadMarkers` call | 10,000 |
 | Size of one call | 4 MiB of JSON |
-| Image data | 1 MiB per image |
+| Image data | 256 KiB per image |
 | Image download timeout | 10 seconds |
 | Tap events | One per 100 ms |
 

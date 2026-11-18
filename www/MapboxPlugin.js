@@ -174,44 +174,143 @@ function markerLabel(id, index) {
   return index === null ? '(no id)' : 'at index ' + index;
 }
 
-// Waypoint binaries become data URIs. Every marker is converted and validated before
-// any native change; an invalid binary rejects the whole call, like an invalid imageUrl.
+// Markers whose binary image is still being converted, mapped to the loadMarkers request
+// that owns them. A later change to the same marker (remove, add, replace or clear) drops
+// the entry, so a late image never re-adds or overwrites a marker the screen changed.
+var pendingMarkerImages = {};
+var markerImageRequests = 0;
+// Converted images are sent in small groups: at most every FLUSH_MS, or FLUSH_COUNT at once.
+var MARKER_IMAGE_FLUSH_MS = 250;
+var MARKER_IMAGE_FLUSH_COUNT = 10;
+
+function forgetPendingMarkerImages(ids) {
+  if (!ids) { pendingMarkerImages = {}; return; }
+  ids.forEach(function (id) {
+    if (id !== undefined && id !== null) delete pendingMarkerImages[String(id)];
+  });
+}
+
+function now() { return Date.now ? Date.now() : new Date().getTime(); }
+
+// Sends a marker list as one or more loadMarkers calls under the bridge limit. The first
+// call honours base.replace; later ones append.
+function sendMarkerBatches(base, markers, lifecycle) {
+  var batches = splitMarkerBatches(markers, base);
+  var chain = Promise.resolve();
+  batches.forEach(function (batch, number) {
+    chain = chain.then(function () {
+      if (lifecycle !== lifecycleGeneration) throw cancellationError('loadMarkers');
+      var request = Object.assign({}, base);
+      if (number > 0) request.replace = false;
+      request.markers = batch.items.map(function (entry) { return entry.marker; });
+      return call('loadMarkers', [request]);
+    });
+  });
+  return chain.then(function () { return undefined; });
+}
+
+// Waypoint binaries become data URIs. Every binary is validated before any native change;
+// an invalid binary rejects the whole call, like an invalid imageUrl. The markers are then
+// drawn at once (plain pins), and photos are converted one at a time and filled in as
+// they finish, so a list with many photos neither blocks the map nor fills memory.
+// The returned Promise resolves when every photo has been applied.
 function loadMarkersWithImages(options) {
   var lifecycle = lifecycleGeneration;
-  var cache = {};
-  var keys = markerImages().LOAD_KEYS;
-  return Promise.all(options.markers.map(function (marker, index) {
-    return markerImages().prepare(window, marker, keys, cache, markerLabel(marker && marker.Id, index));
-  })).then(function (prepared) {
-    if (lifecycle !== lifecycleGeneration) throw cancellationError('loadMarkers');
-    var base = {};
-    Object.keys(options).forEach(function (key) { if (key !== 'markers') base[key] = options[key]; });
-    var batches = splitMarkerBatches(prepared, base);
-    if (batches.length === 1) {
-      base.markers = prepared;
-      return call('loadMarkers', [base]);
+  var token = ++markerImageRequests;
+  var images = markerImages();
+  var keys = images.LOAD_KEYS;
+  var staged;
+  try {
+    staged = options.markers.map(function (marker, index) {
+      var entry = images.stage(window, marker, keys, markerLabel(marker && marker.Id, index));
+      // Photos are applied later by Id; give Id-less markers their list index, which is
+      // also native's default.
+      if (entry.image && (entry.marker.Id === undefined || entry.marker.Id === null)) {
+        entry.marker.Id = String(index);
+      }
+      entry.index = index;
+      return entry;
+    });
+  } catch (error) {
+    return Promise.reject(error);
+  }
+
+  var base = {};
+  Object.keys(options).forEach(function (key) { if (key !== 'markers') base[key] = options[key]; });
+  var work = staged.filter(function (entry) { return entry.image; });
+  var multiple = splitMarkerBatches(staged.map(function (entry) { return entry.marker; }), base).length > 1;
+  var first = staged.map(function (entry) {
+    var marker = entry.marker;
+    // Several calls: missing Ids keep their whole-list index, matching the single-call default.
+    if (multiple && marker && typeof marker === 'object' && (marker.Id === undefined || marker.Id === null)) {
+      marker = Object.assign({}, marker, { Id: String(entry.index) });
     }
-    // Too large for one bridge call: the first batch honours replace, later ones append.
-    // Missing Ids keep their whole-list index, matching the single-call default.
-    batches.forEach(function (batch) {
-      batch.items.forEach(function (entry) {
-        if (entry.marker && typeof entry.marker === 'object' &&
-            (entry.marker.Id === undefined || entry.marker.Id === null)) {
-          entry.marker = Object.assign({}, entry.marker, { Id: String(entry.index) });
+    return marker;
+  });
+  work.forEach(function (entry) { pendingMarkerImages[String(entry.marker.Id)] = token; });
+
+  return sendMarkerBatches(base, first, lifecycle).then(function () {
+    return applyMarkerImages(work, base, keys, token, lifecycle);
+  });
+}
+
+function applyMarkerImages(work, base, keys, token, lifecycle) {
+  var images = markerImages();
+  var cache = {};
+  var ready = [];
+  var lastFlush = now();
+  var sending = Promise.resolve();
+  var failure = null;
+
+  function current(entry) {
+    return pendingMarkerImages[String(entry.marker.Id)] === token;
+  }
+  function flush() {
+    var group = ready;
+    ready = [];
+    lastFlush = now();
+    if (!group.length) return;
+    sending = sending.then(function () {
+      if (lifecycle !== lifecycleGeneration) throw cancellationError('loadMarkers');
+      // Checked when sending: the screen may have changed these markers meanwhile.
+      var live = group.filter(current);
+      if (!live.length) return undefined;
+      live.forEach(function (entry) { delete pendingMarkerImages[String(entry.marker.Id)]; });
+      return sendMarkerBatches(Object.assign({}, base, { replace: false }),
+        live.map(function (entry) { return entry.marker; }), lifecycle);
+    }).catch(function (error) { failure = failure || error; });
+  }
+
+  var chain = Promise.resolve();
+  work.forEach(function (entry) {
+    chain = chain.then(function () {
+      if (lifecycle !== lifecycleGeneration || failure) return undefined;
+      if (!current(entry)) return undefined; // removed or replaced meanwhile: skip the decode
+      return images.convert(window, entry.image, cache).then(function (data) {
+        if (lifecycle !== lifecycleGeneration || !current(entry)) return;
+        var label = markerLabel(entry.marker.Id, entry.index);
+        var hadUrl = entry.url !== undefined && entry.url !== null && entry.url !== '';
+        // A new object: the one already sent for the first drawing is left unchanged.
+        var update = { marker: Object.assign({}, entry.marker), url: entry.url };
+        images.finish(window, update, data, keys, label);
+        // No photo and no URL: the plain pin already drawn is the final result.
+        if (!data && !hadUrl) {
+          delete pendingMarkerImages[String(entry.marker.Id)];
+          return;
         }
+        ready.push(update);
+        if (ready.length >= MARKER_IMAGE_FLUSH_COUNT || now() - lastFlush >= MARKER_IMAGE_FLUSH_MS) flush();
       });
     });
-    var chain = Promise.resolve();
-    batches.forEach(function (batch, number) {
-      chain = chain.then(function () {
-        if (lifecycle !== lifecycleGeneration) throw cancellationError('loadMarkers');
-        var request = Object.assign({}, base);
-        if (number > 0) request.replace = false;
-        request.markers = batch.items.map(function (entry) { return entry.marker; });
-        return call('loadMarkers', [request]);
-      });
-    });
-    return chain.then(function () { return undefined; });
+  });
+
+  return chain.then(function () {
+    flush();
+    return sending;
+  }).then(function () {
+    if (lifecycle !== lifecycleGeneration) throw cancellationError('loadMarkers');
+    if (failure) throw failure;
+    return undefined;
   });
 }
 
@@ -423,6 +522,7 @@ var api = {
 
   addMarker: function (options) {
     options = options || {};
+    if (options.id !== undefined && options.id !== null) forgetPendingMarkerImages([options.id]);
     // Find markers and URL-only markers take the original synchronous path unchanged.
     if (!hasBinaryFields([options], 'imageBinary', 'imageMimeType')) {
       return call('addMarker', [options]);
@@ -442,6 +542,13 @@ var api = {
     if (options.markers.length > MAX_MARKERS) {
       return Promise.reject(new Error('Too many markers: maximum allowed is ' + MAX_MARKERS + '.'));
     }
+    if (options.replace === false) {
+      if (Array.isArray(options.markers)) {
+        forgetPendingMarkerImages(options.markers.map(function (marker) { return marker && marker.Id; }));
+      }
+    } else {
+      forgetPendingMarkerImages();
+    }
     if (!Array.isArray(options.markers) ||
         !hasBinaryFields(options.markers, 'ImageBinary', 'ImageMimeType')) {
       return call('loadMarkers', [options]);
@@ -451,6 +558,7 @@ var api = {
 
   // Returns a Promise; optional callbacks also support Cordova/OutSystems callers.
   removeMarker: function (markerId, success, error) {
+    if (typeof markerId === 'string' && markerId.length > 0) forgetPendingMarkerImages([markerId]);
     var request = typeof markerId === 'string' && markerId.length > 0
       ? call('removeMarker', [{ id: markerId }])
       : Promise.reject(new Error('markerId must be a non-empty string.'));
@@ -458,6 +566,7 @@ var api = {
   },
 
   clearMarkers: function () {
+    forgetPendingMarkerImages();
     return call('clearMarkers', []);
   },
 

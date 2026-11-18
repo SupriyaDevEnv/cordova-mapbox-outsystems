@@ -18,9 +18,20 @@ function bytes(signature, size, seed) {
 }
 const b64 = (buf) => buf.toString('base64');
 
+// What the map finally shows: replays loadMarkers calls (replace clears, others update by Id).
+function finalMarkers(calls) {
+  const shown = new Map();
+  calls.filter((c) => c.action === 'loadMarkers').forEach((c) => {
+    if (c.args[0].replace !== false) shown.clear();
+    c.args[0].markers.forEach((m, i) => shown.set(m && m.Id !== undefined ? 'id:' + m.Id : 'index:' + i, m));
+  });
+  return [...shown.values()];
+}
+
 function load({ canvas = true, decodable = () => true } = {}) {
   const calls = [];
   const warnings = [];
+  const decodes = { active: 0, max: 0, total: 0 };
   const win = {
     console: { warn: (m) => warnings.push(m), error() {} },
     btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
@@ -34,7 +45,11 @@ function load({ canvas = true, decodable = () => true } = {}) {
       Object.defineProperty(img, 'src', {
         set(value) {
           img._src = value;
+          if (!value) return; // released after use
+          decodes.active++; decodes.total++;
+          decodes.max = Math.max(decodes.max, decodes.active);
           setImmediate(() => {
+            decodes.active--;
             const ok = /^data:image\//.test(value) && decodable(value);
             if (ok) { img.naturalWidth = 400; img.naturalHeight = 300; img.onload && img.onload(); }
             else if (img.onerror) img.onerror();
@@ -71,7 +86,7 @@ function load({ canvas = true, decodable = () => true } = {}) {
     return modules[name];
   }
   const api = requireModule('./MapboxPlugin');
-  return { api, calls, warnings, win };
+  return { api, calls, warnings, win, decodes };
 }
 
 test('Find marker with imageUrl uses the original synchronous path, unchanged', async () => {
@@ -133,18 +148,21 @@ test('loadMarkers: mixed Find + Waypoint list, each waypoint gets its own image,
   ];
   const snapshot = JSON.stringify(markers);
   await api.loadMarkers(markers, { replace: true });
-  assert.strictEqual(calls.length, 1);
   const sent = calls[0].args[0];
   assert.strictEqual(sent.replace, true);
-  assert.deepStrictEqual(sent.markers.map((m) => [m.Id, m.Latitude, m.Longitude]), markers.map((m) => [m.Id, m.Latitude, m.Longitude]));
+  assert.deepEqual(sent.markers.map((m) => [m.Id, m.Latitude, m.Longitude]), markers.map((m) => [m.Id, m.Latitude, m.Longitude]));
   assert.strictEqual(sent.markers[0], markers[0], 'Find marker passed through as-is');
   assert.strictEqual(sent.markers[5], markers[5], 'URL waypoint passed through as-is');
-  const urls = sent.markers.slice(1, 5).map((m) => m.ImageUrl);
+  sent.markers.slice(1, 5).forEach((m) => assert.strictEqual(m.ImageUrl, undefined, 'drawn first without the photo'));
+  calls.slice(1).forEach((c) => assert.strictEqual(c.args[0].replace, false, 'photo updates never replace the list'));
+  const shown = finalMarkers(calls);
+  assert.deepEqual(shown.map((m) => m.Id), markers.map((m) => m.Id));
+  const urls = shown.slice(1, 5).map((m) => m.ImageUrl);
   urls.forEach((u) => assert.match(u, /^data:image\/(png|jpeg);base64,/));
   assert.strictEqual(new Set(urls.slice(0, 3)).size, 3, 'distinct images stay distinct');
   assert.strictEqual(urls[2], urls[3], 'identical binaries share one source');
-  assert.strictEqual(sent.markers[3].PinStyle, 'photo');
-  sent.markers.forEach((m) => { assert.strictEqual(m.ImageBinary, undefined); });
+  assert.strictEqual(shown[3].PinStyle, 'photo');
+  calls.forEach((c) => c.args[0].markers.forEach((m) => { assert.strictEqual(m.ImageBinary, undefined); }));
   assert.strictEqual(JSON.stringify(markers), snapshot, 'caller list not mutated');
 });
 
@@ -168,7 +186,7 @@ test('without a canvas the original PNG is sent; unsupported formats fall back t
     { Id: 'b', Latitude: 1, Longitude: 1, ImageBinary: b64(bytes(BMP, 600, 2)) },
     { Id: 'c', Latitude: 1, Longitude: 1, ImageBinary: b64(bytes(BMP, 600, 3)), ImageUrl: 'https://a.example/c.png' }
   ]);
-  const sent = calls[0].args[0].markers;
+  const sent = finalMarkers(calls);
   assert.strictEqual(sent[0].ImageUrl, 'data:image/png;base64,' + png);
   assert.strictEqual(sent[1].ImageUrl, undefined);
   assert.strictEqual(sent[2].ImageUrl, 'https://a.example/c.png');
@@ -178,7 +196,8 @@ test('without a canvas the original PNG is sent; unsupported formats fall back t
 test('undecodable image data keeps a plain pin instead of failing the load', async () => {
   const { api, calls } = load({ decodable: () => false });
   await api.loadMarkers([{ Id: 'x', Latitude: 1, Longitude: 1, ImageBinary: b64(Buffer.from('not an image at all')) }]);
-  assert.strictEqual(calls[0].args[0].markers[0].ImageUrl, undefined);
+  assert.strictEqual(finalMarkers(calls)[0].ImageUrl, undefined);
+  assert.strictEqual(calls.length, 1, 'no update is sent when there is nothing to show');
 });
 
 test('invalid binary rejects the whole call before any native change', async () => {
@@ -191,25 +210,72 @@ test('invalid binary rejects the whole call before any native change', async () 
   assert.strictEqual(calls.length, 0);
 });
 
-test('large waypoint lists are split under the bridge limit; first batch replaces, Ids keep list index', async () => {
+test('large waypoint lists: markers drawn first, photo updates split under the bridge limit, Ids keep list index', async () => {
   const { api, calls } = load({ canvas: false });
   const markers = [];
-  for (let i = 0; i < 20; i++) {
-    const m = { Latitude: i, Longitude: i, ImageBinary: b64(bytes(PNG, 300 * 1024, i)) };
+  for (let i = 0; i < 40; i++) {
+    const m = { Latitude: i, Longitude: i, ImageBinary: b64(bytes(PNG, 200 * 1024, i)) };
     if (i % 2) m.Id = 'wp-' + i;
     markers.push(m);
   }
   await api.loadMarkers(markers);
-  assert.ok(calls.length >= 2, 'split into batches');
+  assert.ok(calls.length >= 3, 'first drawing plus several photo updates');
   calls.forEach((call, n) => {
     const json = JSON.stringify(call.args[0]);
-    assert.ok(json.length + (json.match(/\//g) || []).length <= 4 * 1024 * 1024, 'batch ' + n + ' fits native limit');
+    assert.ok(json.length + (json.match(/\//g) || []).length <= 4 * 1024 * 1024, 'call ' + n + ' fits native limit');
     assert.strictEqual(call.args[0].replace, n === 0 ? undefined : false);
   });
-  const all = calls.flatMap((c) => c.args[0].markers);
-  assert.deepStrictEqual(all.map((m) => m.Id), markers.map((m, i) => m.Id || String(i)));
-  assert.deepStrictEqual(all.map((m) => m.Latitude), markers.map((m) => m.Latitude));
+  assert.deepEqual(calls[0].args[0].markers.map((m) => m.Id), markers.map((m, i) => m.Id || String(i)));
+  const shown = finalMarkers(calls);
+  assert.deepEqual(shown.map((m) => m.Id), markers.map((m, i) => m.Id || String(i)));
+  assert.deepEqual(shown.map((m) => m.Latitude), markers.map((m) => m.Latitude));
+  shown.forEach((m) => assert.match(m.ImageUrl, /^data:image\/png;base64,/));
   assert.ok(markers.every((m, i) => i % 2 || m.Id === undefined), 'caller markers not mutated');
+});
+
+test('100 photos: all markers drawn at once, one decode at a time, photos sent in groups', async () => {
+  const { api, calls, decodes } = load();
+  const markers = [];
+  for (let i = 0; i < 100; i++) {
+    markers.push({ Id: 'wp-' + i, Latitude: i / 10, Longitude: i / 10, ImageBinary: b64(bytes(JPEG, 2000, i)) });
+  }
+  const done = api.loadMarkers(markers);
+  for (let i = 0; i < 20 && !calls.length; i++) await Promise.resolve();
+  assert.strictEqual(calls.length, 1, 'markers are drawn before any photo is converted');
+  assert.strictEqual(calls[0].args[0].markers.length, 100);
+  assert.strictEqual(decodes.total, 0);
+  await done;
+  assert.strictEqual(decodes.max, 1, 'never more than one photo decoding at a time');
+  assert.strictEqual(decodes.total, 100);
+  const updates = calls.slice(1);
+  assert.ok(updates.length <= 10, 'photos grouped into at most 10 updates, got ' + updates.length);
+  assert.strictEqual(updates.reduce((n, c) => n + c.args[0].markers.length, 0), 100);
+  finalMarkers(calls).forEach((m) => assert.match(m.ImageUrl, /^data:image\/jpeg;base64,/));
+});
+
+test('a marker removed, replaced or cleared during conversion is not brought back by its photo', async () => {
+  const { api, calls } = load();
+  const list = (n) => Array.from({ length: n }, (_, i) =>
+    ({ Id: 'wp-' + i, Latitude: 1, Longitude: 1, ImageBinary: b64(bytes(PNG, 900, 40 + i)) }));
+  const first = api.loadMarkers(list(30));
+  await new Promise((r) => setImmediate(r));
+  api.removeMarker('wp-25');
+  api.addMarker({ id: 'wp-26', latitude: 2, longitude: 2, imageUrl: 'https://cdn.example.com/new.png' });
+  await first;
+  const after = (id) => calls.slice(1).filter((c) => c.action === 'loadMarkers')
+    .some((c) => c.args[0].markers.some((m) => m.Id === id));
+  assert.ok(!after('wp-25'), 'removed marker not re-added');
+  assert.ok(!after('wp-26'), 'marker replaced by addMarker not overwritten');
+  assert.ok(after('wp-24'), 'other photos still applied');
+
+  calls.length = 0;
+  const second = api.loadMarkers(list(30));
+  await new Promise((r) => setImmediate(r));
+  api.clearMarkers();
+  await second;
+  const clearAt = calls.findIndex((c) => c.action === 'clearMarkers');
+  assert.ok(clearAt > 0, 'clearMarkers reached native');
+  assert.ok(calls.slice(clearAt + 1).every((c) => c.action !== 'loadMarkers'), 'no photo update is sent after clearMarkers');
 });
 
 test('close during image conversion cancels instead of drawing on the closed map', async () => {
@@ -231,7 +297,7 @@ test('shared structure: Find has URL + empty/null binary, Waypoint has null URL 
     { Id: 'w3', Latitude: 9, Longitude: 10, IsFind: false, ImageUrl: '', ImageBinary: '' },
     { Id: 'w4', Latitude: 11, Longitude: 12, IsFind: false, ImageUrl: null, ImageBinary: null }
   ], { replace: true });
-  const sent = calls[0].args[0].markers;
+  const sent = finalMarkers(calls);
   assert.strictEqual(sent[0].ImageUrl, 'https://bucket.s3.amazonaws.com/f1.png');
   assert.strictEqual(sent[1].ImageUrl, 'https://bucket.s3.amazonaws.com/f2.png');
   assert.match(sent[2].ImageUrl, /^data:image\/png;base64,/);
@@ -239,7 +305,7 @@ test('shared structure: Find has URL + empty/null binary, Waypoint has null URL 
   assert.strictEqual(sent[4].ImageUrl, '', 'no image: plain pin');
   assert.ok(!('ImageUrl' in sent[5]), 'null URL is omitted, not sent as JSON null');
   assert.ok(!('ImageUrl' in sent[2]) || /^data:/.test(sent[2].ImageUrl));
-  sent.forEach((m) => assert.ok(!('ImageBinary' in m), 'binary never crosses the bridge'));
+  calls.forEach((c) => c.args[0].markers.forEach((m) => assert.ok(!('ImageBinary' in m), 'binary never crosses the bridge')));
   assert.deepStrictEqual(sent.map((m) => m.IsFind), [true, true, false, false, false, false]);
   assert.strictEqual(warnings.length, 0, 'empty binaries on Find markers are not warned about');
 });
@@ -253,7 +319,7 @@ test('private markers (IsPublic false) skip image conversion; public and unset m
     { Id: 'w', Latitude: 3, Longitude: 3, IsFind: false, IsPublic: true, ImageBinary: b64(bytes(PNG, 900, 22)) },
     { Id: 'w2', Latitude: 4, Longitude: 4, IsFind: false, ImageBinary: b64(bytes(PNG, 900, 23)) }
   ]);
-  const sent = calls[0].args[0].markers;
+  const sent = finalMarkers(calls);
   assert.strictEqual(sent[0].IsPublic, false, 'flag reaches native');
   assert.ok(!('ImageBinary' in sent[0]) && !('ImageUrl' in sent[0]), 'private waypoint sends no image');
   assert.strictEqual(sent[1].IsPublic, false);

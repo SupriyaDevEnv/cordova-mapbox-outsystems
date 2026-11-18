@@ -27,7 +27,8 @@ final class MapboxSecurity {
         return false;
     }
 
-    static final int MAX_MARKER_IMAGE_BYTES = 1024 * 1024;
+    // Marker images are shown as small thumbnails; serve them at about 256 px.
+    static final int MAX_MARKER_IMAGE_BYTES = 256 * 1024;
 
     // HTTPS URLs (optionally limited to a host list) or base64 image data URIs.
     static boolean markerImageAllowed(String value, String hosts) {

@@ -68,7 +68,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var pendingMarkerImages: [String: [String]] = [:]
     private let markerIcons = MarkerIcons()
     private let markerImageNotAllowed =
-        "Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 1 MiB."
+        "Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 256 KiB."
     private var boundaryAnnotationManager: PolygonAnnotationManager?
     private var boundaryAnnotations: [PolygonAnnotation] = []
     private var isBoundaryDrawing = false
@@ -95,6 +95,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var pathLineOpacity: Double = 1.0
     private var pathSegments: [[CLLocationCoordinate2D]] = []
     private var currentSegment: [CLLocationCoordinate2D] = []
+    // The live line is drawn in pieces of pathChunkPoints, so each GPS fix redraws only the
+    // newest piece instead of the whole recording. Finished pieces are kept in
+    // pathAnnotations like any other drawn line.
+    private let pathChunkPoints = 500
+    private var liveChunkIds: [String] = []
+    private var liveChunkStart = 0
+    private var liveChunkFirst: CLLocationCoordinate2D?
     private var waypointSelectedCallbackId: String?
     private var markerClickCallbackId: String?
     private var mapTapCallbackId: String?
@@ -131,6 +138,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private let maxMarkers = 10000
     private let maxBoundaries = 1000
     private let maxOfflineRadiusKm: Double = 50.0
+    // Stored offline regions; each is already limited to about 50,000 tiles.
+    private let maxOfflineRegions = 20
     private let minOfflineZoom: UInt8 = 2
     private let maxOfflineZoom: UInt8 = 18
     private var boundaryVisible = true
@@ -1074,12 +1083,49 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
         guard isPathVisible else { return }
 
-        var annotation = PolylineAnnotation(lineCoordinates: currentSegment)
+        let first = currentSegment[0]
+        if liveChunkStart > currentSegment.count || liveChunkFirst?.latitude != first.latitude
+            || liveChunkFirst?.longitude != first.longitude {
+            // A new segment: earlier pieces now belong to finished segments.
+            liveChunkStart = 0
+            liveChunkIds.removeAll()
+            liveChunkFirst = first
+        }
+
+        var added: [PolylineAnnotation] = []
+        if let firstId = liveChunkIds.first,
+           !(lineAnnotationManager?.annotations.contains { $0.id == firstId } ?? false) {
+            // The path was hidden and shown again: draw this segment's finished pieces again.
+            liveChunkIds.removeAll()
+            var start = 0
+            while start < liveChunkStart {
+                let piece = pathLine(Array(currentSegment[start...(start + pathChunkPoints)]))
+                added.append(piece)
+                liveChunkIds.append(piece.id)
+                start += pathChunkPoints
+            }
+        }
+
+        // Freeze full pieces; consecutive pieces share an end point so the line is continuous.
+        while currentSegment.count - liveChunkStart > pathChunkPoints + 1 {
+            let piece = pathLine(Array(currentSegment[liveChunkStart...(liveChunkStart + pathChunkPoints)]))
+            added.append(piece)
+            liveChunkIds.append(piece.id)
+            liveChunkStart += pathChunkPoints
+        }
+
+        let live = pathLine(Array(currentSegment[liveChunkStart...]))
+        currentSegmentAnnotation = live
+        pathAnnotations.append(contentsOf: added)
+        lineAnnotationManager?.annotations.append(contentsOf: added + [live])
+    }
+
+    private func pathLine(_ coordinates: [CLLocationCoordinate2D]) -> PolylineAnnotation {
+        var annotation = PolylineAnnotation(lineCoordinates: coordinates)
         annotation.lineColor = StyleColor(colorOption(pathLineColor, defaultColor: .red))
         annotation.lineWidth = pathLineWidth
         annotation.lineOpacity = pathLineOpacity
-        currentSegmentAnnotation = annotation
-        lineAnnotationManager?.annotations.append(annotation)
+        return annotation
     }
 
     @objc(startPathTracking:)
@@ -1438,6 +1484,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 maxZoom: maxZoom,
                 styleURI: styleURI,
                 geometry: nil,
+                wifiOnly: self.boolOption(options["wifiOnly"], defaultValue: false),
                 command: command
             )
         }
@@ -1510,6 +1557,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 maxZoom: maxZoom,
                 styleURI: styleURI,
                 geometry: polygon.geometry,
+                wifiOnly: self.boolOption(options["wifiOnly"], defaultValue: false),
                 command: command
             )
         }
@@ -1524,6 +1572,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         maxZoom: UInt8,
         styleURI: StyleURI,
         geometry: Geometry?,
+        wifiOnly: Bool,
         command: CDVInvokedUrlCommand
     ) {
         guard !isOfflineDownloading else {
@@ -1553,6 +1602,48 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         let boundedMinZoom = max(minOfflineZoom, min(minZoom, maxOfflineZoom))
         let boundedMaxZoom = max(boundedMinZoom, min(maxZoom, maxOfflineZoom))
         isOfflineDownloading = true
+        // Cap the number of stored regions so offline storage cannot grow without limit.
+        // Re-downloading an existing region always works. If the list cannot be read,
+        // the download goes ahead.
+        TileStore.default.allTileRegions { result in
+            self.runForGeneration(downloadGeneration) {
+                if case .success(let regions) = result,
+                   regions.count >= self.maxOfflineRegions,
+                   !regions.contains(where: { $0.id == regionId }) {
+                    self.isOfflineDownloading = false
+                    self.sendError("Offline region limit reached: delete a region before downloading another (maximum \(self.maxOfflineRegions)).", command)
+                    return
+                }
+                self.beginOfflineDownload(
+                    downloadGeneration: downloadGeneration,
+                    regionId: regionId,
+                    latitude: latitude,
+                    longitude: longitude,
+                    boundedRadiusKm: boundedRadiusKm,
+                    boundedMinZoom: boundedMinZoom,
+                    boundedMaxZoom: boundedMaxZoom,
+                    styleURI: styleURI,
+                    geometry: geometry,
+                    wifiOnly: wifiOnly,
+                    command: command
+                )
+            }
+        }
+    }
+
+    private func beginOfflineDownload(
+        downloadGeneration: UInt64,
+        regionId: String,
+        latitude: Double,
+        longitude: Double,
+        boundedRadiusKm: Double,
+        boundedMinZoom: UInt8,
+        boundedMaxZoom: UInt8,
+        styleURI: StyleURI,
+        geometry: Geometry?,
+        wifiOnly: Bool,
+        command: CDVInvokedUrlCommand
+    ) {
         cancelCurrentDownload()
         let offlineManager = OfflineManager()
         sendOfflineProgress(phase: "style-start", completed: 0, required: 100)
@@ -1594,6 +1685,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                         maxZoom: boundedMaxZoom,
                         styleURI: styleURI,
                         geometry: geometry,
+                        wifiOnly: wifiOnly,
                         command: command
                     )
                 case .failure(let error):
@@ -1615,6 +1707,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         maxZoom: UInt8,
         styleURI: StyleURI,
         geometry: Geometry? = nil,
+        wifiOnly: Bool = false,
         command: CDVInvokedUrlCommand
     ) {
         guard downloadGeneration == sessionGeneration else { return }
@@ -1631,7 +1724,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             geometry: geometry ?? polygon.geometry,
             descriptors: [descriptor],
             metadata: ["regionId": regionId],
-            acceptExpired: false
+            acceptExpired: false,
+            // wifiOnly: never use mobile data (or other metered networks) for tiles.
+            networkRestriction: wifiOnly ? .disallowExpensive : .none
         ) else {
             isOfflineDownloading = false
             sendError("Failed to create tile region options.", command)

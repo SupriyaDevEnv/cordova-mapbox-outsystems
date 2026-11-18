@@ -2,16 +2,18 @@
 // already renders (data:image/...;base64,...). Find markers are never touched:
 // they keep passing imageUrl exactly as before.
 
-// Native policy (MapboxSecurity): these types only, base64 only, 1 MiB of image data.
+// Native policy (MapboxSecurity): these types only, base64 only, 256 KiB of image data.
 var NATIVE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
-var MAX_NATIVE_BYTES = 1024 * 1024;
+var MAX_NATIVE_BYTES = 256 * 1024;
 // Larger camera photos are accepted because they are reduced before sending.
 var MAX_SOURCE_BYTES = 10 * 1024 * 1024;
 // Native code center-crops images into a circle and decodes them to <= 128 px, so a
 // 192 px center square looks the same and keeps the bridge payload small.
 var TARGET_SIZE = 192;
 var DECODE_TIMEOUT_MS = 10000;
-var MAX_PARALLEL_DECODES = 4;
+// One full-size decode at a time: a 48 MP camera photo needs about 190 MB to decode, so
+// parallel decodes of a 100-photo list could exhaust WebView memory.
+var MAX_PARALLEL_DECODES = 1;
 
 var ADD_KEYS = { isFind: 'isFind', isPublic: 'isPublic', url: 'imageUrl', binary: 'imageBinary', mime: 'imageMimeType' };
 var LOAD_KEYS = { isFind: 'IsFind', isPublic: 'IsPublic', url: 'ImageUrl', binary: 'ImageBinary', mime: 'ImageMimeType' };
@@ -136,6 +138,8 @@ function redraw(win, image) {
         settled = true;
         win.clearTimeout(timer);
         img.onload = img.onerror = null;
+        // Release the source; after a timeout this also stops a decode still in progress.
+        try { img.src = ''; } catch (e) { /* ignore */ }
         resolve(result);
       }
       img.onerror = function () { finish(null); };
@@ -198,10 +202,15 @@ function needsWork(markers, keys) {
   return false;
 }
 
-// Returns a Promise for a copy of the marker with the binary converted into the url key.
-// cache shares one conversion between markers that carry the same image.
-function prepare(win, marker, keys, cache, label) {
-  if (!marker || typeof marker !== 'object' || !hasField(marker, keys)) return Promise.resolve(marker);
+// Synchronous first step. Returns { marker, image, url }:
+// - marker: a copy without the binary fields that native can draw now (no image yet);
+// - image: the validated binary still to convert, or null when there is nothing to do;
+// - url: the marker's own URL, used if the binary turns out not to be decodable.
+// Throws for input that is not binary data at all, so a bad list fails before native changes.
+function stage(win, marker, keys, label) {
+  if (!marker || typeof marker !== 'object' || !hasField(marker, keys)) {
+    return { marker: marker, image: null, url: null };
+  }
   var copy = {};
   Object.keys(marker).forEach(function (key) { copy[key] = marker[key]; });
   var binary = copy[keys.binary];
@@ -211,10 +220,11 @@ function prepare(win, marker, keys, cache, label) {
   // Shared OutSystems structures leave the unused URL null. Android reads JSON null as the
   // text "null" (an invalid image source that rejects the whole call); omit it instead.
   if (copy[keys.url] === null) delete copy[keys.url];
+  var done = { marker: copy, image: null, url: null };
 
   // Private markers (isPublic: false) are drawn natively as a lock tile; their image is
   // never converted, sent or downloaded.
-  if (copy[keys.isPublic] === false) return Promise.resolve(copy);
+  if (copy[keys.isPublic] === false) return done;
 
   if (copy[keys.isFind] === true) {
     // Find markers keep their URL behaviour; binary data is not used for them.
@@ -222,28 +232,72 @@ function prepare(win, marker, keys, cache, label) {
       warnedFind = true;
       warn(win, 'Mapbox: ' + keys.binary + ' is ignored for Find markers; use ' + keys.url + '.');
     }
-    return Promise.resolve(copy);
+    return done;
   }
-  if (isEmptyBinary(binary)) return Promise.resolve(copy);
+  if (isEmptyBinary(binary)) return done;
 
   var image;
   try {
     image = readBinary(win, binary, mime);
   } catch (error) {
-    return Promise.reject(new Error('Invalid ' + keys.binary + ' for marker ' + label + ': ' + error.message));
+    throw new Error('Invalid ' + keys.binary + ' for marker ' + label + ': ' + error.message);
   }
-  var cacheKey = image.mime + '|' + image.base64;
-  var source = cache[cacheKey];
-  if (!source) source = cache[cacheKey] = toImageSource(win, image);
-  return source.then(function (data) {
-    if (data) {
-      copy[keys.url] = data;
-    } else {
-      // Same outcome as an image URL that fails to load: keep any URL, else a plain pin.
-      warn(win, 'Mapbox: ' + keys.binary + ' for marker ' + label + ' is not a decodable image; ' +
-        (copy[keys.url] ? 'using ' + keys.url + ' instead.' : 'showing a plain pin.'));
+  var url = copy[keys.url];
+  delete copy[keys.url];
+  return { marker: copy, image: image, url: url };
+}
+
+// Resolves the data URI for a staged image, or null when it is unusable. Never rejects.
+// cache shares one conversion between markers that carry the same image; it is keyed by
+// a short fingerprint so the full base64 text is not held a second time.
+function convert(win, image, cache) {
+  var key = fingerprint(image);
+  var entry = cache[key];
+  if (entry) {
+    for (var i = 0; i < entry.length; i++) {
+      if (entry[i].base64 === image.base64) return entry[i].source;
     }
-    return copy;
+  } else {
+    entry = cache[key] = [];
+  }
+  var source = toImageSource(win, image);
+  entry.push({ base64: image.base64, source: source });
+  return source;
+}
+
+function fingerprint(image) {
+  var text = image.base64;
+  var hash = 0;
+  var step = Math.max(1, Math.floor(text.length / 4096));
+  for (var i = 0; i < text.length; i += step) hash = (hash * 31 + text.charCodeAt(i)) | 0;
+  return image.mime + '|' + text.length + '|' + hash;
+}
+
+// Applies a conversion result to a staged marker, warning once per marker when unusable.
+function finish(win, staged, data, keys, label) {
+  var copy = staged.marker;
+  if (data) {
+    copy[keys.url] = data;
+  } else {
+    if (staged.url !== undefined && staged.url !== null) copy[keys.url] = staged.url;
+    // Same outcome as an image URL that fails to load: keep any URL, else a plain pin.
+    warn(win, 'Mapbox: ' + keys.binary + ' for marker ' + label + ' is not a decodable image; ' +
+      (copy[keys.url] ? 'using ' + keys.url + ' instead.' : 'showing a plain pin.'));
+  }
+  return copy;
+}
+
+// Returns a Promise for a copy of the marker with the binary converted into the url key.
+function prepare(win, marker, keys, cache, label) {
+  var staged;
+  try {
+    staged = stage(win, marker, keys, label);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  if (!staged.image) return Promise.resolve(staged.marker);
+  return convert(win, staged.image, cache).then(function (data) {
+    return finish(win, staged, data, keys, label);
   });
 }
 
@@ -259,6 +313,9 @@ module.exports = {
   LOAD_KEYS: LOAD_KEYS,
   needsWork: needsWork,
   prepare: prepare,
+  stage: stage,
+  convert: convert,
+  finish: finish,
   nativeJsonSize: nativeJsonSize,
   readBinary: readBinary,
   _resetWarnings: function () { warnedFind = false; }

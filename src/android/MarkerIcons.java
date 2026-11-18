@@ -58,6 +58,11 @@ final class MarkerIcons {
     private static final int LOCK_LIGHT_COLOR = 0x99C4AB9C;
     private static final int LOCK_DARK_COLOR = 0xA65E4A43;
     private static final int IMAGE_DECODE_SIZE = 128;
+    // Pins are drawn at the size they are shown: half the logical 72x96 artwork at the
+    // screen density, displayed at icon size 1.0 (36x48 dp). Drawing the full 72x96 and
+    // showing it at 0.5 looked the same but used four times the memory per pin.
+    private static final float RENDER_SCALE = 0.5f;
+    static final double ICON_SIZE = 1.0;
     private static final int TIMEOUT_MS = 10000;
     private static final int MAX_REDIRECTS = 3;
     // A small, highly compressed file can declare enormous dimensions; refuse those before decoding.
@@ -234,13 +239,14 @@ final class MarkerIcons {
     }
 
     private static Bitmap draw(int pinColor, boolean isFind, Bitmap image, boolean locked, float density) {
-        // Annotation images default to the map's pixel ratio. Supply physical
-        // pixels for our logical 72x96 artwork; iconSize=0.5 then yields 36x48 dp.
-        Bitmap bitmap = Bitmap.createBitmap(Math.max(1, Math.round(WIDTH * density)),
-            Math.max(1, Math.round(HEIGHT * density)), Bitmap.Config.ARGB_8888);
+        // Annotation images default to the map's pixel ratio. The logical 72x96 artwork is
+        // drawn at half scale in physical pixels, so ICON_SIZE 1.0 yields 36x48 dp.
+        float scale = density * RENDER_SCALE;
+        Bitmap bitmap = Bitmap.createBitmap(Math.max(1, Math.round(WIDTH * scale)),
+            Math.max(1, Math.round(HEIGHT * scale)), Bitmap.Config.ARGB_8888);
         bitmap.setDensity(Bitmap.DENSITY_NONE);
         Canvas canvas = new Canvas(bitmap);
-        canvas.scale(density, density);
+        canvas.scale(scale, scale);
 
         // Soft shadow: the outline silhouette, slightly larger, lower and translucent.
         Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -324,11 +330,12 @@ final class MarkerIcons {
 
     /** Classic teardrop: same 72x96 canvas and tip position as the card markers. */
     private static Bitmap drawOfflinePin(int pinColor, float density) {
-        Bitmap bitmap = Bitmap.createBitmap(Math.max(1, Math.round(WIDTH * density)),
-            Math.max(1, Math.round(HEIGHT * density)), Bitmap.Config.ARGB_8888);
+        float scale = density * RENDER_SCALE;
+        Bitmap bitmap = Bitmap.createBitmap(Math.max(1, Math.round(WIDTH * scale)),
+            Math.max(1, Math.round(HEIGHT * scale)), Bitmap.Config.ARGB_8888);
         bitmap.setDensity(Bitmap.DENSITY_NONE);
         Canvas canvas = new Canvas(bitmap);
-        canvas.scale(density, density);
+        canvas.scale(scale, scale);
         final float headY = 32.0f;
         final float headRadius = 25.0f;
 
