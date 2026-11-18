@@ -273,12 +273,13 @@ final class MarkerIcons {
         if (image != null) {
             // Center-crop the image inside the white border.
             float side = HEAD_SIZE - 2 * FRAME_INSET;
-            float scale = side / Math.min(image.getWidth(), image.getHeight());
+            // The canvas is already scaled to logical units, so crop in logical units too.
+            float imageScale = side / Math.min(image.getWidth(), image.getHeight());
             Matrix matrix = new Matrix();
-            matrix.setScale(scale, scale);
+            matrix.setScale(imageScale, imageScale);
             matrix.postTranslate(
-                CENTER_X - image.getWidth() * scale / 2,
-                HEAD_Y - image.getHeight() * scale / 2
+                CENTER_X - image.getWidth() * imageScale / 2,
+                HEAD_Y - image.getHeight() * imageScale / 2
             );
             BitmapShader shader = new BitmapShader(image, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
             shader.setLocalMatrix(matrix);
