@@ -1,25 +1,30 @@
 # OutSystems Mapbox Native Plugin
 
+Cordova-style native Mapbox plugin for OutSystems mobile apps.
+
+The plugin renders a native Mapbox map and exposes JavaScript actions through:
+
+```javascript
+window.MapboxPlugin
+```
+
+It supports inline maps, behind-WebView maps, markers, current-location movement, user tracking, offline downloads, waypoint selection, and boundary overlays.
 
 ## Style readiness and sequential OutSystems actions
 
 `initialize()`, `setMapStyle()` and `showOfflineRegion()` resolve only when the requested native style has loaded on Android and iOS. A fatal style-load error or a 30-second timeout rejects the operation. The timeout never signals readiness. Close cancels the pending action; late callbacks cannot complete a newer map session. Concurrent style requests are rejected: await the current request before replacing the style.
 
-In an OutSystems JavaScript element, enable asynchronous execution and call `$resolve()` only after the plugin Promise succeeds. Call `$reject(error)` on failure so the flow does not proceed to layer operations. Keep initialization, marker registration and layer changes as separate sequential actions; do not launch layer toggles from a parallel aggregate/event while initialization is pending. Your existing initialization snippet already awaits `plugin.initialize(options)` and can remain unchanged with this native update.
+In an OutSystems JavaScript element, enable asynchronous execution and call `$resolve()` only after the plugin Promise succeeds. Call `$reject(error)` on failure so the flow does not proceed to layer operations. Keep initialization, marker registration and layer changes as separate sequential actions; do not launch layer toggles from a parallel aggregate/event while initialization is pending.
 
 After initialization resolves, apply layers and saved visibility settings. After each subsequent `setMapStyle()` resolves, recreate any custom sources/layers and reapply their visibility. A loaded style does not imply a GPS fix is available; location acquisition remains a separate asynchronous operation.
 
-Native changes require rebuilding and installing the mobile application. Updating/publishing JavaScript alone does not replace the installed Android/iOS plugin binaries. Verify slow/failed style loads, immediate layer toggles, close during loading, reopen and later style changes on both devices before UAT acceptance.
+Native changes require rebuilding and installing the mobile application. Updating/publishing JavaScript alone does not replace the installed Android/iOS plugin binaries.
 
-## Close cleanup build: 1.0.4-close-cleanup.2
-
-This cleanup release extends the existing teardown on `913103a`, retaining the behind-WebView transparency fix.
+## Closing the map
 
 `MapboxPlugin.close()` stops the owned DOM observer/animation/retry bridge, releases native Cordova callback registrations, cancels pending operations and downloads, stops GPS/tracking/heading/compass work, and removes native touch routing. Android uses a removable routing container without replacing the WebView's touch listener. iOS removes only the plugin-owned overlay recognizers and gesture targets. Previous WebView appearance is restored when still owned by this plugin.
 
 Await `MapboxPlugin.close()` before initializing the next map. Pending Promise operations reject with a cancellation error when the map closes; handle these rejections in your screen actions. Re-register event callbacks after a successful new `initialize()`. Repeated close calls are supported. Native Close buttons also notify JavaScript to stop its bridge. Completed offline regions remain stored; close cancels active transfers and clears the in-memory map session, not downloaded offline data. Retrieve a recorded path before close if it must be saved.
-
-The package has passed JavaScript regression checks and Java/Swift syntax parsing. It has **not** been compiled with the consuming OutSystems application's native dependencies or tested on devices. Perform Android/iOS builds and the supplied device checks before production deployment.
 
 ### OutSystems screen OnDestroy
 
@@ -55,13 +60,13 @@ Legacy scripts using `__mapboxTouchBridge`, `__mapboxTouchHandlers`, `__mapboxTo
 
 **Location and data caveats:** close stops this plugin's map-owned location, accuracy, heading, and path tracking. It does not stop another plugin's independent background-location service or clear its storage. This plugin does not implement a separate persistent background-location service. Save the path with `stopPathTracking()` before leaving if needed. Active offline downloads are cancelled; completed offline regions remain stored. Repeated close calls are safe. Screen exit does not mean application pause: do not use close for temporary backgrounding if the map session should resume.
 
-**Deploy and verify:** point the existing OutSystems plugin dependency at the updated commit/ref and generate/install new Android and iOS native builds; publishing screen JavaScript alone does not update native code. SDK pins remain Android/iOS Mapbox 11.30.0. CI checks native helpers and Swift syntax, and builds clean Cordova Android/iOS apps against the full SDK. On both physical platforms test: exit during initialization, permission prompts, marker downloads and pinch/pan; tap where the map used to be; reopen repeatedly with the same marker IDs; confirm no old events; confirm independent background tracking continues; and verify the rest of the WebView remains interactive.
+## Build requirements
 
-The smoke-build baseline uses Cordova CLI 12.0.0, cordova-android 14.0.1 (Java 17 / Android SDK 35), and cordova-ios 8.0.0. The iOS job uses an Xcode 26 toolchain: Mapbox 11.30.0 binary dependencies failed with the Xcode 16.4 compiler. Confirm your OutSystems MABS build stack supports these native dependencies. These clean-app builds do not certify every MABS version or other plugin combination.
+The CI smoke builds use Cordova CLI 12.0.0, cordova-android 14.0.1 (Java 17 / Android SDK 35), and cordova-ios 8.0.0. The iOS job uses an Xcode 26 toolchain: Mapbox 11.30.0 binary dependencies failed with the Xcode 16.4 compiler. Confirm your OutSystems MABS build stack supports these native dependencies. These clean-app builds do not certify every MABS version or other plugin combination.
 
 Set the consuming iOS application's minimum deployment target explicitly to **14.0 or later**. A plain Cordova app needs `<preference name="deployment-target" value="14.0" />` in its app `config.xml`; the plugin's `default="14.0"` declaration alone did not raise the generated CocoaPods target in the smoke app. This setting is required before installing/resolving the Mapbox pod.
 
-## Security behavior in 1.0.3
+## Security
 
 - Closing the map (including the native Close button) or resetting the WebView stops location/heading services, cancels downloads and pending permission actions, and clears map-session data and callbacks. Re-register callbacks after initializing a new map session.
 - `MAPBOX_ACCESS_TOKEN` must be a public `pk.*` token. Both platform builds reject configured secret tokens. Initialization always reads the current configuration and removes legacy cached values, so token rotation works after app upgrades. Unconfigured build templates may still be prepared, but cannot initialize the map.
@@ -72,18 +77,6 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - Offline zooms must be between 2 and 18, with `minZoom <= maxZoom`; invalid values are rejected. Both circle and rectangle downloads are checked against a conservative bounding-box diagonal of 100 km and an estimated 50,000-tile budget (including lower zooms). This can reject large/high-zoom requests that older releases accepted. Polar and antimeridian-crossing bounds are rejected. The budget is an estimate, not a byte quota; Mapbox's tile-store constraints still apply. The consuming app should manage retained offline regions and its storage budget.
 - `deleteOfflineRegion` keeps the region's style pack unless you pass `deleteStylePack: true`, because other offline regions usually use the same style. Earlier releases deleted it by default.
 - Style URLs and underlying SDK error details are no longer included in plugin diagnostic logs.
-
-From a development Git checkout, run `npm test` for the bridge and build-hook regressions. The `Native security regression tests` workflow also compiles/runs the Java and Swift input policy, executes the actual iOS empty-path method with a minimal host, and parses the iOS plugin sources. These checks do not replace device testing or a build of your consuming OutSystems application with its exact Cordova and Mapbox dependencies.
-
-Cordova-style native Mapbox plugin for OutSystems mobile apps.
-
-The plugin renders a native Mapbox map and exposes JavaScript actions through:
-
-```javascript
-window.MapboxPlugin
-```
-
-It supports inline maps, behind-WebView maps, markers, current-location movement, user tracking, offline downloads, waypoint selection, and boundary overlays.
 
 ## Actions
 
@@ -881,17 +874,6 @@ By default, any HTTPS host is allowed. To allow only specific hosts, set the `MA
 - **Tap area.** Android also reports taps on the map within 150 m of a marker. iOS reports only taps on the pin.
 - **Non-object items in `loadMarkers`.** Android skips `null` items. On iOS, one non-object item makes the whole array read as empty, so with `replace: true` all markers are cleared.
 
-### Marker changes from earlier versions
-
-- **Breaking:** `loadMarkers` item keys are capitalized: `Id`, `Latitude`, `Longitude`, `IsFind`. Items using `id`, `latitude`, `longitude`, or `isFind` are no longer read. Every such item falls back to an index ID and coordinates `0, 0`. `addMarker` still uses lowercase keys.
-- **New:** `pinColor` / `PinColor` and `imageUrl` / `ImageUrl`.
-- **New:** `isFind` pins show a magnifying-glass icon on both platforms.
-- **Changed (1.0.6):** Find markers are white rounded-square cards and Waypoint markers are white circles, each with a black outline and tip, replacing the red/blue teardrop pin. Size, anchor and position are unchanged; `pinColor` colours the outline and tip; `pinStyle: "photo"` is accepted but renders the same design.
-- **New:** the `MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS` preference.
-- **New (1.0.8):** markers without an image that send no `isFind` (plain location / search pins) or are offline (`isOnline: false`) use the classic red teardrop pin with a white dot.
-- **New (1.0.7):** `isPublic` / `IsPublic`. `false` draws a lock tile for private Finds and Waypoints, so the app no longer sends a lock image.
-- **New (1.0.5):** `imageBinary` / `ImageBinary` and `imageMimeType` / `ImageMimeType` for Waypoint markers. Find markers are unchanged.
-
 ## Touch Routing
 
 On iOS, dragging or pinching either the native map or the behind-WebView overlay pauses camera following and cancels the current camera animation. Location updates and an already-running path recording continue. Ending the gesture does not resume following; call `moveToCurrentLocation` or enable user tracking explicitly to resume. A pending current-location result still resolves if a gesture pauses its camera movement before the fix arrives.
@@ -970,15 +952,15 @@ The Mapbox access token is configured once through OutSystems extensibility conf
 
 ## OutSystems Setup
 
-1. Push this folder to a Git repository.
-2. Add the plugin repository URL to the mobile app extensibility configuration.
+1. Add the plugin repository URL to the mobile app extensibility configuration, pinned to a release tag or commit (for example `#v1.0.9`).
+2. Set `MAPBOX_ACCESS_TOKEN` and, for production, `MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS` and `LOCATION_USAGE_DESCRIPTION`.
 3. Create OutSystems Client Actions that call the JavaScript examples above.
 4. Generate the Android/iOS mobile app.
-5. Test on a real device.
+5. Test on real Android and iOS devices; see [docs/testing.md](docs/testing.md).
 
 ## Production packaging
 
-The production plugin contains `plugin.xml`, `package.json`, `README.md`, `www/`, `src/`, and `hooks/`. Both hooks, the Android Gradle file, and all Android/iOS source files are build inputs and must remain included.
+The production plugin contains `plugin.xml`, `package.json`, `README.md`, `CHANGELOG.md`, `www/`, `src/`, and `hooks/`. The token-check hook, the Android Gradle file, and all Android/iOS source files are build inputs and must remain included.
 
 The npm `files` allowlist excludes development files from `npm pack` (npm also includes `package.json` and `README.md`). `.gitattributes` excludes `tests/`, `.github/`, and Git configuration files from `git archive` and GitHub source ZIPs. All regression tests, including the five native Python tests, remain in Git and CI; Python is not required to install or run the packaged plugin.
 
@@ -991,8 +973,6 @@ git archive --format=zip --output=../cordova-mapbox-outsystems.zip HEAD
 The ZIP has `plugin.xml` at its root. Do not ZIP the working directory manually: that would include development files and bypass the archive exclusions. A Git clone still contains tests and CI files; for a clean distributable use the ZIP or npm package. Pin the reviewed commit when configuring a production Git installation.
 
 From a development checkout, run `python3 tests/check-package.py` to verify the actual ZIP and npm tarball, including every file referenced by `plugin.xml`. Native build and device validation must still be performed with the consuming OutSystems application.
-
-The known rollback revision is `f88b385f0dae6382d2c8fcca80a438be1a68404b`. This packaging change preserves its history. To generate the original rollback package, use that exact revision instead of `HEAD`; it retains the packaging rules and contents of that revision.
 
 ## iOS Location Prompt
 
@@ -1050,18 +1030,6 @@ For emulator testing, include `x86_64`:
 - Use `setUserTrackingEnabled` only when the map should keep following the user.
 - Background location tracking is not part of the Mapbox map view. Add a background geolocation plugin or native background location feature for that use case.
 
-
-### Touch routing regression check on a device
-
-Rebuild the Cordova app using this plugin revision. Keep existing OutSystems initialization JS, including `autoTouchRouting: false`, unchanged when map controls use `.map-control-btn`.
-
-1. Tap each map control and verify its OutSystems action fires once. Pan, pinch and rotate in the map area between controls.
-2. Start a drag on a control or an automatically discovered sheet and move outside its original bounds; verify the gesture stays with its starting target. Broad sheet discovery requires the default automatic mode.
-3. Navigate away and back repeatedly, then close/reinitialize. Verify replacement buttons work, removed buttons leave no stale touch exclusions, and map/marker callbacks fire only for the current session.
-4. Open/close overlays, scroll, and rotate the device. Verify control bounds update. For manual routing, call `setTouchableRects` and verify automatic updates stop until reinitialization.
-
-The JavaScript regression suite exercises both platform configurations and lifecycle races with a simulated DOM/bridge. Native CI checks and device checks are separate; passing the JavaScript suite does not establish end-to-end device behavior.
-
 ### Remove one marker (Android and iOS)
 
 `MapboxPlugin.removeMarker(markerId, success?, error?)` removes the marker created
@@ -1088,9 +1056,3 @@ MapboxPlugin.removeMarker('record-123', function () {
   markers and the registered marker-click callback active. Closing/reinitializing the
   map cancels pending operations through the existing cancellation mechanism.
 - The native Cordova action remains `removeMarker` with arguments `[{ id: markerId }]`.
-
-Device verification: add two markers (including an image marker), click both, remove
-one while its image is loading, and confirm only the remaining marker still produces
-clicks. Repeat removal, try an unknown ID and invalid IDs, then re-add the removed ID.
-Run this on Android and iOS; JavaScript bridge tests do not exercise native rendering.
-

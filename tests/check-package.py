@@ -10,7 +10,7 @@ from xml.etree import ElementTree
 
 
 def validate(files, label):
-    expected = {'package.json', 'plugin.xml', 'README.md'}
+    expected = {'package.json', 'plugin.xml', 'README.md', 'CHANGELOG.md'}
     tracked = subprocess.check_output(['git', 'ls-files'], text=True).splitlines()
     expected.update(p for p in tracked if p.startswith(('src/', 'www/', 'hooks/')))
     assert set(files) == expected, (label, 'Unexpected or missing files', set(files) ^ expected)

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <plugin id="cordova-plugin-outsystems-mapbox"
-        version="1.0.8"
+        version="1.0.9"
         xmlns="http://apache.org/cordova/ns/plugins/1.0"
         xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -34,8 +34,6 @@
     <preference name="MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" default="," />
 
     <platform name="android">
-        <hook type="after_prepare" src="hooks/android/verify-mapbox-feature.js" />
-
         <config-file parent="/*" target="res/xml/config.xml">
             <feature name="MapboxPlugin">
                 <param name="android-package" value="com.outsystems.mapbox.MapboxPluginPermissionEntry" />
