@@ -3724,6 +3724,19 @@ private boolean addMarkerInternal(
         return result;
     }
 
+    /** The current style, or null after telling the callback why there is none. */
+    private Style loadedStyle(CallbackContext callback) {
+        if (mapView == null) {
+            callback.error("Map is not initialized.");
+            return null;
+        }
+        Style style = mapView.getMapboxMap().getStyle();
+        if (style == null) {
+            callback.error("Style is not loaded.");
+        }
+        return style;
+    }
+
     private void setLayerGroupVisibility(
         JSONObject options,
         CallbackContext callback
@@ -3738,16 +3751,8 @@ private boolean addMarkerInternal(
                     return;
                 }
 
-                if (mapView == null) {
-                    callback.error("Map is not initialized.");
-                    return;
-                }
-
-                Style style = mapView.getMapboxMap().getStyle();
-                if (style == null) {
-                    callback.error("Style is not loaded.");
-                    return;
-                }
+                Style style = loadedStyle(callback);
+                if (style == null) return;
 
                 Value visibility = Value.valueOf(visible ? "visible" : "none");
                 JSONArray updatedLayers = new JSONArray();
@@ -3780,16 +3785,8 @@ private boolean addMarkerInternal(
     ) {
         runForSession(() -> {
             try {
-                if (mapView == null) {
-                    callback.error("Map is not initialized.");
-                    return;
-                }
-
-                Style style = mapView.getMapboxMap().getStyle();
-                if (style == null) {
-                    callback.error("Style is not loaded.");
-                    return;
-                }
+                Style style = loadedStyle(callback);
+                if (style == null) return;
 
                 String requestedGroup = options.optString("groupId", "").trim();
                 List<LayerMetadata> layers = layersWithMetadata(style);
@@ -3858,16 +3855,8 @@ private boolean addMarkerInternal(
                     return;
                 }
 
-                if (mapView == null) {
-                    callback.error("Map is not initialized.");
-                    return;
-                }
-
-                Style style = mapView.getMapboxMap().getStyle();
-                if (style == null) {
-                    callback.error("Style is not loaded.");
-                    return;
-                }
+                Style style = loadedStyle(callback);
+                if (style == null) return;
 
                 JSONArray resultLayers = new JSONArray();
                 for (LayerMetadata layer : layersWithMetadata(style)) {

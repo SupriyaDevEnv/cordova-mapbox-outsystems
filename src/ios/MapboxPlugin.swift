@@ -311,27 +311,34 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let latitude = self.doubleOption(options["latitude"], defaultValue: mapView.cameraState.center.latitude)
-            let longitude = self.doubleOption(options["longitude"], defaultValue: mapView.cameraState.center.longitude)
-
-            guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
-                self.sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
-                return
-            }
-
-            let zoom = self.doubleOption(options["zoom"], defaultValue: mapView.cameraState.zoom)
-            let bearing = self.doubleOption(options["bearing"], defaultValue: mapView.cameraState.bearing)
-            let pitch = self.doubleOption(options["pitch"], defaultValue: mapView.cameraState.pitch)
-
-            mapView.mapboxMap.setCamera(to: CameraOptions(
-                center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
-                zoom: zoom,
-                bearing: bearing,
-                pitch: pitch
-            ))
+            guard let camera = self.cameraFromOptions(options, mapView: mapView, command) else { return }
+            mapView.mapboxMap.setCamera(to: camera)
 
             self.sendSuccess(command)
         }
+    }
+
+    /// Camera for setCamera/flyTo: omitted values keep the current camera. Returns nil
+    /// after reporting the error when the coordinates are invalid.
+    private func cameraFromOptions(_ options: [String: Any], mapView: MapView,
+                                   _ command: CDVInvokedUrlCommand) -> CameraOptions? {
+        let latitude = doubleOption(options["latitude"], defaultValue: mapView.cameraState.center.latitude)
+        let longitude = doubleOption(options["longitude"], defaultValue: mapView.cameraState.center.longitude)
+
+        guard isValidLatitude(latitude), isValidLongitude(longitude) else {
+            sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
+            return nil
+        }
+
+        let zoom = doubleOption(options["zoom"], defaultValue: mapView.cameraState.zoom)
+        let bearing = doubleOption(options["bearing"], defaultValue: mapView.cameraState.bearing)
+        let pitch = doubleOption(options["pitch"], defaultValue: mapView.cameraState.pitch)
+        return CameraOptions(
+            center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+            zoom: zoom,
+            bearing: bearing,
+            pitch: pitch
+        )
     }
 
     @objc(resetMapBearing:)
@@ -363,24 +370,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let latitude = self.doubleOption(options["latitude"], defaultValue: mapView.cameraState.center.latitude)
-            let longitude = self.doubleOption(options["longitude"], defaultValue: mapView.cameraState.center.longitude)
-
-            guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
-                self.sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
-                return
-            }
-
-            let zoom = self.doubleOption(options["zoom"], defaultValue: mapView.cameraState.zoom)
-            let bearing = self.doubleOption(options["bearing"], defaultValue: mapView.cameraState.bearing)
-            let pitch = self.doubleOption(options["pitch"], defaultValue: mapView.cameraState.pitch)
-
-            let camera = CameraOptions(
-                center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
-                zoom: zoom,
-                bearing: bearing,
-                pitch: pitch
-            )
+            guard let camera = self.cameraFromOptions(options, mapView: mapView, command) else { return }
 
             let duration = (options["duration"] as? Double)
                 .flatMap { $0.isFinite ? min(max($0, 0), 10000) / 1000.0 : nil }

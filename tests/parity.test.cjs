@@ -19,9 +19,11 @@ test('camera actions preserve omitted center coordinates on both platforms', () 
   }
   for (const name of ['setCamera', 'flyTo']) {
     const body = ios.split('func ' + name + '(command:')[1].split('@objc', 1)[0];
-    assert.match(body, /defaultValue: mapView\.cameraState\.center\.latitude/);
-    assert.match(body, /defaultValue: mapView\.cameraState\.center\.longitude/);
+    assert.match(body, /self\.cameraFromOptions\(options, mapView: mapView, command\)/);
   }
+  const iosCamera = ios.split('private func cameraFromOptions(')[1].split('@objc', 1)[0];
+  assert.match(iosCamera, /defaultValue: mapView\.cameraState\.center\.latitude/);
+  assert.match(iosCamera, /defaultValue: mapView\.cameraState\.center\.longitude/);
 });
 
 test('initial camera applies bearing and pitch on both platforms', () => {
