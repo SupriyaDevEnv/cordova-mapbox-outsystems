@@ -119,6 +119,11 @@ It supports inline maps, behind-WebView maps, markers, current-location movement
 - `setWaypointSelectionEnabled(options)`
 - `onWaypointSelected(callback, errorCallback)`
 - `onMarkerClick(callback, errorCallback)`
+- `setLayerVisibility(options)`
+- `getLayerIds()`
+- `getLayersByGroup(options)`
+- `setLayerGroupVisibility(options)`
+- `diagnoseLayerGroup(groupId)`
 - `close()`
 
 ## Initialize Map
@@ -560,6 +565,22 @@ window.MapboxPlugin.loadPath({
   points: $parameters.SavedPoints,
   segments: $parameters.SavedSegments   // optional; without it the hunt draws as one line
 })
+```
+
+## Style Layers
+
+These actions work on the layers of the current map style, on both Android and iOS. A *group* is a Mapbox Studio layer folder, stored in each layer's `metadata["mapbox:group"]`. Call them after the style has loaded; before that they fail with "Style is not loaded".
+
+| Action | Options | Result |
+|---|---|---|
+| `setLayerVisibility(options)` | `layerId` (required), `visible` (default `true`) | Nothing |
+| `getLayerIds()` | None | Array of layer IDs, in drawing order |
+| `getLayersByGroup(options)` | `groupId` (required) | `{ groupId, totalLayers, layers: [{ id, name, type }] }` |
+| `setLayerGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | `{ groupId, visible, updatedCount, updatedLayers }`. Fails if no layer is in the group. |
+| `diagnoseLayerGroup(groupId)` | Group ID string | `{ requestedGroup, totalLayers, layersWithMetadata, matchingLayerCount, matchingLayers, targetLayerDetails }`. Debugging only; `targetLayerDetails` is always empty. |
+
+```javascript
+await MapboxPlugin.setLayerGroupVisibility({ groupId: $parameters.GroupId, visible: false });
 ```
 
 ## Markers

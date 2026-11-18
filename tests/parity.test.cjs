@@ -162,8 +162,37 @@ test('iOS implements boundary drawing actions and live acreage updates', () => {
   assert.match(ios, /completedBoundaryDrawingPolygons\.append\(polygon\)/);
 });
 
-test('iOS does not implement group visibility toggling', () => {
-  assert.doesNotMatch(ios, /@objc\(setLayerGroupVisibility:\)/);
+test('every Android action has an iOS implementation, and the reverse', () => {
+  // A missing iOS selector is only logged by Cordova and never answers JS, so the caller's
+  // promise would hang forever. Keep both platforms' action lists identical.
+  const iosAll = ['MapboxPlugin', 'MapboxPluginParity', 'MapboxPluginPermissionParity']
+    .map((name) => fs.readFileSync('src/ios/' + name + '.swift', 'utf8')).join('\n');
+  const androidActions = new Set([...(android + androidPermissions).matchAll(/case "(\w+)":/g)].map((m) => m[1]));
+  const iosActions = new Set([...iosAll.matchAll(/@objc\((\w+):\)/g)].map((m) => m[1]));
+  assert.ok(androidActions.size > 40, 'Android action list was not found');
+  assert.deepEqual([...androidActions].filter((a) => !iosActions.has(a)), [], 'Android-only actions');
+  assert.deepEqual([...iosActions].filter((a) => !androidActions.has(a)), [], 'iOS-only actions');
+});
+
+test('iOS reads layer groups from mapbox:group metadata like Android', () => {
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  for (const name of ['getLayerIds', 'getLayersByGroup', 'setLayerGroupVisibility', 'diagnoseLayerGroup']) {
+    assert.ok(parity.includes('@objc(' + name + ':)'), name + ' is missing on iOS');
+  }
+  assert.match(parity, /\["mapbox:group"\]/);
+  assert.match(parity, /property: "metadata"/);
+  assert.match(parity, /"updatedCount": updated\.count/);
+  assert.match(parity, /"updatedLayers": updated/);
+  assert.match(parity, /"totalLayers": layers\.count/);
+  // isStyleLoaded broke the iOS build on Nov 13; keep it out.
+  assert.doesNotMatch(parity.replace(/\/\/.*$/gm, ''), /isStyleLoaded/);
+});
+
+test('diagnoseLayerGroup logs nothing and inspects no project-specific layer', () => {
+  const body = javaMethod('diagnoseLayerGroup', 'getLayerIds');
+  assert.match(body, /runForSession\(/);
+  assert.doesNotMatch(body, /Log\.d\(/);
+  assert.doesNotMatch(body, /fossick/);
 });
 
 test('Android sets visibility for runtime style layers in a metadata group', () => {

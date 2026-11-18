@@ -210,6 +210,153 @@ class MapboxPluginParity: MapboxPlugin {
         }
     }
 
+    // MARK: - Style layer groups (Android parity)
+    //
+    // Groups are the Mapbox Studio folders stored in each layer's
+    // metadata["mapbox:group"], matching the Android implementation.
+
+    @objc(getLayerIds:)
+    func getLayerIds(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized getLayerIds.",
+                                                notLoaded: "Style is not loaded yet.") else { return }
+            let ids = map.allLayerIdentifiers.map { $0.id }
+            self.forgetCallback(command.callbackId)
+            let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: ids as [Any])
+            self.commandDelegate.send(result, callbackId: command.callbackId)
+        }
+    }
+
+    @objc(getLayersByGroup:)
+    func getLayersByGroup(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let groupId = self.requiredGroupId(command) else { return }
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+            let layers: [[String: Any]] = map.allLayerIdentifiers
+                .filter { self.layerGroup(map, $0.id) == groupId }
+                .map { ["id": $0.id, "name": $0.id, "type": $0.type.rawValue] }
+            self.sendParityPayload([
+                "groupId": groupId,
+                "totalLayers": layers.count,
+                "layers": layers
+            ], command: command)
+        }
+    }
+
+    @objc(setLayerGroupVisibility:)
+    func setLayerGroupVisibility(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let groupId = self.requiredGroupId(command) else { return }
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            let visible = options["visible"] as? Bool ?? true
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+
+            let layerIds = map.allLayerIdentifiers.map { $0.id }.filter { self.layerGroup(map, $0) == groupId }
+            guard !layerIds.isEmpty else {
+                self.sendParityError("No layers found for group: \(groupId)", command: command)
+                return
+            }
+
+            var updated: [String] = []
+            for layerId in layerIds {
+                do {
+                    try map.setLayerProperty(for: layerId, property: "visibility",
+                                             value: visible ? "visible" : "none")
+                    updated.append(layerId)
+                } catch {
+                    self.sendParityError("Failed to update group visibility.", command: command)
+                    return
+                }
+            }
+            self.sendParityPayload([
+                "groupId": groupId,
+                "visible": visible,
+                "updatedCount": updated.count,
+                "updatedLayers": updated
+            ], command: command)
+        }
+    }
+
+    /// Debug helper kept for Android parity. Returns the same shape as Android and logs nothing.
+    @objc(diagnoseLayerGroup:)
+    func diagnoseLayerGroup(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            let requestedGroup = (options["groupId"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let layerInfos = map.allLayerIdentifiers
+            var layersWithMetadata = 0
+            var matching: [[String: Any]] = []
+            for info in layerInfos {
+                guard let metadata = self.layerMetadata(map, info.id) else { continue }
+                layersWithMetadata += 1
+                if (metadata["mapbox:group"] as? String ?? "") == requestedGroup {
+                    matching.append([
+                        "layerId": info.id,
+                        "metadata": JSONSerialization.isValidJSONObject(metadata) ? metadata : [:]
+                    ])
+                }
+            }
+            self.sendParityPayload([
+                "requestedGroup": requestedGroup,
+                "totalLayers": layerInfos.count,
+                "layersWithMetadata": layersWithMetadata,
+                "matchingLayerCount": matching.count,
+                "matchingLayers": matching,
+                "targetLayerDetails": [Any]()
+            ], command: command)
+        }
+    }
+
+    private func requiredGroupId(_ command: CDVInvokedUrlCommand) -> String? {
+        let options = command.argument(at: 0) as? [String: Any] ?? [:]
+        let groupId = (options["groupId"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !groupId.isEmpty else {
+            sendParityError("groupId is required", command: command)
+            return nil
+        }
+        return groupId
+    }
+
+    private func loadedStyleMap(_ command: CDVInvokedUrlCommand, notInitialized: String,
+                                notLoaded: String) -> MapboxMap? {
+        guard let mapView = activeMapView() else {
+            sendParityError(notInitialized, command: command)
+            return nil
+        }
+        // A style that has not finished loading reports no layers. (isStyleLoaded is
+        // deliberately avoided: it was removed from this file in the Nov 13 iOS build fix.)
+        guard !mapView.mapboxMap.allLayerIdentifiers.isEmpty else {
+            sendParityError(notLoaded, command: command)
+            return nil
+        }
+        return mapView.mapboxMap
+    }
+
+    private func layerMetadata(_ map: MapboxMap, _ layerId: String) -> [String: Any]? {
+        // try? keeps this compiling whether or not the SDK marks layerProperty as throwing.
+        (try? map.layerProperty(for: layerId, property: "metadata"))?.value as? [String: Any]
+    }
+
+    private func layerGroup(_ map: MapboxMap, _ layerId: String) -> String? {
+        layerMetadata(map, layerId)?["mapbox:group"] as? String
+    }
+
+    private func sendParityPayload(_ payload: [String: Any], command: CDVInvokedUrlCommand) {
+        let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
+        forgetCallback(command.callbackId)
+        commandDelegate.send(result, callbackId: command.callbackId)
+    }
+
     override func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else {
             return

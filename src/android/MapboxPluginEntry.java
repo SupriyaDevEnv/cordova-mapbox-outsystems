@@ -3747,7 +3747,7 @@ private boolean addMarkerInternal(
         JSONObject options,
         CallbackContext callback
     ) {
-        cordova.getActivity().runOnUiThread(() -> {
+        runForSession(() -> {
             try {
                 if (mapView == null) {
                     callback.error("Map is not initialized.");
@@ -3795,11 +3795,6 @@ private boolean addMarkerInternal(
                         layerInfo.put("layerId", layerId);
                         layerInfo.put("metadata", metadata);
 
-                        if (layerId.equals(
-                                "au-nsw-fossick-district-polygon copy")) {
-                            targetLayerDetails.put(layerInfo);
-                        }
-
                         if (requestedGroup.equals(group)) {
                             matchingLayers.put(layerInfo);
                         }
@@ -3812,17 +3807,12 @@ private boolean addMarkerInternal(
                 result.put("layersWithMetadata", layersWithMetadata);
                 result.put("matchingLayerCount", matchingLayers.length());
                 result.put("matchingLayers", matchingLayers);
+                // Kept for response-shape compatibility; no project-specific layer is inspected.
                 result.put("targetLayerDetails", targetLayerDetails);
-
-                Log.d(
-                    "MapboxPlugin",
-                    "Runtime style diagnostic: " + result.toString(2)
-                );
 
                 callback.success(result);
             } catch (Throwable e) {
-                Log.e("MapboxPlugin", "Diagnostic failed", e);
-                callback.error("Diagnostic failed: " + e.getMessage());
+                callback.error("Diagnostic failed.");
             }
         });
     }
