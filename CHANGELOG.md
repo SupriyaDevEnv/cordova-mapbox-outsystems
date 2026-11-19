@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **New:** `downloadOfflineRegion` accepts `bounds` (`{ south, west, north, east }`) or a GeoJSON `polygon` to download a known area, such as a recommended trail, instead of a centre and radius.
+- **New:** `downloadOfflineRegion` and `downloadOfflineRegionForRect` resolve with `sizeBytes`, `bounds`, `polygon` (the exact area downloaded), `minZoom`, `maxZoom`, `styleUrl` and `downloadedAt`, alongside the existing `regionId`, `latitude`, `longitude` and `radiusKm`.
+- **New:** `estimateOfflineRegionSize` and `estimateOfflineRegionSizeForRect` return an approximate tile count and download size, and whether the download would be within the limits.
+- **New:** `getAvailableStorage` returns free and total device storage.
+- **New:** `cancelOfflineDownload` stops the current download without closing the map; the download rejects with a cancellation error.
+- **New:** `getOfflineRegionIds` lists the regions stored on the device, with size and whether each finished.
+- **New:** `detail: 'low' | 'medium' | 'high'` sets the download zoom (13, 15 or 16) for downloads and estimates.
+- **New:** offline progress events include `completedBytes` and `completedMB`.
+
 ## 1.0.10
 
 - **New:** mark the element the map shows through with `data-mapbox-map`, and behind-WebView touch routing gives the page every touch on anything drawn over the map: clickable containers, cards, chips, scrollable rows, labels and custom bottom sheets, not only buttons, links and known OutSystems classes. Transparent wrappers still let touches through to the map. Without the attribute, tracking is unchanged.

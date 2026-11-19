@@ -30,11 +30,15 @@ import com.google.android.gms.location.LocationResult;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.Priority;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.TimeZone;
 
 
 import com.mapbox.bindgen.Value;
@@ -107,6 +111,8 @@ public class MapboxPluginEntry extends CordovaPlugin {
     private static final int MAX_OFFLINE_REGIONS = 20;
     private static final double MIN_OFFLINE_ZOOM = 2.0;
     private static final double MAX_OFFLINE_ZOOM = 18.0;
+    // Total vertices accepted in a downloadOfflineRegion polygon (all rings).
+    private static final int MAX_OFFLINE_POLYGON_POINTS = 1000;
     private static final long MAX_LOCATION_AGE_MS = 30_000L;
     private static final float VERY_ACCURATE_METERS = 5f;
     private static final float ACCURATE_METERS = 15f;
@@ -282,6 +288,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private Cancelable activeStylePackDownload;
     private Cancelable activeTileRegionDownload;
     private boolean isOfflineDownloading = false;
+    // Incremented for each download and on cancel; stale download callbacks are ignored.
+    private long offlineDownloadToken = 0;
+    private CallbackContext activeDownloadCallback;
     private boolean waypointSelectionEnabled = false;
     private boolean autoAddWaypointMarker = false;
     private OnMapClickListener mapClickListener;
@@ -414,6 +423,21 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
                 return true;
             case "registerOfflineDownloadProgressCallback":
                 registerOfflineDownloadProgressCallback(callbackContext);
+                return true;
+            case "estimateOfflineRegionSize":
+                estimateOfflineRegionSize(options, false, callbackContext);
+                return true;
+            case "estimateOfflineRegionSizeForRect":
+                estimateOfflineRegionSize(options, true, callbackContext);
+                return true;
+            case "getAvailableStorage":
+                getAvailableStorage(callbackContext);
+                return true;
+            case "cancelOfflineDownload":
+                cancelOfflineDownload(callbackContext);
+                return true;
+            case "getOfflineRegionIds":
+                getOfflineRegionIds(callbackContext);
                 return true;
             case "setWaypointSelectionEnabled":
                 setWaypointSelectionEnabled(options, callbackContext);
@@ -1989,15 +2013,29 @@ if (gestures != null) {
                     return;
                 }
 
+                // Optional area (bounds or GeoJSON polygon) instead of centre + radius.
+                final Polygon area;
+                try {
+                    area = offlineAreaPolygon(options);
+                } catch (IllegalArgumentException e) {
+                    callback.error(e.getMessage());
+                    return;
+                }
+
                 double latitude = options.optDouble("latitude", 0.0);
                 double longitude = options.optDouble("longitude", 0.0);
+                if (area != null) {
+                    double[] box = polygonBounds(area);
+                    longitude = (box[0] + box[2]) / 2.0;
+                    latitude = (box[1] + box[3]) / 2.0;
+                }
 
                 if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
                     callback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
                     return;
                 }
 
-                double radiusKm = options.optDouble("radiusKm", 10.0);
+                double radiusKm = area != null ? 0.0 : options.optDouble("radiusKm", 10.0);
                 double minZoom = options.optDouble("minZoom", 10.0);
                 double maxZoom = options.optDouble("maxZoom", 16.0);
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
@@ -2007,7 +2045,9 @@ if (gestures != null) {
             }
                 String regionId = options.optString(
                     "regionId",
-                    "offline-" + Math.round(latitude * 100000.0) + "-" + Math.round(longitude * 100000.0)
+                    area != null
+                        ? "offline-area-" + System.currentTimeMillis()
+                        : "offline-" + Math.round(latitude * 100000.0) + "-" + Math.round(longitude * 100000.0)
                 );
 
                 startOfflineDownload(
@@ -2018,7 +2058,7 @@ if (gestures != null) {
                     minZoom,
                     maxZoom,
                     styleUrl,
-                    null,
+                    area,
                     options.optBoolean("wifiOnly", false),
                     callback
                 );
@@ -2039,15 +2079,11 @@ if (gestures != null) {
                     return;
                 }
 
-                double x = options.optDouble("x", 0.0);
-                double y = options.optDouble("y", 0.0);
-                double width = options.optDouble("width", 1.0);
-                double height = options.optDouble("height", 1.0);
-                if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(width) || !Double.isFinite(height)
-                        || Math.abs(x) > 1000000 || Math.abs(y) > 1000000 || width <= 0 || height <= 0
-                        || width > 1000000 || height > 1000000) {
+                double[] rect = offlineRect(options);
+                if (rect == null) {
                     callback.error("Invalid offline rectangle."); return;
                 }
+                double x = rect[0], y = rect[1], width = rect[2], height = rect[3];
                 double minZoom = options.optDouble("minZoom", 10.0);
                 double maxZoom = options.optDouble("maxZoom", 16.0);
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
@@ -2113,6 +2149,9 @@ if (gestures != null) {
             callback.error("Offline region exceeds the geographic or 50000-tile budget."); return;
         }
         final long downloadGeneration = sessionGeneration;
+        // A cancelled download's late Mapbox callbacks are ignored by token.
+        final long downloadToken = ++offlineDownloadToken;
+        activeDownloadCallback = callback;
         final double clampedRadiusKm = clamp(radiusKm, 0.0, MAX_OFFLINE_RADIUS_KM);
         final double clampedMinZoom = clamp(minZoom, MIN_OFFLINE_ZOOM, MAX_OFFLINE_ZOOM);
         final double clampedMaxZoom = clamp(maxZoom, clampedMinZoom, MAX_OFFLINE_ZOOM);
@@ -2120,7 +2159,7 @@ if (gestures != null) {
         // Cap the number of stored regions so offline storage cannot grow without limit.
         // Re-downloading an existing region always works. If the list cannot be read,
         // the download goes ahead.
-        TileStore.create().getAllTileRegions(regions -> runForGeneration(downloadGeneration, () -> {
+        TileStore.create().getAllTileRegions(regions -> runForDownload(downloadGeneration, downloadToken, () -> {
             if (downloadGeneration != sessionGeneration) return;
             List<TileRegion> stored = regions.isValue() ? regions.getValue() : null;
             if (stored != null && stored.size() >= MAX_OFFLINE_REGIONS) {
@@ -2135,13 +2174,15 @@ if (gestures != null) {
                     return;
                 }
             }
-            beginOfflineDownload(downloadGeneration, regionId, latitude, longitude, clampedRadiusKm,
-                clampedMinZoom, clampedMaxZoom, styleUrl, geometry, wifiOnly, callback);
+            // Pass the final area (circle already built) so the result reports exactly what was downloaded.
+            beginOfflineDownload(downloadGeneration, downloadToken, regionId, latitude, longitude, clampedRadiusKm,
+                clampedMinZoom, clampedMaxZoom, styleUrl, downloadGeometry, wifiOnly, callback);
         }));
     }
 
     private void beginOfflineDownload(
         long downloadGeneration,
+        long downloadToken,
         String regionId,
         double latitude,
         double longitude,
@@ -2166,8 +2207,8 @@ if (gestures != null) {
         activeStylePackDownload = activeOfflineManager.loadStylePack(
             styleUrl,
             stylePackOptions,
-            progress -> runForGeneration(downloadGeneration, () -> sendOfflineProgress("style", progress.getCompletedResourceCount(), progress.getRequiredResourceCount())),
-            expectedStylePack -> runForGeneration(downloadGeneration, () -> expectedStylePack.fold(
+            progress -> runForDownload(downloadGeneration, downloadToken, () -> sendOfflineProgress("style", progress.getCompletedResourceCount(), progress.getRequiredResourceCount(), progress.getCompletedResourceSize())),
+            expectedStylePack -> runForDownload(downloadGeneration, downloadToken, () -> expectedStylePack.fold(
                 error -> {
                     if (downloadGeneration != sessionGeneration) return null;
                     isOfflineDownloading = false;
@@ -2180,6 +2221,7 @@ if (gestures != null) {
                     downloadOfflineTiles(
                         activeOfflineManager,
                         downloadGeneration,
+                        downloadToken,
                         regionId,
                         latitude,
                         longitude,
@@ -2200,6 +2242,7 @@ if (gestures != null) {
     private void downloadOfflineTiles(
         OfflineManager offlineManager,
         long downloadGeneration,
+        long downloadToken,
         String regionId,
         double latitude,
         double longitude,
@@ -2213,7 +2256,7 @@ if (gestures != null) {
     ) {
         runForSession(() -> {
             try {
-                if (downloadGeneration != sessionGeneration) return;
+                if (downloadGeneration != sessionGeneration || downloadToken != offlineDownloadToken) return;
                 TilesetDescriptorOptions descriptorOptions = new TilesetDescriptorOptions.Builder()
                     .styleURI(styleUrl)
                     .pixelRatio(cordova.getActivity().getResources().getDisplayMetrics().density)
@@ -2223,8 +2266,9 @@ if (gestures != null) {
 
                 TilesetDescriptor descriptor = offlineManager.createTilesetDescriptor(descriptorOptions);
 
+                final Polygon area = geometry == null ? createCirclePolygon(longitude, latitude, radiusKm) : geometry;
                 TileRegionLoadOptions tileRegionOptions = new TileRegionLoadOptions.Builder()
-                    .geometry(geometry == null ? createCirclePolygon(longitude, latitude, radiusKm) : geometry)
+                    .geometry(area)
                     .descriptors(Collections.singletonList(descriptor))
                     .metadata(metadataValue(regionId))
                     .acceptExpired(false)
@@ -2236,8 +2280,8 @@ if (gestures != null) {
                 activeTileRegionDownload = activeOfflineTileStore.loadTileRegion(
                     regionId,
                     tileRegionOptions,
-                    progress -> runForGeneration(downloadGeneration, () -> sendOfflineProgress("tiles", progress.getCompletedResourceCount(), progress.getRequiredResourceCount())),
-                    expectedTileRegion -> runForGeneration(downloadGeneration, () -> expectedTileRegion.fold(
+                    progress -> runForDownload(downloadGeneration, downloadToken, () -> sendOfflineProgress("tiles", progress.getCompletedResourceCount(), progress.getRequiredResourceCount(), progress.getCompletedResourceSize())),
+                    expectedTileRegion -> runForDownload(downloadGeneration, downloadToken, () -> expectedTileRegion.fold(
                         error -> {
                             if (downloadGeneration != sessionGeneration) return null;
                             isOfflineDownloading = false;
@@ -2248,12 +2292,10 @@ if (gestures != null) {
                             if (downloadGeneration != sessionGeneration) return null;
                             isOfflineDownloading = false;
                             try {
-                                JSONObject result = new JSONObject();
-                                result.put("regionId", regionId);
-                                result.put("latitude", latitude);
-                                result.put("longitude", longitude);
-                                result.put("radiusKm", radiusKm);
-                                callback.success(result);
+                                callback.success(offlineDownloadResult(
+                                    regionId, latitude, longitude, radiusKm, minZoom, maxZoom,
+                                    styleUrl, area, tileRegion.getCompletedResourceSize()
+                                ));
                             } catch (Exception e) {
                                 callback.error(sanitizeError("An internal error occurred.", e));
                             }
@@ -2266,6 +2308,314 @@ if (gestures != null) {
                 callback.error(sanitizeError("Failed to download offline tiles.", e));
             }
         });
+    }
+
+    /**
+     * Download area from {@code bounds} ({south, west, north, east}) or a GeoJSON
+     * {@code polygon}. Returns null when neither is given; throws with a user-facing
+     * message when the area is invalid.
+     */
+    private static Polygon offlineAreaPolygon(JSONObject options) {
+        boolean hasBounds = options.has("bounds") && !options.isNull("bounds");
+        boolean hasPolygon = options.has("polygon") && !options.isNull("polygon");
+        if (hasBounds && hasPolygon) {
+            throw new IllegalArgumentException("Pass either bounds or polygon, not both.");
+        }
+        if (hasBounds) {
+            JSONObject bounds = options.optJSONObject("bounds");
+            if (bounds == null) throw new IllegalArgumentException("bounds must be an object with south, west, north and east.");
+            double south = bounds.optDouble("south", Double.NaN);
+            double west = bounds.optDouble("west", Double.NaN);
+            double north = bounds.optDouble("north", Double.NaN);
+            double east = bounds.optDouble("east", Double.NaN);
+            if (!isValidLatitude(south) || !isValidLatitude(north)
+                    || !isValidLongitude(west) || !isValidLongitude(east)) {
+                throw new IllegalArgumentException("Invalid offline bounds: latitudes must be in [-90, 90], longitudes in [-180, 180].");
+            }
+            if (south >= north || west >= east) {
+                throw new IllegalArgumentException("Invalid offline bounds: south must be less than north and west less than east.");
+            }
+            List<Point> ring = new ArrayList<>();
+            ring.add(Point.fromLngLat(west, south));
+            ring.add(Point.fromLngLat(east, south));
+            ring.add(Point.fromLngLat(east, north));
+            ring.add(Point.fromLngLat(west, north));
+            ring.add(Point.fromLngLat(west, south));
+            return Polygon.fromLngLats(Collections.singletonList(ring));
+        }
+        if (hasPolygon) {
+            JSONObject polygon = options.optJSONObject("polygon");
+            JSONArray rings = polygon == null ? null : polygon.optJSONArray("coordinates");
+            if (polygon == null || !"Polygon".equals(polygon.optString("type")) || rings == null || rings.length() == 0) {
+                throw new IllegalArgumentException("polygon must be a GeoJSON Polygon with coordinates.");
+            }
+            List<List<Point>> out = new ArrayList<>();
+            int total = 0;
+            for (int i = 0; i < rings.length(); i++) {
+                JSONArray ring = rings.optJSONArray(i);
+                if (ring == null) throw new IllegalArgumentException("Each polygon ring must be an array of [longitude, latitude] positions.");
+                List<Point> points = new ArrayList<>();
+                for (int j = 0; j < ring.length(); j++) {
+                    JSONArray position = ring.optJSONArray(j);
+                    double lng = position == null ? Double.NaN : position.optDouble(0, Double.NaN);
+                    double lat = position == null ? Double.NaN : position.optDouble(1, Double.NaN);
+                    if (!isValidLongitude(lng) || !isValidLatitude(lat)) {
+                        throw new IllegalArgumentException("Invalid polygon position: use [longitude, latitude] within valid ranges.");
+                    }
+                    points.add(Point.fromLngLat(lng, lat));
+                }
+                if (points.isEmpty()) throw new IllegalArgumentException("Each polygon ring needs at least 3 positions.");
+                Point first = points.get(0);
+                Point last = points.get(points.size() - 1);
+                if (first.longitude() != last.longitude() || first.latitude() != last.latitude()) {
+                    points.add(first);
+                }
+                if (points.size() < 4) throw new IllegalArgumentException("Each polygon ring needs at least 3 positions.");
+                total += points.size();
+                if (total > MAX_OFFLINE_POLYGON_POINTS) {
+                    throw new IllegalArgumentException("Polygon has too many positions (maximum " + MAX_OFFLINE_POLYGON_POINTS + ").");
+                }
+                out.add(points);
+            }
+            return Polygon.fromLngLats(out);
+        }
+        return null;
+    }
+
+    /** Returns {west, south, east, north}. */
+    private static double[] polygonBounds(Polygon polygon) {
+        double south = 90, west = 180, north = -90, east = -180;
+        for (List<Point> ring : polygon.coordinates()) {
+            for (Point point : ring) {
+                south = Math.min(south, point.latitude()); north = Math.max(north, point.latitude());
+                west = Math.min(west, point.longitude()); east = Math.max(east, point.longitude());
+            }
+        }
+        return new double[] { west, south, east, north };
+    }
+
+    private static JSONObject offlineDownloadResult(
+        String regionId,
+        double latitude,
+        double longitude,
+        double radiusKm,
+        double minZoom,
+        double maxZoom,
+        String styleUrl,
+        Polygon area,
+        long sizeBytes
+    ) throws JSONException {
+        JSONObject result = new JSONObject();
+        result.put("regionId", regionId);
+        result.put("latitude", latitude);
+        result.put("longitude", longitude);
+        result.put("radiusKm", radiusKm);
+        // Tile data for this region only; the shared style pack is not included.
+        result.put("sizeBytes", sizeBytes);
+
+        double[] box = polygonBounds(area);
+        JSONObject bounds = new JSONObject();
+        bounds.put("south", box[1]);
+        bounds.put("west", box[0]);
+        bounds.put("north", box[3]);
+        bounds.put("east", box[2]);
+        result.put("bounds", bounds);
+
+        JSONArray rings = new JSONArray();
+        for (List<Point> ring : area.coordinates()) {
+            JSONArray positions = new JSONArray();
+            for (Point point : ring) {
+                JSONArray position = new JSONArray();
+                position.put(point.longitude());
+                position.put(point.latitude());
+                positions.put(position);
+            }
+            rings.put(positions);
+        }
+        JSONObject polygon = new JSONObject();
+        polygon.put("type", "Polygon");
+        polygon.put("coordinates", rings);
+        result.put("polygon", polygon);
+
+        result.put("minZoom", (int) toZoomByte(minZoom));
+        result.put("maxZoom", (int) toZoomByte(maxZoom));
+        result.put("styleUrl", styleUrl);
+
+        SimpleDateFormat iso = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+        iso.setTimeZone(TimeZone.getTimeZone("UTC"));
+        result.put("downloadedAt", iso.format(new Date()));
+        return result;
+    }
+
+    // Like runForGeneration, but also dropped once the download was cancelled or replaced.
+    private void runForDownload(long generation, long downloadToken, Runnable action) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (generation == sessionGeneration && downloadToken == offlineDownloadToken) action.run();
+        });
+    }
+
+    /** {x, y, width, height} in native pixels, or null when the rectangle is invalid. */
+    private static double[] offlineRect(JSONObject options) {
+        double x = options.optDouble("x", 0.0);
+        double y = options.optDouble("y", 0.0);
+        double width = options.optDouble("width", 1.0);
+        double height = options.optDouble("height", 1.0);
+        if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(width) || !Double.isFinite(height)
+                || Math.abs(x) > 1000000 || Math.abs(y) > 1000000 || width <= 0 || height <= 0
+                || width > 1000000 || height > 1000000) {
+            return null;
+        }
+        return new double[] { x, y, width, height };
+    }
+
+    // Default when the app has no measured value; real sizes vary a lot by style and area.
+    private static final double DEFAULT_BYTES_PER_TILE = 50 * 1024;
+    private static final double MAX_BYTES_PER_TILE = 10 * 1024 * 1024;
+
+    /**
+     * Approximate download size for the same options as downloadOfflineRegion
+     * (centre + radiusKm, bounds or polygon) or, with forRect, downloadOfflineRegionForRect.
+     * Counts tiles over the area's bounding box, so circles and polygons are over-estimated.
+     */
+    private void estimateOfflineRegionSize(JSONObject options, boolean forRect, CallbackContext callback) {
+        runForSession(() -> {
+            try {
+                Polygon area;
+                if (forRect) {
+                    if (mapView == null) {
+                        callback.error("Map is not initialized estimateOfflineRegionSizeForRect.");
+                        return;
+                    }
+                    double[] rect = offlineRect(options);
+                    if (rect == null) { callback.error("Invalid offline rectangle."); return; }
+                    area = createRectPolygon(rect[0], rect[1], rect[2], rect[3]);
+                } else {
+                    try {
+                        area = offlineAreaPolygon(options);
+                    } catch (IllegalArgumentException e) {
+                        callback.error(e.getMessage());
+                        return;
+                    }
+                    if (area == null) {
+                        double latitude = options.optDouble("latitude", 0.0);
+                        double longitude = options.optDouble("longitude", 0.0);
+                        double radiusKm = options.optDouble("radiusKm", 10.0);
+                        if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
+                            callback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
+                            return;
+                        }
+                        if (!Double.isFinite(radiusKm) || radiusKm < 0 || radiusKm > MAX_OFFLINE_RADIUS_KM) {
+                            callback.error("Invalid offline radius."); return;
+                        }
+                        area = createCirclePolygon(longitude, latitude, radiusKm);
+                    }
+                }
+
+                double minZoom = options.optDouble("minZoom", 10.0);
+                double maxZoom = options.optDouble("maxZoom", 16.0);
+                if (!MapboxSecurity.validZoom(minZoom) || !MapboxSecurity.validZoom(maxZoom) || minZoom > maxZoom) {
+                    callback.error("Offline zoom must be between 2 and 18 with minZoom <= maxZoom."); return;
+                }
+                double bytesPerTile = options.optDouble("bytesPerTile", DEFAULT_BYTES_PER_TILE);
+                if (!Double.isFinite(bytesPerTile) || bytesPerTile <= 0 || bytesPerTile > MAX_BYTES_PER_TILE) {
+                    callback.error("bytesPerTile must be a positive number up to 10 MiB."); return;
+                }
+
+                double[] box = polygonBounds(area);
+                int min = toZoomByte(minZoom);
+                int max = toZoomByte(maxZoom);
+                long tileCount = MapboxSecurity.estimatedTileCount(box[1], box[0], box[3], box[2], min, max);
+                long estimatedBytes = Math.round(tileCount * bytesPerTile);
+
+                JSONObject result = new JSONObject();
+                result.put("tileCount", tileCount);
+                result.put("bytesPerTile", bytesPerTile);
+                result.put("estimatedBytes", estimatedBytes);
+                result.put("estimatedMB", Math.round(estimatedBytes / 1048576.0 * 10.0) / 10.0);
+                result.put("minZoom", min);
+                result.put("maxZoom", max);
+                JSONObject bounds = new JSONObject();
+                bounds.put("south", box[1]);
+                bounds.put("west", box[0]);
+                bounds.put("north", box[3]);
+                bounds.put("east", box[2]);
+                result.put("bounds", bounds);
+                // false when the same request would be rejected by the download limits.
+                result.put("withinLimits", MapboxSecurity.offlineBounds(box[1], box[0], box[3], box[2], maxZoom));
+                callback.success(result);
+            } catch (Throwable e) {
+                callback.error(sanitizeError("Failed to estimate offline region size.", e));
+            }
+        });
+    }
+
+    private void getAvailableStorage(CallbackContext callback) {
+        try {
+            android.os.StatFs stat = new android.os.StatFs(cordova.getActivity().getFilesDir().getAbsolutePath());
+            long available = stat.getAvailableBytes();
+            JSONObject result = new JSONObject();
+            result.put("availableBytes", available);
+            result.put("totalBytes", stat.getTotalBytes());
+            result.put("availableGB", Math.round(available / 1073741824.0 * 100.0) / 100.0);
+            callback.success(result);
+        } catch (Throwable e) {
+            callback.error(sanitizeError("Failed to read available storage.", e));
+        }
+    }
+
+    private void cancelOfflineDownload(CallbackContext callback) {
+        runForSession(() -> {
+            boolean wasDownloading = isOfflineDownloading;
+            if (wasDownloading) {
+                offlineDownloadToken++;
+                cancelCurrentDownload();
+                isOfflineDownloading = false;
+                CallbackContext pending = activeDownloadCallback;
+                activeDownloadCallback = null;
+                // JS turns this message into a MAPBOX_OPERATION_CANCELLED error.
+                if (pending != null && !pending.isFinished()) pending.error("Offline download cancelled.");
+            }
+            try {
+                JSONObject result = new JSONObject();
+                result.put("cancelled", wasDownloading);
+                callback.success(result);
+            } catch (JSONException e) {
+                callback.error(sanitizeError("An internal error occurred.", e));
+            }
+        });
+    }
+
+    private void getOfflineRegionIds(CallbackContext callback) {
+        try {
+            TileStore.create().getAllTileRegions(regions -> {
+                try {
+                    if (regions.isError()) {
+                        callback.error("Failed to read offline regions.");
+                        return;
+                    }
+                    JSONArray ids = new JSONArray();
+                    JSONArray details = new JSONArray();
+                    for (TileRegion region : regions.getValue()) {
+                        ids.put(region.getId());
+                        JSONObject detail = new JSONObject();
+                        detail.put("regionId", region.getId());
+                        detail.put("sizeBytes", region.getCompletedResourceSize());
+                        // false for a download that stopped part-way.
+                        detail.put("complete", region.getRequiredResourceCount() > 0
+                            && region.getCompletedResourceCount() >= region.getRequiredResourceCount());
+                        details.put(detail);
+                    }
+                    JSONObject result = new JSONObject();
+                    result.put("regionIds", ids);
+                    result.put("regions", details);
+                    callback.success(result);
+                } catch (Throwable e) {
+                    callback.error(sanitizeError("Failed to read offline regions.", e));
+                }
+            });
+        } catch (Throwable e) {
+            callback.error(sanitizeError("Failed to read offline regions.", e));
+        }
     }
 
     private Polygon createRectPolygon(double x, double y, double width, double height) {
@@ -2387,6 +2737,11 @@ if (gestures != null) {
     }
 
     private void sendOfflineProgress(String phase, long completed, long required) {
+        sendOfflineProgress(phase, completed, required, -1);
+    }
+
+    /** completedBytes is -1 when unknown (start/setup phases). */
+    private void sendOfflineProgress(String phase, long completed, long required, long completedBytes) {
         try {
             JSONObject payload = new JSONObject();
             payload.put("type", "offlineDownloadProgress");
@@ -2394,6 +2749,10 @@ if (gestures != null) {
             payload.put("completed", completed);
             payload.put("required", required);
             payload.put("percent", required > 0 ? Math.round((completed * 100.0) / required) : 0);
+            if (completedBytes >= 0) {
+                payload.put("completedBytes", completedBytes);
+                payload.put("completedMB", Math.round(completedBytes / 1048576.0 * 10.0) / 10.0);
+            }
             long now = System.currentTimeMillis();
             if (now - lastKeepCallbackOfflineMs >= CALLBACK_RATE_LIMIT_MS) {
                 lastKeepCallbackOfflineMs = now;

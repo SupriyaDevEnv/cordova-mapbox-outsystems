@@ -31,6 +31,13 @@ struct SecurityTests {
         precondition(!MapboxSecurity.offlineBounds(south: 0, west: 179, north: 0.01, east: -179, zoom: 10))
         precondition(!MapboxSecurity.offlineBounds(south: .nan, west: 0, north: 0.01, east: 0.01, zoom: 10))
         precondition(!MapboxSecurity.offlineBounds(south: 86, west: 0, north: 87, east: 0.01, zoom: 10))
+        precondition(MapboxSecurity.estimatedTileCount(south: -10, west: -10, north: 10, east: 10, minZoom: 0, maxZoom: 0) == 1)
+        precondition(MapboxSecurity.estimatedTileCount(south: -10, west: -10, north: 10, east: 10, minZoom: 1, maxZoom: 1) == 4)
+        precondition(MapboxSecurity.estimatedTileCount(south: 0.001, west: 0.001, north: 0.002, east: 0.002, minZoom: 0, maxZoom: 2) == 3)
+        precondition(MapboxSecurity.estimatedTileCount(south: -90, west: -180, north: 90, east: 180, minZoom: 2, maxZoom: 2) == 16)
+        precondition(MapboxSecurity.estimatedTileCount(south: 10, west: 0, north: 0, east: 1, minZoom: 0, maxZoom: 2) == -1)
+        precondition(MapboxSecurity.estimatedTileCount(south: 0, west: 0, north: 1, east: 1, minZoom: 5, maxZoom: 4) == -1)
+        precondition(MapboxSecurity.estimatedTileCount(south: .nan, west: 0, north: 1, east: 1, minZoom: 0, maxZoom: 2) == -1)
         print("iOS security policy tests passed")
     }
 }

@@ -71,4 +71,31 @@ enum MapboxSecurity {
         let rows = ceil(abs(mercator(north) - mercator(south)) * scale) + 2
         return columns * rows * 4 / 3 <= 50000
     }
+
+    // Tiles covering the box at every zoom from minZoom to maxZoom, for one tileset.
+    // Returns -1 for invalid input. Used for download-size estimates, not limits.
+    static func estimatedTileCount(south: Double, west: Double, north: Double, east: Double,
+                                   minZoom: Int, maxZoom: Int) -> Int64 {
+        guard [south, west, north, east].allSatisfy({ $0.isFinite }), south <= north, west <= east,
+              minZoom >= 0, maxZoom <= 22, minZoom <= maxZoom else { return -1 }
+        let rad = Double.pi / 180
+        func mercator(_ lat: Double) -> Double {
+            (1 - log(tan(lat * rad) + 1 / cos(lat * rad)) / Double.pi) / 2
+        }
+        func tileIndex(_ value: Double, _ n: Double) -> Int64 {
+            Int64(max(0, min(n - 1, floor(value))))
+        }
+        let top = mercator(min(north, 85.0511))
+        let bottom = mercator(max(south, -85.0511))
+        var total: Int64 = 0
+        for z in minZoom...maxZoom {
+            let n = pow(2, Double(z))
+            let x0 = tileIndex((west + 180) / 360 * n, n)
+            let x1 = tileIndex((east + 180) / 360 * n, n)
+            let y0 = tileIndex(top * n, n)
+            let y1 = tileIndex(bottom * n, n)
+            total += (x1 - x0 + 1) * (y1 - y0 + 1)
+        }
+        return total
+    }
 }
