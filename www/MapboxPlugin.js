@@ -6,7 +6,8 @@ function isCancellationError(error) {
   return !!(error && error.code === 'MAPBOX_OPERATION_CANCELLED') ||
     message === 'Map closed; operation cancelled.' ||
     message === 'Location request was cancelled.' ||
-    message === 'Location request superseded.';
+    message === 'Location request superseded.' ||
+    message === 'Offline download cancelled.';
 }
 function cancellationError(action, message) {
   var error = new Error(message || 'Map closed; operation cancelled.');
@@ -130,13 +131,38 @@ function utf8Length(text) {
   return unescape(encodeURIComponent(text)).length;
 }
 
+// Offline detail levels map to the highest zoom downloaded. Shared by both platforms.
+var OFFLINE_DETAIL_MAX_ZOOM = Object.freeze({ low: 13, medium: 15, high: 16 });
+var OFFLINE_AREA_ACTIONS = {
+  downloadOfflineRegion: true,
+  downloadOfflineRegionForRect: true,
+  estimateOfflineRegionSize: true,
+  estimateOfflineRegionSizeForRect: true
+};
+
+// Returns a copy with maxZoom set from `detail`; the caller's object is not modified.
+function applyOfflineDetail(options) {
+  if (options.detail == null) return options;
+  if (!Object.prototype.hasOwnProperty.call(OFFLINE_DETAIL_MAX_ZOOM, options.detail)) {
+    throw new Error("detail must be 'low', 'medium' or 'high'.");
+  }
+  if (options.maxZoom != null) throw new Error('Pass either detail or maxZoom, not both.');
+  var copy = {};
+  Object.keys(options).forEach(function (key) { copy[key] = options[key]; });
+  copy.maxZoom = OFFLINE_DETAIL_MAX_ZOOM[options.detail];
+  return copy;
+}
+
 function call(action, args) {
   return new Promise(function (resolve, reject) {
     try {
+      if (OFFLINE_AREA_ACTIONS[action] && args && args[0]) {
+        args = [applyOfflineDetail(args[0])].concat(args.slice(1));
+      }
       var json = JSON.stringify(args || []);
       if (utf8Length(json) > 4 * 1024 * 1024) throw new Error('Map input exceeds the 4 MiB limit.');
       var options = (args || [])[0] || {};
-      if (action === 'downloadOfflineRegion' || action === 'downloadOfflineRegionForRect') {
+      if (OFFLINE_AREA_ACTIONS[action]) {
         var minZoom = options.minZoom === undefined ? 10 : Number(options.minZoom);
         var maxZoom = options.maxZoom === undefined ? 16 : Number(options.maxZoom);
         if (!isFinite(minZoom) || !isFinite(maxZoom) || minZoom < 2 || maxZoom > 18 || minZoom > maxZoom) {
@@ -451,6 +477,28 @@ var api = {
   downloadOfflineRegionForRect: function (options) {
     return call('downloadOfflineRegionForRect', [options || {}]);
   },
+
+  estimateOfflineRegionSize: function (options) {
+    return call('estimateOfflineRegionSize', [options || {}]);
+  },
+
+  estimateOfflineRegionSizeForRect: function (options) {
+    return call('estimateOfflineRegionSizeForRect', [options || {}]);
+  },
+
+  getAvailableStorage: function () {
+    return call('getAvailableStorage', [{}]);
+  },
+
+  cancelOfflineDownload: function () {
+    return call('cancelOfflineDownload', [{}]);
+  },
+
+  getOfflineRegionIds: function () {
+    return call('getOfflineRegionIds', [{}]);
+  },
+
+  offlineDetailMaxZoom: OFFLINE_DETAIL_MAX_ZOOM,
 
   showOfflineRegion: function (options) {
     return call('showOfflineRegion', [options || {}]);

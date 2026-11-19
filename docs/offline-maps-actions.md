@@ -1,57 +1,44 @@
-# Offline maps: plugin actions to implement
+# Offline maps: plugin actions
 
-Plugin changes needed for the offline-maps design (Select area, Download options,
+Plugin changes for the offline-maps design (Select area, Download options,
 Offline confirmation, Update downloaded, Offline landing, Offline map view, Details).
 
 The list of downloaded maps is stored in the app database, not in the plugin.
-Each change below applies to Android (`src/android`), iOS (`src/ios`), the
-JavaScript wrapper (`www/MapboxPlugin.js`) and `README.md`.
+Each change applies to Android (`src/android`), iOS (`src/ios`), the JavaScript
+wrapper (`www/MapboxPlugin.js`) and `README.md`. See the README offline section
+for exact options and results.
 
-## Needed now
+## Status
 
-### 1. Return more from the download calls
-`downloadOfflineRegion` and `downloadOfflineRegionForRect` should resolve with:
-- `regionId`
-- size on disk in bytes (shown as "340 MB" in the lists)
-- downloaded area (bounds, plus polygon when one was used)
-- `minZoom` / `maxZoom` actually used
-- download date
+| # | Action | Status |
+|---|---|---|
+| 1 | Richer download results (`sizeBytes`, `bounds`, `polygon`, zooms, `styleUrl`, `downloadedAt`) | Done |
+| 2 | Download by area: `bounds` or GeoJSON `polygon` in `downloadOfflineRegion` | Done |
+| 3 | `estimateOfflineRegionSize` / `estimateOfflineRegionSizeForRect` | Done |
+| 4 | `getAvailableStorage` | Done |
+| 5 | `cancelOfflineDownload` | Done |
+| 6 | `getOfflineRegionIds` (with size and `complete` per region) | Done |
+| 7 | `detail: 'low' \| 'medium' \| 'high'` → `maxZoom` 13 / 15 / 16 | Done |
+| 8 | Progress with `completedBytes` / `completedMB` (`percent` already existed) | Done |
+| 9 | Lock `showOfflineRegion` to the downloaded region | Not planned for now |
+| 10 | Cache custom marker images with a download | Not started |
 
-The app saves these in its database row for the map.
+`downloadOfflineRegionForRect` gets the same richer result, `detail`, byte
+progress and cancel support, and has its own estimate call.
 
-### 2. Download by area
-`downloadOfflineRegion` accepts `bounds` (`south`, `west`, `north`, `east`) or a
-GeoJSON polygon, alongside the current centre + `radiusKm`.
-Needed for "Recommended maps" (known trail areas) and for "Update now", which
-re-downloads a saved map with the same `regionId` and area. Mapbox only fetches
-what changed.
+## Screen → plugin call
 
-### 3. `estimateOfflineRegionSize(options)`
-Takes the same area and zoom options as a download and returns an approximate
-size from the tile count. Feeds "Estimated download size" on Download options;
-can return Low / Medium / High in one call. Mapbox has no exact pre-download
-size, so this is an estimate.
-
-### 4. `getAvailableStorage()`
-Returns free space on the device in bytes (Android `StatFs`, iOS volume
-available capacity). Feeds "Available storage".
-
-### 5. `cancelOfflineDownload()`
-Cancels the current download without closing the map. The pending download
-rejects with the existing cancellation error (`MAPBOX_OPERATION_CANCELLED`).
-
-### 6. `getOfflineRegionIds()`
-Returns the `regionId`s actually stored on the device, so the app can remove
-database rows for maps that were cleared by the user or the OS.
-
-## Later
-
-7. **Detail-level preset**: `detail: 'low' | 'medium' | 'high'` mapped to `maxZoom`
-   inside the plugin, the same on both platforms.
-8. **Better progress events**: percentage and approximate MB downloaded.
-9. **Lock `showOfflineRegion` to the downloaded region**: limit camera centre and
-   zoom so users cannot pan to areas without offline tiles.
-10. **Marker images offline**: option to cache custom marker images with a download.
+- **Select area:** `estimateOfflineRegionSizeForRect`, then `downloadOfflineRegionForRect`.
+- **Download options:** `estimateOfflineRegionSize*` per detail level for
+  "Estimated download size"; `getAvailableStorage` for "Available storage".
+- **Recommended maps:** `downloadOfflineRegion` with the trail's `polygon` or `bounds`.
+- **Downloading:** `onOfflineDownloadProgress` for the progress bar;
+  `cancelOfflineDownload` for Cancel.
+- **Downloaded maps / offline landing:** list from the app database, cleaned with
+  `getOfflineRegionIds`.
+- **Update now:** `downloadOfflineRegion` with the stored `regionId`, `polygon`,
+  zooms and `styleUrl`.
+- **Delete:** `deleteOfflineRegion`, then remove the database row.
 
 ## App side (not plugin work)
 

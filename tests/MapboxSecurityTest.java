@@ -31,6 +31,13 @@ public class MapboxSecurityTest {
         check(!MapboxSecurity.offlineBounds(0, 179, .01, -179, 10));
         check(!MapboxSecurity.offlineBounds(Double.NaN, 0, .01, .01, 10));
         check(!MapboxSecurity.offlineBounds(86, 0, 87, .01, 10));
+        check(MapboxSecurity.estimatedTileCount(-10, -10, 10, 10, 0, 0) == 1);
+        check(MapboxSecurity.estimatedTileCount(-10, -10, 10, 10, 1, 1) == 4);
+        check(MapboxSecurity.estimatedTileCount(0.001, 0.001, 0.002, 0.002, 0, 2) == 3);
+        check(MapboxSecurity.estimatedTileCount(-90, -180, 90, 180, 2, 2) == 16);
+        check(MapboxSecurity.estimatedTileCount(10, 0, 0, 1, 0, 2) == -1);
+        check(MapboxSecurity.estimatedTileCount(0, 0, 1, 1, 5, 4) == -1);
+        check(MapboxSecurity.estimatedTileCount(Double.NaN, 0, 1, 1, 0, 2) == -1);
         System.out.println("Android security policy tests passed");
     }
 }

@@ -93,6 +93,12 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
   ```
 
   To update a map, call `downloadOfflineRegion` again with the stored `regionId`, `polygon`, zooms and `styleUrl`; Mapbox only fetches what changed.
+- **Detail levels:** pass `detail: 'low' | 'medium' | 'high'` to `downloadOfflineRegion`, `downloadOfflineRegionForRect` or either estimate call instead of `maxZoom`. They download up to zoom 13, 15 and 16 (`MapboxPlugin.offlineDetailMaxZoom`). Passing both `detail` and `maxZoom` is rejected. `minZoom` still defaults to 10.
+- **Size estimates:** `estimateOfflineRegionSize(options)` takes the same area options as `downloadOfflineRegion` (centre and `radiusKm`, `bounds` or `polygon`), and `estimateOfflineRegionSizeForRect(options)` the same rectangle as `downloadOfflineRegionForRect`. Both resolve with `{ tileCount, bytesPerTile, estimatedBytes, estimatedMB, minZoom, maxZoom, bounds, withinLimits }`. `withinLimits` is false when the matching download would be rejected (too large or too many tiles). The estimate counts tiles over the area's bounding box, so circles and polygons come out a little high. It assumes 50 KiB per tile; real sizes depend on the style and area, so pass `bytesPerTile` from your own downloads (`sizeBytes` divided by that area's `tileCount`) for better numbers. Call it once per detail level to show Low, Medium and High.
+- **Free storage:** `getAvailableStorage()` resolves with `{ availableBytes, totalBytes, availableGB }`. iOS reports the space available for important downloads, which includes space the system can free.
+- **Cancel:** `cancelOfflineDownload()` stops the current download without closing the map and resolves with `{ cancelled }` (false when nothing was downloading). The download's own promise rejects with a cancellation error (`error.code === 'MAPBOX_OPERATION_CANCELLED'`). Tiles already fetched stay in Mapbox's storage under that `regionId`; download it again to finish it, or delete it.
+- **Stored regions:** `getOfflineRegionIds()` resolves with `{ regionIds: [...], regions: [{ regionId, sizeBytes, complete }] }` for the maps actually on the device. Use it to remove database rows for maps that are gone; `complete: false` marks a download that stopped part-way.
+- **Progress:** `onOfflineDownloadProgress` events also include `completedBytes` and `completedMB` during the `style` and `tiles` phases, alongside `completed`, `required` and `percent`.
 - Style URLs and underlying SDK error details are no longer included in plugin diagnostic logs.
 
 ## Actions
@@ -125,6 +131,11 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `setPathVisibility(options)`
 - `downloadOfflineRegion(options)`
 - `downloadOfflineRegionForRect(options)`
+- `estimateOfflineRegionSize(options)`
+- `estimateOfflineRegionSizeForRect(options)`
+- `getAvailableStorage()`
+- `cancelOfflineDownload()`
+- `getOfflineRegionIds()`
 - `showOfflineRegion(options)`
 - `deleteOfflineRegion(options)`
 - `onOfflineDownloadProgress(callback, errorCallback)`

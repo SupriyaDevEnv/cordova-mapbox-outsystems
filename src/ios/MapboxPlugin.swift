@@ -21,6 +21,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
+    // Like runForGeneration, but also dropped once the download was cancelled or replaced.
+    private func runForDownload(_ generation: UInt64, _ downloadToken: UInt64, _ work: @escaping () -> Void) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.sessionGeneration == generation,
+                  self.offlineDownloadToken == downloadToken else { return }
+            work()
+        }
+    }
+
     private var sessionCallbacks: [String: Bool] = [:]
     private var streamCallbacks: [String: String] = [:]
     private var closeCallbackId: String?
@@ -113,6 +122,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var activeStylePackDownload: Cancelable?
     private var activeTileRegionDownload: Cancelable?
     private var isOfflineDownloading = false
+    // Incremented for each download and on cancel; stale download callbacks are ignored.
+    private var offlineDownloadToken: UInt64 = 0
+    private var activeDownloadCommand: CDVInvokedUrlCommand?
     private var waypointSelectionEnabled = false
     private var autoAddWaypointMarker = false
     private var cancelables = Set<AnyCancelable>()
@@ -1514,6 +1526,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             sendError("Invalid offline radius or region id.", command); return
         }
         let downloadGeneration = sessionGeneration
+        // A cancelled download's late Mapbox callbacks are ignored by token.
+        offlineDownloadToken &+= 1
+        let downloadToken = offlineDownloadToken
+        activeDownloadCommand = command
         let center = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
         let polygon = Polygon(center: center, radius: radiusKm * 1000, vertices: 64)
         let regionGeometry = geometry ?? polygon.geometry
@@ -1536,7 +1552,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         // Re-downloading an existing region always works. If the list cannot be read,
         // the download goes ahead.
         TileStore.default.allTileRegions { result in
-            self.runForGeneration(downloadGeneration) {
+            self.runForDownload(downloadGeneration, downloadToken) {
                 if case .success(let regions) = result,
                    regions.count >= self.maxOfflineRegions,
                    !regions.contains(where: { $0.id == regionId }) {
@@ -1546,6 +1562,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 }
                 self.beginOfflineDownload(
                     downloadGeneration: downloadGeneration,
+                    downloadToken: downloadToken,
                     regionId: regionId,
                     latitude: latitude,
                     longitude: longitude,
@@ -1564,6 +1581,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     private func beginOfflineDownload(
         downloadGeneration: UInt64,
+        downloadToken: UInt64,
         regionId: String,
         latitude: Double,
         longitude: Double,
@@ -1593,21 +1611,23 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             for: styleURI,
             loadOptions: stylePackOptions
         ) { progress in
-            self.runForGeneration(downloadGeneration) {
+            self.runForDownload(downloadGeneration, downloadToken) {
                 self.sendOfflineProgress(
                     phase: "style",
                     completed: UInt64(progress.completedResourceCount),
-                    required: UInt64(progress.requiredResourceCount)
+                    required: UInt64(progress.requiredResourceCount),
+                    completedBytes: Int64(progress.completedResourceSize)
                 )
             }
         } completion: { result in
-            self.runForGeneration(downloadGeneration) {
+            self.runForDownload(downloadGeneration, downloadToken) {
                 switch result {
                 case .success:
                     self.sendOfflineProgress(phase: "tiles-start", completed: 0, required: 100)
                     self.downloadOfflineTiles(
                         offlineManager: offlineManager,
                         downloadGeneration: downloadGeneration,
+                        downloadToken: downloadToken,
                         regionId: regionId,
                         latitude: latitude,
                         longitude: longitude,
@@ -1630,6 +1650,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private func downloadOfflineTiles(
         offlineManager: OfflineManager,
         downloadGeneration: UInt64,
+        downloadToken: UInt64,
         regionId: String,
         latitude: Double,
         longitude: Double,
@@ -1641,7 +1662,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         wifiOnly: Bool = false,
         command: CDVInvokedUrlCommand
     ) {
-        guard downloadGeneration == sessionGeneration else { return }
+        guard downloadGeneration == sessionGeneration, downloadToken == offlineDownloadToken else { return }
         let descriptorOptions = TilesetDescriptorOptions(
             styleURI: styleURI,
             zoomRange: minZoom...maxZoom,
@@ -1669,15 +1690,16 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             forId: regionId,
             loadOptions: loadOptions
         ) { progress in
-            self.runForGeneration(downloadGeneration) {
+            self.runForDownload(downloadGeneration, downloadToken) {
                 self.sendOfflineProgress(
                     phase: "tiles",
                     completed: UInt64(progress.completedResourceCount),
-                    required: UInt64(progress.requiredResourceCount)
+                    required: UInt64(progress.requiredResourceCount),
+                    completedBytes: Int64(progress.completedResourceSize)
                 )
             }
         } completion: { result in
-            self.runForGeneration(downloadGeneration) {
+            self.runForDownload(downloadGeneration, downloadToken) {
                 self.isOfflineDownloading = false
                 switch result {
                 case .success(let region):
@@ -1694,6 +1716,186 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                     ), command)
                 case .failure(let error):
                     self.sendError(self.sanitizeError(contextMessage: "Failed to download tile region.", error: error), command)
+                }
+            }
+        }
+    }
+
+    // Default when the app has no measured value; real sizes vary a lot by style and area.
+    private let defaultBytesPerTile: Double = 50 * 1024
+    private let maxBytesPerTile: Double = 10 * 1024 * 1024
+
+    /// Approximate download size for the same options as downloadOfflineRegion
+    /// (centre + radiusKm, bounds or polygon). Counts tiles over the area's bounding box,
+    /// so circles and polygons are over-estimated.
+    @objc(estimateOfflineRegionSize:)
+    func estimateOfflineRegionSize(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
+            let area: Polygon
+            do {
+                if let given = try self.offlineAreaPolygon(options) {
+                    area = given
+                } else {
+                    let latitude = self.doubleOption(options["latitude"], defaultValue: 0)
+                    let longitude = self.doubleOption(options["longitude"], defaultValue: 0)
+                    let radiusKm = self.doubleOption(options["radiusKm"], defaultValue: 10)
+                    guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
+                        self.sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
+                        return
+                    }
+                    guard radiusKm.isFinite, radiusKm >= 0, radiusKm <= self.maxOfflineRadiusKm else {
+                        self.sendError("Invalid offline radius.", command)
+                        return
+                    }
+                    area = Polygon(
+                        center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+                        radius: radiusKm * 1000.0,
+                        vertices: 64
+                    )
+                }
+            } catch let error as OfflineAreaError {
+                self.sendError(error.message, command)
+                return
+            } catch {
+                self.sendError("Invalid offline area.", command)
+                return
+            }
+            self.sendOfflineEstimate(area: area, options: options, command: command)
+        }
+    }
+
+    /// Same as estimateOfflineRegionSize for the on-screen rectangle used by
+    /// downloadOfflineRegionForRect (native pixels, like the download).
+    @objc(estimateOfflineRegionSizeForRect:)
+    func estimateOfflineRegionSizeForRect(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let mapView = self.mapView else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
+            let nativeX = self.doubleOption(options["x"], defaultValue: 0)
+            let nativeY = self.doubleOption(options["y"], defaultValue: 0)
+            let nativeWidth = self.doubleOption(options["width"], defaultValue: 1)
+            let nativeHeight = self.doubleOption(options["height"], defaultValue: 1)
+            guard [nativeX, nativeY, nativeWidth, nativeHeight].allSatisfy({
+                $0.isFinite && abs($0) <= 1000000
+            }), nativeWidth > 0, nativeHeight > 0 else {
+                self.sendError("Invalid offline rectangle.", command); return
+            }
+            let scale = Double(UIScreen.main.scale)
+            let x = nativeX / scale
+            let y = nativeY / scale
+            let width = nativeWidth / scale
+            let height = nativeHeight / scale
+            let topLeft = mapView.mapboxMap.coordinate(for: CGPoint(x: x, y: y))
+            let topRight = mapView.mapboxMap.coordinate(for: CGPoint(x: x + width, y: y))
+            let bottomRight = mapView.mapboxMap.coordinate(for: CGPoint(x: x + width, y: y + height))
+            let bottomLeft = mapView.mapboxMap.coordinate(for: CGPoint(x: x, y: y + height))
+            let area = Polygon([[topLeft, topRight, bottomRight, bottomLeft, topLeft]])
+            self.sendOfflineEstimate(area: area, options: options, command: command)
+        }
+    }
+
+    private func sendOfflineEstimate(area: Polygon, options: [String: Any], command: CDVInvokedUrlCommand) {
+        guard let minZoom = MapboxSecurity.zoom(doubleOption(options["minZoom"], defaultValue: 10)),
+              let maxZoom = MapboxSecurity.zoom(doubleOption(options["maxZoom"], defaultValue: 16)), minZoom <= maxZoom else {
+            sendError("Offline zoom must be between 2 and 18 with minZoom <= maxZoom.", command); return
+        }
+        let bytesPerTile = doubleOption(options["bytesPerTile"], defaultValue: defaultBytesPerTile)
+        guard bytesPerTile > 0, bytesPerTile <= maxBytesPerTile else {
+            sendError("bytesPerTile must be a positive number up to 10 MiB.", command); return
+        }
+        let box = polygonBounds(area)
+        let tileCount = MapboxSecurity.estimatedTileCount(
+            south: box.south, west: box.west, north: box.north, east: box.east,
+            minZoom: Int(minZoom), maxZoom: Int(maxZoom)
+        )
+        let estimatedBytes = Int64((Double(tileCount) * bytesPerTile).rounded())
+        sendSuccess([
+            "tileCount": NSNumber(value: tileCount),
+            "bytesPerTile": bytesPerTile,
+            "estimatedBytes": NSNumber(value: estimatedBytes),
+            "estimatedMB": (Double(estimatedBytes) / 1048576.0 * 10).rounded() / 10,
+            "minZoom": Int(minZoom),
+            "maxZoom": Int(maxZoom),
+            "bounds": [
+                "south": box.south,
+                "west": box.west,
+                "north": box.north,
+                "east": box.east
+            ],
+            // false when the same request would be rejected by the download limits.
+            "withinLimits": MapboxSecurity.offlineBounds(
+                south: box.south, west: box.west, north: box.north, east: box.east, zoom: Double(maxZoom)
+            )
+        ], command)
+    }
+
+    @objc(getAvailableStorage:)
+    func getAvailableStorage(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        do {
+            let values = try URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [
+                .volumeAvailableCapacityForImportantUsageKey,
+                .volumeTotalCapacityKey
+            ])
+            let available = values.volumeAvailableCapacityForImportantUsage ?? 0
+            sendSuccess([
+                "availableBytes": NSNumber(value: available),
+                "totalBytes": NSNumber(value: values.volumeTotalCapacity ?? 0),
+                "availableGB": (Double(available) / 1073741824.0 * 100).rounded() / 100
+            ], command)
+        } catch {
+            sendError(sanitizeError(contextMessage: "Failed to read available storage.", error: error), command)
+        }
+    }
+
+    @objc(cancelOfflineDownload:)
+    func cancelOfflineDownload(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            let wasDownloading = self.isOfflineDownloading
+            if wasDownloading {
+                self.offlineDownloadToken &+= 1
+                self.cancelCurrentDownload()
+                self.isOfflineDownloading = false
+                if let pending = self.activeDownloadCommand {
+                    // JS turns this message into a MAPBOX_OPERATION_CANCELLED error.
+                    self.sendError("Offline download cancelled.", pending)
+                }
+            }
+            self.activeDownloadCommand = nil
+            self.sendSuccess(["cancelled": wasDownloading], command)
+        }
+    }
+
+    @objc(getOfflineRegionIds:)
+    func getOfflineRegionIds(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        TileStore.default.allTileRegions { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let regions):
+                    self.sendSuccess([
+                        "regionIds": regions.map { $0.id },
+                        "regions": regions.map { region -> [String: Any] in
+                            [
+                                "regionId": region.id,
+                                "sizeBytes": NSNumber(value: region.completedResourceSize),
+                                // false for a download that stopped part-way.
+                                "complete": region.requiredResourceCount > 0
+                                    && region.completedResourceCount >= region.requiredResourceCount
+                            ]
+                        }
+                    ], command)
+                case .failure(let error):
+                    self.sendError(self.sanitizeError(contextMessage: "Failed to read offline regions.", error: error), command)
                 }
             }
         }
@@ -2019,18 +2221,24 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         ])
     }
 
-    private func sendOfflineProgress(phase: String, completed: UInt64, required: UInt64) {
+    /// completedBytes is -1 when unknown (start/setup phases).
+    private func sendOfflineProgress(phase: String, completed: UInt64, required: UInt64, completedBytes: Int64 = -1) {
         let percent = required > 0 ? Int(round((Double(completed) * 100.0) / Double(required))) : 0
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastKeepCallbackOfflineTs >= callbackRateLimit else { return }
         lastKeepCallbackOfflineTs = now
-        sendKeepCallback(offlineDownloadProgressCallbackId, payload: [
+        var payload: [String: Any] = [
             "type": "offlineDownloadProgress",
             "phase": phase,
             "completed": completed,
             "required": required,
             "percent": percent
-        ])
+        ]
+        if completedBytes >= 0 {
+            payload["completedBytes"] = NSNumber(value: completedBytes)
+            payload["completedMB"] = (Double(completedBytes) / 1048576.0 * 10).rounded() / 10
+        }
+        sendKeepCallback(offlineDownloadProgressCallbackId, payload: payload)
     }
 
     private func installMapTapHandler(on mapView: MapView) {

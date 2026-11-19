@@ -77,6 +77,29 @@ final class MapboxSecurity {
         return columns * rows * 4 / 3 <= MAX_TILES;
     }
 
+    // Tiles covering the box at every zoom from minZoom to maxZoom, for one tileset.
+    // Returns -1 for invalid input. Used for download-size estimates, not limits.
+    static long estimatedTileCount(double south, double west, double north, double east, int minZoom, int maxZoom) {
+        if (!Double.isFinite(south) || !Double.isFinite(west) || !Double.isFinite(north) || !Double.isFinite(east)
+                || south > north || west > east || minZoom < 0 || maxZoom > 22 || minZoom > maxZoom) return -1;
+        double top = mercator(Math.min(north, 85.0511));
+        double bottom = mercator(Math.max(south, -85.0511));
+        long total = 0;
+        for (int z = minZoom; z <= maxZoom; z++) {
+            long n = 1L << z;
+            long x0 = tileIndex((west + 180) / 360 * n, n);
+            long x1 = tileIndex((east + 180) / 360 * n, n);
+            long y0 = tileIndex(top * n, n);
+            long y1 = tileIndex(bottom * n, n);
+            total += (x1 - x0 + 1) * (y1 - y0 + 1);
+        }
+        return total;
+    }
+
+    private static long tileIndex(double value, long n) {
+        return (long) Math.max(0, Math.min(n - 1, Math.floor(value)));
+    }
+
     private static double mercator(double lat) {
         double rad = Math.toRadians(lat);
         return (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2;
