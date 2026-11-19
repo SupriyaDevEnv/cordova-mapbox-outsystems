@@ -10,6 +10,14 @@
 - **New:** `getOfflineRegionIds` lists the regions stored on the device, with size and whether each finished.
 - **New:** `detail: 'low' | 'medium' | 'high'` sets the download zoom (13, 15 or 16) for downloads and estimates.
 - **New:** offline progress events include `completedBytes` and `completedMB`.
+- **Fixed (iOS):** location actions now resume after the permission prompt (the authorization callback is exposed to Objective-C).
+- **Fixed (Android):** closing the map now resets boundary-drawing state.
+- **Fixed:** offline download progress no longer drops phase changes because of the rate limit.
+- **Build:** `plugin.xml` no longer declares an ineffective `deployment-target` preference; set it in the app's `config.xml`.
+- **Build:** new `PLAY_SERVICES_LOCATION_VERSION` variable (default `21.0.1`) overrides the Android `play-services-location` version. The Gradle fallback for `MAPBOX_ANDROID_ABIS` now matches the `plugin.xml` default (`arm64-v8a,armeabi-v7a`) instead of keeping every ABI, and the unused `buildscript` repositories block was removed.
+- **Changed:** the default `LOCATION_USAGE_DESCRIPTION` is now generic: "This app uses your location to show your position on the map."
+- **Internal:** removed unused native code, debug logging and unused JavaScript exports; `package.json` lists the repository, homepage, issue tracker and Node 18+.
+- **Docs:** README lists every action, has its own Offline maps section, a shorter Path Tracking summary (details in `docs/path-tracking-api.md`) and correct path line-width limits; `docs/testing.md` lists the Python tests; the internal offline planning doc was removed.
 
 ## 1.0.10
 

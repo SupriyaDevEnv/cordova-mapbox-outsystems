@@ -52,15 +52,12 @@ class MapboxPluginParity: MapboxPlugin {
         rememberCommand(command)
         locationAccuracyCallbackId = command.callbackId
         lastLocationAccuracyUpdate = 0
-
-        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
-        result?.setKeepCallbackAs(true)
-        commandDelegate.send(result, callbackId: command.callbackId)
+        sendNoResultKeepCallback(command)
 
         runForSession {
             self.ensureAccuracyLocationManager()
 
-            if CLLocationManager.authorizationStatus() == .notDetermined {
+            if self.accuracyLocationManager?.authorizationStatus == .notDetermined {
                 self.accuracyLocationManager?.requestWhenInUseAuthorization()
             }
 
@@ -72,8 +69,8 @@ class MapboxPluginParity: MapboxPlugin {
     func getCurrentLocationAccuracy(command: CDVInvokedUrlCommand) {
         rememberCommand(command)
         runForSession {
-            guard CLLocationManager.authorizationStatus() == .authorizedWhenInUse
-                    || CLLocationManager.authorizationStatus() == .authorizedAlways else {
+            let authorization = self.locationAuthorizationStatus()
+            guard authorization == .authorizedWhenInUse || authorization == .authorizedAlways else {
                 self.sendAccuracyResult(accuracy: -1, label: "Unknown", command: command)
                 return
             }
@@ -133,7 +130,7 @@ class MapboxPluginParity: MapboxPlugin {
                 return
             }
 
-            let authorization = CLLocationManager.authorizationStatus()
+            let authorization = self.locationAuthorizationStatus()
             if authorization == .denied || authorization == .restricted {
                 self.sendError("Location permission is not granted.", command)
                 return
@@ -340,8 +337,8 @@ class MapboxPluginParity: MapboxPlugin {
             sendError(notInitialized, command)
             return nil
         }
-        // A style that has not finished loading reports no layers. (isStyleLoaded is
-        // deliberately avoided: it was removed from this file in the Nov 13 iOS build fix.)
+        // A style that has not finished loading reports no layers. isStyleLoaded is
+        // deliberately avoided here: using it broke the iOS build with this Mapbox SDK.
         guard !mapView.mapboxMap.allLayerIdentifiers.isEmpty else {
             sendError(notLoaded, command)
             return nil
@@ -487,9 +484,7 @@ class MapboxPluginParity: MapboxPlugin {
         }
 
         let coordinate = location.coordinate
-        guard coordinate.latitude.isFinite, coordinate.longitude.isFinite,
-              coordinate.latitude >= -90, coordinate.latitude <= 90,
-              coordinate.longitude >= -180, coordinate.longitude <= 180 else {
+        guard isValidLatitude(coordinate.latitude), isValidLongitude(coordinate.longitude) else {
             stopMoveLocationUpdates()
             sendError(
                 "Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].",
@@ -512,18 +507,14 @@ class MapboxPluginParity: MapboxPlugin {
                 self.runRecenterAnimation(to: CameraOptions(center: coordinate, zoom: zoom.map { CGFloat($0) }))
             }
 
-            let accuracy = location.horizontalAccuracy >= 0 ? location.horizontalAccuracy : -1
-            let result = CDVPluginResult(
-                status: CDVCommandStatus_OK,
-                messageAs: [
-                    "latitude": coordinate.latitude,
-                    "longitude": coordinate.longitude,
-                    "accuracy": accuracy,
-                    "accuracyLabel": self.accuracyLabel(for: accuracy)
-                ]
-            )
-            self.forgetCallback(callbackId)
-            self.commandDelegate.send(result, callbackId: callbackId)
+            // The fix was accepted above only with horizontalAccuracy >= 0.
+            let accuracy = location.horizontalAccuracy
+            self.sendSuccess([
+                "latitude": coordinate.latitude,
+                "longitude": coordinate.longitude,
+                "accuracy": accuracy,
+                "accuracyLabel": self.accuracyLabel(for: accuracy)
+            ], callbackId: callbackId)
         }
     }
 
@@ -547,9 +538,7 @@ class MapboxPluginParity: MapboxPlugin {
             "timestamp": Int(Date().timeIntervalSince1970 * 1000)
         ]
 
-        let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: payload)
-        result?.setKeepCallbackAs(true)
-        commandDelegate.send(result, callbackId: callbackId)
+        sendKeepCallback(callbackId, payload: payload)
     }
 
     private func sendAccuracyResult(
@@ -557,15 +546,12 @@ class MapboxPluginParity: MapboxPlugin {
         label: String,
         command: CDVInvokedUrlCommand
     ) {
-        let result = CDVPluginResult(
-            status: CDVCommandStatus_OK,
-            messageAs: [
-                "accuracy": accuracy,
-                "accuracyLabel": label
-            ]
-        )
-        forgetCallback(command.callbackId)
-        commandDelegate.send(result, callbackId: command.callbackId)
+        sendSuccess(["accuracy": accuracy, "accuracyLabel": label], command)
+    }
+
+    /// Location authorization is app-wide, so any manager instance reports it.
+    private func locationAuthorizationStatus() -> CLAuthorizationStatus {
+        (accuracyLocationManager ?? moveLocationManager ?? CLLocationManager()).authorizationStatus
     }
 
     private func accuracyLabel(for accuracy: CLLocationAccuracy) -> String {

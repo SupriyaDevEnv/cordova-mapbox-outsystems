@@ -21,12 +21,15 @@
     <!-- Mapbox Android SDK artifact. Must be an exact version; use 11.x unless your project needs another. -->
     <preference name="MAPBOX_ANDROID_VERSION" default="11.30.0" />
 
+    <!-- Google Play services location artifact. Must be an exact version. -->
+    <preference name="PLAY_SERVICES_LOCATION_VERSION" default="21.0.1" />
+
     <!-- Comma-separated Android CPU architectures to package. This filter applies to every native
          library in the app. Use "all" to keep every ABI, for example for x86_64 Chromebooks or emulators. -->
     <preference name="MAPBOX_ANDROID_ABIS" default="arm64-v8a,armeabi-v7a" />
 
     <!-- iOS location permission prompt (NSLocationWhenInUseUsageDescription). Name your own app here. -->
-    <preference name="LOCATION_USAGE_DESCRIPTION" default="Realm Mapping uses your location to show your position on the map." />
+    <preference name="LOCATION_USAGE_DESCRIPTION" default="This app uses your location to show your position on the map." />
 
     <hook type="after_prepare" src="hooks/verify-runtime-token.js" />
     <preference name="MAPBOX_ALLOWED_STYLE_HOSTS" default="api.mapbox.com" />
@@ -39,14 +42,13 @@
                 <param name="android-package" value="com.outsystems.mapbox.MapboxPluginPermissionEntry" />
                 <param name="onload" value="true" />
             </feature>
-        </config-file>
-        <config-file parent="/*" target="res/xml/config.xml">
             <preference name="MAPBOX_ACCESS_TOKEN" value="$MAPBOX_ACCESS_TOKEN" />
             <preference name="MAPBOX_ALLOWED_STYLE_HOSTS" value="$MAPBOX_ALLOWED_STYLE_HOSTS" />
             <preference name="MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" value="$MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" />
             <!-- Read by mapbox-plugin.gradle at build time. -->
             <preference name="MAPBOX_ANDROID_VERSION" value="$MAPBOX_ANDROID_VERSION" />
             <preference name="MAPBOX_ANDROID_ABIS" value="$MAPBOX_ANDROID_ABIS" />
+            <preference name="PLAY_SERVICES_LOCATION_VERSION" value="$PLAY_SERVICES_LOCATION_VERSION" />
         </config-file>
 
         <config-file parent="/manifest" target="AndroidManifest.xml">
@@ -69,9 +71,6 @@
                 <param name="ios-package" value="MapboxPluginPermissionParity" />
                 <param name="onload" value="true" />
             </feature>
-        </config-file>
-
-        <config-file parent="/*" target="config.xml">
             <preference name="MAPBOX_ACCESS_TOKEN" value="$MAPBOX_ACCESS_TOKEN" />
             <preference name="MAPBOX_ALLOWED_STYLE_HOSTS" value="$MAPBOX_ALLOWED_STYLE_HOSTS" />
             <preference name="MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" value="$MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS" />
@@ -81,7 +80,6 @@
             <string>$LOCATION_USAGE_DESCRIPTION</string>
         </config-file>
 
-        <preference name="deployment-target" default="14.0" />
         <podspec>
             <pods use-frameworks="true">
                 <pod name="MapboxMaps" spec="11.30.0" />

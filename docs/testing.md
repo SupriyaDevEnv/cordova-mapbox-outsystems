@@ -4,7 +4,29 @@ These checks complement the automated tests. Run them on physical Android and iO
 
 ## Automated tests
 
-From a development Git checkout, run `npm test` for the bridge and build-hook regressions. The `Native security regression tests` workflow also compiles/runs the Java and Swift input policy, executes the actual iOS empty-path method with a minimal host, and parses the iOS plugin sources. These checks do not replace device testing or a build of your consuming OutSystems application with its exact Cordova and Mapbox dependencies.
+From a development Git checkout, run `npm test` (`node --test tests/*.test.cjs`) for the JavaScript bridge, touch-routing and source-parity regressions.
+
+The `Native security regression tests` workflow (`.github/workflows/security-tests.yml`) runs on every pull request and push to `main` on a macOS runner with Node 22, Java 17 and Swift. After `npm test` it runs each Python test as its own step with `python3 tests/<name>.py`. These tests extract the production Java/Swift code from `src/` and compile it against a minimal host with `javac` and/or `swiftc`, so no Mapbox SDK or device is needed:
+
+| Test | Checks |
+|---|---|
+| `test-style-readiness.py` | Style readiness gates: failures, timeouts and cancellation |
+| `test-marker-density.py` | Android pin size and cache across screen densities |
+| `test-webview-transparency.py` | Behind-WebView transparency and appearance restoration |
+| `test-initialize-zoom.py` | `minZoom` / `maxZoom` parsing on both platforms |
+| `check-package.py` | The `git archive` ZIP and `npm pack` tarball contain exactly the build inputs |
+| `test-empty-path.py` | Stopping an empty iOS path recording |
+| `test-session-guards.py` | Callbacks from an old map session are dropped on both platforms |
+| `test-teardown.py` | Delayed native marker taps and cleanup failures |
+| `test-ios-touch-routing.py` | iOS touch coordinates and map boundaries |
+| `test-ios-camera-follow.py` | iOS camera follow during manual gestures |
+| `test-recenter-location.py` | Android recenter location age and accuracy |
+| `test-shared-location.py` | Shared location waiting and cancellation |
+| `test-android-camera-recenter.py` | Android recenter against the camera follow ticker |
+
+The workflow also compiles and runs the Java and Swift input policies (`tests/MapboxSecurityTest.java`, `tests/security-main.swift`), parses every iOS source with `swiftc -frontend -parse`, and builds clean Cordova Android and iOS apps with the plugin.
+
+To run a Python test locally, run it from the repository root, for example `python3 tests/test-teardown.py`. The native tests need `javac`, and those that cover iOS need `swiftc` (macOS). `check-package.py` archives the committed `HEAD`, so commit first. These checks do not replace device testing or a build of your consuming OutSystems application with its exact Cordova and Mapbox dependencies.
 
 ## Style loading
 

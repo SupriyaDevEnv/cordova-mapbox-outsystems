@@ -1,5 +1,4 @@
 import Foundation
-import CoreFoundation
 import Security
 import CoreLocation
 import UIKit
@@ -79,7 +78,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var boundaryDrawingPointAnnotations: [CircleAnnotation] = []
     private var boundaryDrawingPolygonAnnotationManager: PolygonAnnotationManager?
     private var boundaryDrawingPolygon: PolygonAnnotation?
-    private var completedBoundaryDrawingPolygons: [PolygonAnnotation] = []
     private var lineAnnotationManager: PolylineAnnotationManager?
     private var pathAnnotations: [PolylineAnnotation] = []
     private var currentSegmentAnnotation: PolylineAnnotation?
@@ -131,6 +129,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var trackingStatusCallbackId: String?
     private var lastUserTrackingUpdate: TimeInterval = 0
     private var lastKeepCallbackOfflineTs: TimeInterval = 0
+    // Phase changes are always sent; only repeats of the same phase are rate limited.
+    private var lastOfflineProgressPhase: String?
     private var lastKeepCallbackWaypointTs: TimeInterval = 0
     private var lastKeepCallbackMarkerTs: TimeInterval = 0
     private var lastKeepCallbackMapTapTs: TimeInterval = 0
@@ -141,8 +141,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private let maxOfflineRadiusKm: Double = 50.0
     // Stored offline regions; each is already limited to about 50,000 tiles.
     private let maxOfflineRegions = 20
-    private let minOfflineZoom: UInt8 = 2
-    private let maxOfflineZoom: UInt8 = 18
     // Total vertices accepted in a downloadOfflineRegion polygon (all rings).
     private let maxOfflinePolygonPoints = 1000
     private var boundaryVisible = true
@@ -202,10 +200,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let latitude = self.doubleOption(options["latitude"], defaultValue: 0)
             let longitude = self.doubleOption(options["longitude"], defaultValue: 0)
 
-            guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
-                self.sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
-                return
-            }
+            guard self.validCoordinates(latitude, longitude, command) else { return }
 
             let zoom = self.doubleOption(options["zoom"], defaultValue: 12)
             let bearing = self.doubleOption(options["bearing"], defaultValue: 0)
@@ -330,10 +325,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         let latitude = doubleOption(options["latitude"], defaultValue: mapView.cameraState.center.latitude)
         let longitude = doubleOption(options["longitude"], defaultValue: mapView.cameraState.center.longitude)
 
-        guard isValidLatitude(latitude), isValidLongitude(longitude) else {
-            sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
-            return nil
-        }
+        guard validCoordinates(latitude, longitude, command) else { return nil }
 
         let zoom = doubleOption(options["zoom"], defaultValue: mapView.cameraState.zoom)
         let bearing = doubleOption(options["bearing"], defaultValue: mapView.cameraState.bearing)
@@ -612,7 +604,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             headingLocationManager = manager
         }
 
-        if CLLocationManager.authorizationStatus() == .notDetermined {
+        if headingLocationManager?.authorizationStatus == .notDetermined {
             headingLocationManager?.requestWhenInUseAuthorization()
         }
     }
@@ -694,6 +686,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         return true
     }
 
+    // Declared here, on the class that adopts CLLocationManagerDelegate, so the Objective-C
+    // runtime sees it; subclasses override it (an optional requirement implemented only in a
+    // subclass without @objc is never called).
+    @objc func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {}
+
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         // Tracking keeps running after a transient failure; one-shot location requests are
         // answered by MapboxPluginParity, which overrides this method.
@@ -733,10 +730,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let latitude = self.doubleOption(options["latitude"], defaultValue: 0)
             let longitude = self.doubleOption(options["longitude"], defaultValue: 0)
 
-            guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
-                self.sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
-                return
-            }
+            guard self.validCoordinates(latitude, longitude, command) else { return }
 
             guard self.markers[id] != nil || self.markers.count < self.maxMarkers,
                   id.utf8.count <= 256 else { self.sendError("Marker/id limit exceeded.", command); return }
@@ -942,10 +936,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 "areaAcres": self.calculateBoundaryAreaAcres(self.boundaryDrawingPoints)
             ]
 
-            if let polygon = self.boundaryDrawingPolygon {
-                self.completedBoundaryDrawingPolygons.append(polygon)
-                self.boundaryDrawingPolygon = nil
-            }
+            // The finished polygon stays on the drawing manager; forget it so the next
+            // drawing does not remove it.
+            self.boundaryDrawingPolygon = nil
             self.removeActiveBoundaryDrawingLine()
             self.removeActiveBoundaryDrawingPointAnnotations()
             self.boundaryDrawingPoints.removeAll()
@@ -972,14 +965,18 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         return lineAnnotationManager != nil
     }
 
+    /// Removes every drawn path line, finished and live.
+    private func removePathAnnotations() {
+        lineAnnotationManager?.annotations.removeAll()
+        pathAnnotations.removeAll()
+        currentSegmentAnnotation = nil
+    }
+
     /// Draws one polyline per finished segment. A segment needs two points to be a line.
     private func drawSegmentAnnotations() {
         guard ensureLineAnnotationManager() else { return }
         for segment in pathSegments where segment.count >= 2 {
-            var annotation = PolylineAnnotation(lineCoordinates: segment)
-            annotation.lineColor = StyleColor(colorOption(pathLineColor, defaultColor: .red))
-            annotation.lineWidth = pathLineWidth
-            annotation.lineOpacity = pathLineOpacity
+            let annotation = pathLine(segment)
             pathAnnotations.append(annotation)
             lineAnnotationManager?.annotations.append(annotation)
         }
@@ -1100,17 +1097,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             // Moving time: wall-clock time minus every pause.
             let duration = max(0, now - self.pathTrackingStartTime - self.pathPausedTotal)
 
-            // Freeze current segment annotation into the permanent list
-            if let ann = self.currentSegmentAnnotation {
-                self.pathAnnotations.append(ann)
-                self.currentSegmentAnnotation = nil
-            }
-
-            // Finish current segment if it has points
-            if !self.currentSegment.isEmpty {
-                self.pathSegments.append(self.currentSegment)
-                self.currentSegment.removeAll()
-            }
+            self.finishCurrentSegment()
 
             // Measured inside each segment so the jump across a pause adds nothing.
             var totalDistance: Double = 0
@@ -1145,6 +1132,19 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
+    /// Keeps the live line as a finished annotation and closes the open segment.
+    /// Declared between stopPathTracking and pausePathTracking (tests compile that slice).
+    private func finishCurrentSegment() {
+        if let annotation = currentSegmentAnnotation {
+            pathAnnotations.append(annotation)
+            currentSegmentAnnotation = nil
+        }
+        if !currentSegment.isEmpty {
+            pathSegments.append(currentSegment)
+            currentSegment.removeAll()
+        }
+    }
+
     @objc(pausePathTracking:)
     func pausePathTracking(command: CDVInvokedUrlCommand) {
         rememberCommand(command)
@@ -1162,17 +1162,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.isPathTrackingPaused = true
             self.pathPauseStart = Date().timeIntervalSince1970
 
-            // Freeze current segment annotation into the permanent list
-            if let ann = self.currentSegmentAnnotation {
-                self.pathAnnotations.append(ann)
-                self.currentSegmentAnnotation = nil
-            }
-
-            // Finish current segment
-            if !self.currentSegment.isEmpty {
-                self.pathSegments.append(self.currentSegment)
-                self.currentSegment.removeAll()
-            }
+            self.finishCurrentSegment()
 
             self.sendSuccess([
                 "status": "paused",
@@ -1246,7 +1236,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             for (index, pointDict) in pointsArray.enumerated() {
                 let lat = self.doubleOption(pointDict["lat"] ?? pointDict["latitude"], defaultValue: Double.nan)
                 let lon = self.doubleOption(pointDict["lon"] ?? pointDict["lng"] ?? pointDict["longitude"], defaultValue: Double.nan)
-                guard lat.isFinite, lon.isFinite, self.isValidLatitude(lat), self.isValidLongitude(lon) else { continue }
+                guard self.isValidLatitude(lat), self.isValidLongitude(lon) else { continue }
                 validPoints.append(CLLocationCoordinate2D(latitude: lat, longitude: lon))
                 validIndexes.append(index)
             }
@@ -1285,9 +1275,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
 
             // Clear any existing path annotations
-            self.lineAnnotationManager?.annotations.removeAll()
-            self.pathAnnotations.removeAll()
-            self.currentSegmentAnnotation = nil
+            self.removePathAnnotations()
 
             self.drawSegmentAnnotations()
 
@@ -1303,9 +1291,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     func clearPaths(command: CDVInvokedUrlCommand) {
         rememberCommand(command)
         runForSession {
-            self.lineAnnotationManager?.annotations.removeAll()
-            self.pathAnnotations.removeAll()
-            self.currentSegmentAnnotation = nil
+            self.removePathAnnotations()
             self.pathPoints.removeAll()
             // Segment indices returned by stopPathTracking must match the points.
             self.pathSegments.removeAll()
@@ -1332,9 +1318,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             if !visible {
                 // Hide: remove all annotations from map
-                self.lineAnnotationManager?.annotations.removeAll()
-                self.pathAnnotations.removeAll()
-                self.currentSegmentAnnotation = nil
+                self.removePathAnnotations()
             } else {
                 // Show: bring back the finished segments (only if they were hidden, so a
                 // repeated call does not stack duplicates), then the live segment.
@@ -1383,10 +1367,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 longitude = (box.west + box.east) / 2
             }
 
-            guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
-                self.sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
-                return
-            }
+            guard self.validCoordinates(latitude, longitude, command) else { return }
 
             let radiusKm = area != nil ? 0 : self.doubleOption(options["radiusKm"], defaultValue: 10)
             guard let minZoom = MapboxSecurity.zoom(self.doubleOption(options["minZoom"], defaultValue: 10)),
@@ -1437,20 +1418,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let nativeX = self.doubleOption(options["x"], defaultValue: 0)
-            let nativeY = self.doubleOption(options["y"], defaultValue: 0)
-            let nativeWidth = self.doubleOption(options["width"], defaultValue: 1)
-            let nativeHeight = self.doubleOption(options["height"], defaultValue: 1)
-            guard [nativeX, nativeY, nativeWidth, nativeHeight].allSatisfy({
-                $0.isFinite && abs($0) <= 1000000
-            }), nativeWidth > 0, nativeHeight > 0 else {
-                self.sendError("Invalid offline rectangle.", command); return
-            }
-            let scale = Double(UIScreen.main.scale)
-            let x = nativeX / scale
-            let y = nativeY / scale
-            let width = nativeWidth / scale
-            let height = nativeHeight / scale
+            guard let rect = self.offlineRectArea(options, mapView: mapView, command) else { return }
             guard let minZoom = MapboxSecurity.zoom(self.doubleOption(options["minZoom"], defaultValue: 10)),
                   let maxZoom = MapboxSecurity.zoom(self.doubleOption(options["maxZoom"], defaultValue: 16)), minZoom <= maxZoom else {
                 self.sendError("Offline zoom must be between 2 and 18 with minZoom <= maxZoom.", command); return
@@ -1467,33 +1435,48 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
 
-            let topLeft = mapView.mapboxMap.coordinate(for: CGPoint(x: x, y: y))
-            let topRight = mapView.mapboxMap.coordinate(for: CGPoint(x: x + width, y: y))
-            let bottomRight = mapView.mapboxMap.coordinate(for: CGPoint(x: x + width, y: y + height))
-            let bottomLeft = mapView.mapboxMap.coordinate(for: CGPoint(x: x, y: y + height))
-            let center = mapView.mapboxMap.coordinate(for: CGPoint(x: x + width / 2, y: y + height / 2))
-
-            let polygon = Polygon([[
-                topLeft,
-                topRight,
-                bottomRight,
-                bottomLeft,
-                topLeft
-            ]])
-
             self.startOfflineDownload(
                 regionId: regionId,
-                latitude: center.latitude,
-                longitude: center.longitude,
+                latitude: rect.center.latitude,
+                longitude: rect.center.longitude,
                 radiusKm: 0,
                 minZoom: minZoom,
                 maxZoom: maxZoom,
                 styleURI: styleURI,
-                geometry: polygon.geometry,
+                geometry: rect.area.geometry,
                 wifiOnly: self.boolOption(options["wifiOnly"], defaultValue: false),
                 command: command
             )
         }
+    }
+
+    /// Map area under an on-screen rectangle given in native pixels (x, y, width, height),
+    /// shared by downloadOfflineRegionForRect and estimateOfflineRegionSizeForRect.
+    /// Sends the error and returns nil when the rectangle is invalid.
+    private func offlineRectArea(_ options: [String: Any], mapView: MapView,
+                                 _ command: CDVInvokedUrlCommand) -> (area: Polygon, center: CLLocationCoordinate2D)? {
+        let nativeX = doubleOption(options["x"], defaultValue: 0)
+        let nativeY = doubleOption(options["y"], defaultValue: 0)
+        let nativeWidth = doubleOption(options["width"], defaultValue: 1)
+        let nativeHeight = doubleOption(options["height"], defaultValue: 1)
+        guard [nativeX, nativeY, nativeWidth, nativeHeight].allSatisfy({
+            $0.isFinite && abs($0) <= 1000000
+        }), nativeWidth > 0, nativeHeight > 0 else {
+            sendError("Invalid offline rectangle.", command)
+            return nil
+        }
+        let scale = Double(UIScreen.main.scale)
+        let x = nativeX / scale
+        let y = nativeY / scale
+        let width = nativeWidth / scale
+        let height = nativeHeight / scale
+        let map = mapView.mapboxMap
+        let topLeft = map.coordinate(for: CGPoint(x: x, y: y))
+        let topRight = map.coordinate(for: CGPoint(x: x + width, y: y))
+        let bottomRight = map.coordinate(for: CGPoint(x: x + width, y: y + height))
+        let bottomLeft = map.coordinate(for: CGPoint(x: x, y: y + height))
+        let center = map.coordinate(for: CGPoint(x: x + width / 2, y: y + height / 2))
+        return (Polygon([[topLeft, topRight, bottomRight, bottomLeft, topLeft]]), center)
     }
 
     private func startOfflineDownload(
@@ -1535,9 +1518,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
               MapboxSecurity.offlineBounds(south: south, west: west, north: north, east: east, zoom: Double(maxZoom)) else {
             sendError("Offline region exceeds the geographic or 50000-tile budget.", command); return
         }
-        let boundedRadiusKm = max(0, min(radiusKm, maxOfflineRadiusKm))
-        let boundedMinZoom = max(minOfflineZoom, min(minZoom, maxOfflineZoom))
-        let boundedMaxZoom = max(boundedMinZoom, min(maxZoom, maxOfflineZoom))
+        // radiusKm was checked above; MapboxSecurity.zoom already limited both zooms to 2...18.
         isOfflineDownloading = true
         // Cap the number of stored regions so offline storage cannot grow without limit.
         // Re-downloading an existing region always works. If the list cannot be read,
@@ -1557,9 +1538,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                     regionId: regionId,
                     latitude: latitude,
                     longitude: longitude,
-                    boundedRadiusKm: boundedRadiusKm,
-                    boundedMinZoom: boundedMinZoom,
-                    boundedMaxZoom: boundedMaxZoom,
+                    radiusKm: radiusKm,
+                    minZoom: minZoom,
+                    maxZoom: maxZoom,
                     styleURI: styleURI,
                     // Final area (circle already built) so the result reports exactly what was downloaded.
                     geometry: regionGeometry,
@@ -1576,11 +1557,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         regionId: String,
         latitude: Double,
         longitude: Double,
-        boundedRadiusKm: Double,
-        boundedMinZoom: UInt8,
-        boundedMaxZoom: UInt8,
+        radiusKm: Double,
+        minZoom: UInt8,
+        maxZoom: UInt8,
         styleURI: StyleURI,
-        geometry: Geometry?,
+        geometry: Geometry,
         wifiOnly: Bool,
         command: CDVInvokedUrlCommand
     ) {
@@ -1622,11 +1603,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                         regionId: regionId,
                         latitude: latitude,
                         longitude: longitude,
-                        radiusKm: boundedRadiusKm,
-                        minZoom: boundedMinZoom,
-                        maxZoom: boundedMaxZoom,
+                        radiusKm: radiusKm,
+                        minZoom: minZoom,
+                        maxZoom: maxZoom,
                         styleURI: styleURI,
-                        geometry: geometry,
+                        area: geometry,
                         wifiOnly: wifiOnly,
                         command: command
                     )
@@ -1649,20 +1630,17 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         minZoom: UInt8,
         maxZoom: UInt8,
         styleURI: StyleURI,
-        geometry: Geometry? = nil,
-        wifiOnly: Bool = false,
+        area: Geometry,
+        wifiOnly: Bool,
         command: CDVInvokedUrlCommand
     ) {
-        guard downloadGeneration == sessionGeneration, downloadToken == offlineDownloadToken else { return }
+        // Called from inside runForDownload, which already dropped stale downloads.
         let descriptorOptions = TilesetDescriptorOptions(
             styleURI: styleURI,
             zoomRange: minZoom...maxZoom,
             tilesets: nil
         )
         let descriptor = offlineManager.createTilesetDescriptor(for: descriptorOptions)
-        let center = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
-        let polygon = Polygon(center: center, radius: radiusKm * 1000.0, vertices: 64)
-        let area = geometry ?? polygon.geometry
 
         guard let loadOptions = TileRegionLoadOptions(
             geometry: area,
@@ -1742,10 +1720,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                     let latitude = self.doubleOption(options["latitude"], defaultValue: 0)
                     let longitude = self.doubleOption(options["longitude"], defaultValue: 0)
                     let radiusKm = self.doubleOption(options["radiusKm"], defaultValue: 10)
-                    guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
-                        self.sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
-                        return
-                    }
+                    guard self.validCoordinates(latitude, longitude, command) else { return }
                     guard radiusKm.isFinite, radiusKm >= 0, radiusKm <= self.maxOfflineRadiusKm else {
                         self.sendError("Invalid offline radius.", command)
                         return
@@ -1779,26 +1754,8 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let nativeX = self.doubleOption(options["x"], defaultValue: 0)
-            let nativeY = self.doubleOption(options["y"], defaultValue: 0)
-            let nativeWidth = self.doubleOption(options["width"], defaultValue: 1)
-            let nativeHeight = self.doubleOption(options["height"], defaultValue: 1)
-            guard [nativeX, nativeY, nativeWidth, nativeHeight].allSatisfy({
-                $0.isFinite && abs($0) <= 1000000
-            }), nativeWidth > 0, nativeHeight > 0 else {
-                self.sendError("Invalid offline rectangle.", command); return
-            }
-            let scale = Double(UIScreen.main.scale)
-            let x = nativeX / scale
-            let y = nativeY / scale
-            let width = nativeWidth / scale
-            let height = nativeHeight / scale
-            let topLeft = mapView.mapboxMap.coordinate(for: CGPoint(x: x, y: y))
-            let topRight = mapView.mapboxMap.coordinate(for: CGPoint(x: x + width, y: y))
-            let bottomRight = mapView.mapboxMap.coordinate(for: CGPoint(x: x + width, y: y + height))
-            let bottomLeft = mapView.mapboxMap.coordinate(for: CGPoint(x: x, y: y + height))
-            let area = Polygon([[topLeft, topRight, bottomRight, bottomLeft, topLeft]])
-            self.sendOfflineEstimate(area: area, options: options, command: command)
+            guard let rect = self.offlineRectArea(options, mapView: mapView, command) else { return }
+            self.sendOfflineEstimate(area: rect.area, options: options, command: command)
         }
     }
 
@@ -2044,10 +2001,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let latitude = self.doubleOption(options["latitude"], defaultValue: 0)
             let longitude = self.doubleOption(options["longitude"], defaultValue: 0)
 
-            guard self.isValidLatitude(latitude), self.isValidLongitude(longitude) else {
-                self.sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
-                return
-            }
+            guard self.validCoordinates(latitude, longitude, command) else { return }
 
             let zoom = self.doubleOption(options["zoom"], defaultValue: 13)
             let styleUrl = options["styleUrl"] as? String ?? StyleURI.streets.rawValue
@@ -2225,8 +2179,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private func sendOfflineProgress(phase: String, completed: UInt64, required: UInt64, completedBytes: Int64 = -1) {
         let percent = required > 0 ? Int(round((Double(completed) * 100.0) / Double(required))) : 0
         let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastKeepCallbackOfflineTs >= callbackRateLimit else { return }
+        // Only repeats of the same phase are rate limited, so "native-entered" or
+        // "style-start" right after "started" is never dropped.
+        guard phase != lastOfflineProgressPhase || now - lastKeepCallbackOfflineTs >= callbackRateLimit else { return }
         lastKeepCallbackOfflineTs = now
+        lastOfflineProgressPhase = phase
         var payload: [String: Any] = [
             "type": "offlineDownloadProgress",
             "phase": phase,
@@ -2345,7 +2302,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     /// Returns nil when imageUrl is not an allowed image source.
     /// findGiven is false when the caller sent no isFind / IsFind at all: a plain location pin
     /// (for example a searched place), not a Find or Waypoint.
-    private func markerStyle(isFind: Bool, pinColor: Any?, imageUrl rawImageUrl: Any?, pinStyle: Any? = nil, isOnline: Bool = true, isPublic: Bool = true, findGiven: Bool = true) -> MarkerStyle? {
+    private func markerStyle(isFind: Bool, pinColor: Any?, imageUrl rawImageUrl: Any?, pinStyle: Any?, isOnline: Bool, isPublic: Bool, findGiven: Bool) -> MarkerStyle? {
         let photo = (pinStyle as? String) == "photo"
         let trimmedUrl = (rawImageUrl as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         // Classic red teardrop: public, no image, and either offline or a plain location pin.
@@ -2357,14 +2314,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             // Private markers show the lock tile; their image is never validated or downloaded.
             return MarkerStyle(color: color, isFind: isFind, imageUrl: nil, photo: photo, isOnline: isOnline, isPublic: false)
         }
-        let imageUrl = (rawImageUrl as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if imageUrl.isEmpty {
+        if trimmedUrl.isEmpty {
             return MarkerStyle(color: color, isFind: isFind, imageUrl: nil, photo: photo, isOnline: isOnline, classicPin: classicPin)
         }
-        guard MapboxSecurity.markerImageAllowed(imageUrl, hosts: preferenceValue("MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS")) else {
+        guard MapboxSecurity.markerImageAllowed(trimmedUrl, hosts: preferenceValue("MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS")) else {
             return nil
         }
-        return MarkerStyle(color: color, isFind: isFind, imageUrl: imageUrl, photo: photo, isOnline: isOnline)
+        return MarkerStyle(color: color, isFind: isFind, imageUrl: trimmedUrl, photo: photo, isOnline: isOnline)
     }
 
     // Markers show a plain pin until their image arrives; one download serves every marker using it.
@@ -2415,8 +2371,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             var ring = geometry.compactMap { point -> CLLocationCoordinate2D? in
                 let latitude = doubleOption(point["lat"] ?? point["latitude"], defaultValue: Double.nan)
                 let longitude = doubleOption(point["lon"] ?? point["lng"] ?? point["longitude"], defaultValue: Double.nan)
-                guard latitude.isFinite, longitude.isFinite,
-                      isValidLatitude(latitude), isValidLongitude(longitude) else {
+                guard isValidLatitude(latitude), isValidLongitude(longitude) else {
                     return nil
                 }
                 return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
@@ -2591,40 +2546,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         ])
     }
 
-    private func sendMarkerClickIfNear(_ coordinate: CLLocationCoordinate2D) -> Bool {
-        let tapLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        var nearestId = ""
-        var nearestMarker: PointAnnotation?
-        var nearestDistance = CLLocationDistance.greatestFiniteMagnitude
-
-        for (id, marker) in markers {
-            let markerLocation = CLLocation(
-                latitude: marker.point.coordinates.latitude,
-                longitude: marker.point.coordinates.longitude
-            )
-            let distance = tapLocation.distance(from: markerLocation)
-            if distance < nearestDistance {
-                nearestDistance = distance
-                nearestId = id
-                nearestMarker = marker
-            }
-        }
-
-        guard let marker = nearestMarker, nearestDistance <= 75 else {
-            return false
-        }
-
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastKeepCallbackMarkerTs >= callbackRateLimit else { return true }
-        lastKeepCallbackMarkerTs = now
-        sendKeepCallback(markerClickCallbackId, payload: [
-            "type": markerType(for: nearestId),
-            "id": nearestId,
-            "isOnline": markerStyles[nearestId]?.isOnline ?? true
-        ])
-        return true
-    }
-
     private func markerType(for id: String) -> String {
         let isFind = markerStyles[id]?.isFind ?? false
         return isFind ? "Find" : "Waypoint"
@@ -2790,10 +2711,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         headingLocationManager = nil
         stopHeadingFollowMode()
         stopUserTracking()
-        annotations?.annotations.removeAll()
         clearBoundariesInternal()
         clearBoundaryDrawingInternal()
-        lineAnnotationManager?.annotations.removeAll()
+        // Removing the managers below also removes their annotations from the map.
         if let mapView = mapView {
             let managerIds = [
                 annotations?.id,
@@ -2816,7 +2736,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         boundaryDrawingLineAnnotationManager = nil
         boundaryDrawingPointAnnotationManager = nil
         boundaryDrawingPolygonAnnotationManager = nil
-        completedBoundaryDrawingPolygons.removeAll()
         pathAnnotations.removeAll()
         currentSegmentAnnotation = nil
         pathPoints.removeAll()
@@ -2839,24 +2758,20 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         compassCallbackId = nil
         lastCompassBearing = -1
         lastCompassVisible = false
-        trackingStatusCallbackId = nil
-        cancelCurrentDownload()
         isOfflineDownloading = false
+        // stopUserTracking() and stopHeadingFollowMode() above reset their own flags.
         isUserLocationEnabled = false
-        isUserTrackingEnabled = false
         isDeviceHeadingEnabled = false
-        isHeadingFollowModeEnabled = false
         waypointSelectionEnabled = false
         autoAddWaypointMarker = false
         lastKeepCallbackOfflineTs = 0
+        lastOfflineProgressPhase = nil
         lastKeepCallbackWaypointTs = 0
         lastKeepCallbackMarkerTs = 0
         lastKeepCallbackMapTapTs = 0
         lastBoundaryDrawingTapTs = 0
-        cancelables.removeAll()
         mapTouchOverlay?.removeFromSuperview()
         mapTouchOverlay = nil
-        mapView?.removeFromSuperview()
         mapView = nil
     }
 
@@ -2956,18 +2871,12 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private func touchRectFromOptions(_ options: [String: Any]) -> CGRect {
-        var x = doubleOption(options["x"], defaultValue: 0)
-        var y = doubleOption(options["y"], defaultValue: 0)
-        var width = doubleOption(options["width"], defaultValue: 0)
-        var height = doubleOption(options["height"], defaultValue: 0)
-
+        // UIScreen scale is at least 1, so dividing at scale 1 leaves the values unchanged.
         let scale = Double(UIScreen.main.scale)
-        if scale > 1 {
-            x /= scale
-            y /= scale
-            width /= scale
-            height /= scale
-        }
+        let x = doubleOption(options["x"], defaultValue: 0) / scale
+        let y = doubleOption(options["y"], defaultValue: 0) / scale
+        let width = doubleOption(options["width"], defaultValue: 0) / scale
+        let height = doubleOption(options["height"], defaultValue: 0) / scale
 
         let rect = CGRect(x: x, y: y, width: max(width, 0), height: max(height, 0))
         guard rect.width > 0, rect.height > 0 else { return .null }
@@ -3191,12 +3100,21 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         return nil
     }
 
-    private func isValidLatitude(_ lat: Double) -> Bool {
+    func isValidLatitude(_ lat: Double) -> Bool {
         lat.isFinite && lat >= -90 && lat <= 90
     }
 
-    private func isValidLongitude(_ lon: Double) -> Bool {
+    func isValidLongitude(_ lon: Double) -> Bool {
         lon.isFinite && lon >= -180 && lon <= 180
+    }
+
+    /// Sends the shared invalid-coordinates error and returns false when either value is out of range.
+    private func validCoordinates(_ latitude: Double, _ longitude: Double, _ command: CDVInvokedUrlCommand) -> Bool {
+        guard isValidLatitude(latitude), isValidLongitude(longitude) else {
+            sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
+            return false
+        }
+        return true
     }
 
     private func sanitizeError(contextMessage: String, error: Error) -> String {
@@ -3264,13 +3182,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         commandDelegate.send(result, callbackId: callbackId)
     }
 
-    private func sendNoResultKeepCallback(_ command: CDVInvokedUrlCommand) {
+    func sendNoResultKeepCallback(_ command: CDVInvokedUrlCommand) {
         let result: CDVPluginResult! = CDVPluginResult(status: CDVCommandStatus_NO_RESULT)
         result?.setKeepCallbackAs(true)
         commandDelegate.send(result, callbackId: command.callbackId)
     }
 
-    private func sendKeepCallback(_ callbackId: String?, payload: [String: Any]) {
+    func sendKeepCallback(_ callbackId: String?, payload: [String: Any]) {
         guard let callbackId = callbackId else {
             return
         }

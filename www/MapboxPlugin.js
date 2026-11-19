@@ -1,6 +1,11 @@
 var nativeExec = require('cordova/exec');
+var SERVICE = 'MapboxPlugin';
+// Native rejects bridge calls whose JSON is larger than this (UTF-8 bytes).
+var MAX_BRIDGE_BYTES = 4 * 1024 * 1024;
 var callbacks = new Set();
 var lifecycleGeneration = 0;
+var touchRegions = null;
+var touchGeneration = 0;
 function isCancellationError(error) {
   var message = typeof error === 'string' ? error : error && error.message;
   return !!(error && error.code === 'MAPBOX_OPERATION_CANCELLED') ||
@@ -58,10 +63,6 @@ function observeNativeClose(generation) {
     cancelCallbacks();
   }, function () {}, SERVICE, 'registerCloseCallback', []);
 }
-
-var SERVICE = 'MapboxPlugin';
-var touchRegions = null;
-var touchGeneration = 0;
 
 function validateCameraZoomBounds(options) {
   ['minZoom', 'maxZoom'].forEach(function (key) {
@@ -160,7 +161,7 @@ function call(action, args) {
         args = [applyOfflineDetail(args[0])].concat(args.slice(1));
       }
       var json = JSON.stringify(args || []);
-      if (utf8Length(json) > 4 * 1024 * 1024) throw new Error('Map input exceeds the 4 MiB limit.');
+      if (utf8Length(json) > MAX_BRIDGE_BYTES) throw new Error('Map input exceeds the 4 MiB limit.');
       var options = (args || [])[0] || {};
       if (OFFLINE_AREA_ACTIONS[action]) {
         var minZoom = options.minZoom === undefined ? 10 : Number(options.minZoom);
@@ -192,8 +193,8 @@ function hasBinaryFields(markers, binaryKey, mimeKey) {
   }
   return false;
 }
-// Native rejects calls above 4 MiB; keep headroom for the options wrapper.
-var MARKER_BATCH_BUDGET = 4 * 1024 * 1024 - 64 * 1024;
+// Keep headroom below the bridge limit for the options wrapper.
+var MARKER_BATCH_BUDGET = MAX_BRIDGE_BYTES - 64 * 1024;
 
 function markerLabel(id, index) {
   if (id !== undefined && id !== null && id !== '') return '"' + String(id).slice(0, 64) + '"';
@@ -219,9 +220,10 @@ function forgetPendingMarkerImages(ids) {
 function now() { return Date.now ? Date.now() : new Date().getTime(); }
 
 // Sends a marker list as one or more loadMarkers calls under the bridge limit. The first
-// call honours base.replace; later ones append.
-function sendMarkerBatches(base, markers, lifecycle) {
-  var batches = splitMarkerBatches(markers, base);
+// call honours base.replace; later ones append. `batches` may be passed when the caller
+// has already split exactly these markers.
+function sendMarkerBatches(base, markers, lifecycle, batches) {
+  batches = batches || splitMarkerBatches(markers, base);
   var chain = Promise.resolve();
   batches.forEach(function (batch, number) {
     chain = chain.then(function () {
@@ -264,7 +266,8 @@ function loadMarkersWithImages(options) {
   var base = {};
   Object.keys(options).forEach(function (key) { if (key !== 'markers') base[key] = options[key]; });
   var work = staged.filter(function (entry) { return entry.image; });
-  var multiple = splitMarkerBatches(staged.map(function (entry) { return entry.marker; }), base).length > 1;
+  var batches = splitMarkerBatches(staged.map(function (entry) { return entry.marker; }), base);
+  var multiple = batches.length > 1;
   var first = staged.map(function (entry) {
     var marker = entry.marker;
     // Several calls: missing Ids keep their whole-list index, matching the single-call default.
@@ -275,7 +278,9 @@ function loadMarkersWithImages(options) {
   });
   work.forEach(function (entry) { pendingMarkerImages[String(entry.marker.Id)] = token; });
 
-  return sendMarkerBatches(base, first, lifecycle).then(function () {
+  // One call: `first` holds the same markers that were split, so reuse that split. Several
+  // calls: missing Ids were added above, which changes sizes, so split again.
+  return sendMarkerBatches(base, first, lifecycle, multiple ? null : batches).then(function () {
     return applyMarkerImages(work, base, keys, token, lifecycle);
   });
 }
@@ -620,7 +625,7 @@ var api = {
 
   loadBoundaries: function (boundaries, options) {
     if (typeof boundaries === 'string') {
-      if (utf8Length(boundaries) > 4 * 1024 * 1024) {
+      if (utf8Length(boundaries) > MAX_BRIDGE_BYTES) {
         return Promise.reject(new Error('Boundary input is too large.'));
       }
 
@@ -746,7 +751,7 @@ var api = {
   loadPath: function (pathData, options) {
     options = Object.assign({}, options);
     if (typeof pathData === 'string') {
-      if (utf8Length(pathData) > 4 * 1024 * 1024) return Promise.reject(new Error('Path input is too large.'));
+      if (utf8Length(pathData) > MAX_BRIDGE_BYTES) return Promise.reject(new Error('Path input is too large.'));
       try {
         pathData = JSON.parse(pathData);
       } catch (error) {

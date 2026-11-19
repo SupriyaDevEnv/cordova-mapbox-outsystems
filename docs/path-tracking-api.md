@@ -240,3 +240,30 @@ await MapboxPlugin.loadPath({
 ## Saving a hunt (OutSystems)
 
 Store `points` as a JSON text (or one row per point with an index), plus `distance`, `duration` and `segments`. Save `segments` together with `points`: it is what lets a replay keep the pause gaps.
+
+Each step is one Client Action with a JavaScript node:
+
+```javascript
+// Start hunt
+window.MapboxPlugin.startPathTracking({ lineColor: "#FF0000" }).then($resolve).catch($reject);
+
+// Pause hunt / continue hunt
+window.MapboxPlugin.pausePathTracking().then($resolve).catch($reject);
+window.MapboxPlugin.continuePathTracking().then($resolve).catch($reject);
+
+// Stop hunt and save: pass the result to a Server Action such as
+// SaveHuntTrack(points, distance, duration, segments) that writes your entity.
+window.MapboxPlugin.stopPathTracking().then(function (result) {
+  $parameters.PointsJson = JSON.stringify(result.points);
+  $parameters.SegmentsJson = JSON.stringify(result.segments);
+  $parameters.Distance = result.distance;
+  $parameters.Duration = result.duration;
+  $resolve();
+}).catch($reject);
+
+// View past hunt: without segments the hunt draws as one continuous line
+window.MapboxPlugin.loadPath({
+  points: JSON.parse($parameters.PointsJson),
+  segments: JSON.parse($parameters.SegmentsJson)
+}).then($resolve).catch($reject);
+```

@@ -57,7 +57,6 @@ import com.mapbox.maps.CameraOptions;
 import com.mapbox.maps.CameraBoundsOptions;
 import com.mapbox.maps.GlyphsRasterizationMode;
 import com.mapbox.maps.MapView;
-import com.mapbox.maps.MapboxMap;
 import com.mapbox.maps.OfflineManager;
 import com.mapbox.maps.ScreenCoordinate;
 import com.mapbox.maps.Style;
@@ -65,7 +64,6 @@ import com.mapbox.maps.StyleObjectInfo;
 import com.mapbox.maps.StylePackLoadOptions;
 import com.mapbox.maps.TilesetDescriptorOptions;
 import com.mapbox.maps.extension.style.layers.properties.generated.IconAnchor;
-import com.mapbox.maps.extension.style.layers.properties.PropertyValue;
 import com.mapbox.maps.plugin.PuckBearing;
 import com.mapbox.maps.plugin.Plugin;
 import com.mapbox.maps.plugin.annotation.AnnotationPlugin;
@@ -127,7 +125,6 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private static final long RECENTER_ANIMATION_DURATION_MS = 1500L;
     private static final long MAX_ANIMATION_MS = 10_000L;
     private static final String LEGACY_CREDENTIAL_PREFS = "mapbox_secure_prefs";
-    private static final double MAX_LINE_WIDTH = 50.0;
 
     private static final int MOVEMENT_STATE_STATIONARY = 0;
     private static final int MOVEMENT_STATE_SLOW = 1;
@@ -186,6 +183,13 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
         callback.sendPluginResult(result);
     }
 
+    /** Acknowledges an event-callback registration and keeps the callback open. */
+    private static void keepCallbackOpen(CallbackContext callback) {
+        PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
+        result.setKeepCallback(true);
+        callback.sendPluginResult(result);
+    }
+
     private FrameLayout rootView;
     private final List<TouchRect> touchableRects = new ArrayList<>();
     private boolean currentGestureTargetsWebView = false;
@@ -195,8 +199,6 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private final float[] headingOrientationValues = new float[3];
     private double lastHeadingBearing = -1.0;
     private long lastHeadingUpdateMs = 0L;
-    private LocationManager locationManager;
-    private long lastUserTrackingUpdateMs = 0L;
     private Location lastAcceptedTrackingLocation = null;
     private Location latestRecenterLocation = null;
     private Point smoothedTrackingPoint = null;
@@ -231,16 +233,12 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private PolygonAnnotationManager boundaryAnnotationManager;
     private final List<PolygonAnnotationOptions> boundaryAnnotationOptions = new ArrayList<>();
     private final List<PolygonAnnotation> boundaryAnnotations = new ArrayList<>();
-    // Stores polygons that have already been saved.
-    private final List<PolygonAnnotation> completedBoundaryDrawingPolygons =
-        new ArrayList<>();
     private boolean isBoundaryDrawing = false;
     private final List<Point> boundaryDrawingPoints = new ArrayList<>();
     private PolylineAnnotationManager boundaryDrawingLineManager;
     private PolylineAnnotation boundaryDrawingLine;
     private CircleAnnotationManager boundaryDrawingPointManager;
     private final List<CircleAnnotation> boundaryDrawingPointAnnotations = new ArrayList<>();
-    private PolygonAnnotationManager boundaryDrawingPolygonManager;
     private PolygonAnnotation boundaryDrawingPolygon;
     private static final int DEFAULT_BOUNDARY_DRAWING_COLOR = Color.RED;
     private static final double DEFAULT_BOUNDARY_LINE_WIDTH = 2.0;
@@ -299,6 +297,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private long rawTapDownMs = 0L;
     private long lastMapSelectionCallbackMs = 0L;
     private long lastKeepCallbackOfflineMs = 0L;
+    private String lastOfflineProgressPhase = null;
     private long lastKeepCallbackWaypointMs = 0L;
     private long lastKeepCallbackMarkerMs = 0L;
     private static final long CALLBACK_RATE_LIMIT_MS = 100L;
@@ -589,10 +588,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
                 MapboxOptions.setAccessToken(token);
 
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
-            if (!styleAllowed(styleUrl)) {
-                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
-                return;
-            }
+                if (rejectDisallowedStyle(styleUrl, callback)) return;
                 double latitude = options.optDouble("latitude", 0.0);
                 double longitude = options.optDouble("longitude", 0.0);
                 double zoom = finiteOption(options, "zoom", 12.0);
@@ -758,6 +754,13 @@ if (gestures != null) {
             context.getSharedPreferences(LEGACY_CREDENTIAL_PREFS, Context.MODE_PRIVATE)
                 .edit().clear().apply();
         }
+    }
+
+    /** Sends the shared style rejection and returns true when the style is not allowed. */
+    private boolean rejectDisallowedStyle(String styleUrl, CallbackContext callback) {
+        if (styleAllowed(styleUrl)) return false;
+        callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
+        return true;
     }
 
     private boolean styleAllowed(String style) {
@@ -1056,7 +1059,8 @@ if (gestures != null) {
             @Override
             public void onSensorChanged(SensorEvent event) {
                 if (headingGeneration != sessionGeneration || this != headingSensorListener) return;
-                if (mapView == null || event.sensor.getType() != Sensor.TYPE_ROTATION_VECTOR) {
+                // Only the rotation-vector sensor is registered with this listener.
+                if (mapView == null) {
                     return;
                 }
 
@@ -1074,14 +1078,12 @@ if (gestures != null) {
                 }
 
                 if (lastHeadingBearing >= 0.0) {
-                    double diff = Math.abs(bearing - lastHeadingBearing);
-                    diff = Math.min(diff, 360.0 - diff);
-
-                    if (diff < 1.5) {
+                    double delta = shortestBearingDelta(lastHeadingBearing, bearing);
+                    if (Math.abs(delta) < 1.5) {
                         return;
                     }
 
-                    bearing = lastHeadingBearing + shortestBearingDelta(lastHeadingBearing, bearing) * 0.25;
+                    bearing = lastHeadingBearing + delta * 0.25;
                     if (bearing < 0.0) {
                         bearing += 360.0;
                     } else if (bearing >= 360.0) {
@@ -1224,17 +1226,6 @@ if (gestures != null) {
         return maxRadius;
     }
 
-    private String movementStateName(int state) {
-        switch (state) {
-            case MOVEMENT_STATE_SLOW:
-                return "SLOW";
-            case MOVEMENT_STATE_WALKING:
-                return "WALKING";
-            default:
-                return "STATIONARY";
-        }
-    }
-
     private int classifyMovementState(
         Location location,
         double displacementMeters,
@@ -1326,55 +1317,10 @@ if (gestures != null) {
 
         int previousState = movementState;
         movementState = candidate;
-        int usedFixes = movementStateAgreement;
         movementStateAgreement = 0;
 
-        boolean releasedFromHold =
-            previousState == MOVEMENT_STATE_STATIONARY
+        return previousState == MOVEMENT_STATE_STATIONARY
             && candidate != MOVEMENT_STATE_STATIONARY;
-
-        float calculatedSpeed = 0.0f;
-        if (lastAcceptedTrackingLocation != null && fixTimeDiffMs > 0) {
-            calculatedSpeed = (float) (displacementMeters
-                / (fixTimeDiffMs / 1000.0));
-        }
-
-        Log.d(
-            "MapboxPlugin",
-            "movement state " + movementStateName(previousState)
-                + " -> " + movementStateName(movementState)
-                + " (confirm=" + requiredFixes
-                + " fixes=" + usedFixes
-                + " release=" + releasedFromHold
-                + " speed=" + String.format(
-                    java.util.Locale.US,
-                    "%.2f",
-                    location.hasSpeed()
-                        ? location.getSpeed()
-                        : 0.0f
-                ) + " m/s, calc=" + String.format(
-                    java.util.Locale.US,
-                    "%.2f",
-                    calculatedSpeed
-                ) + " m/s, dt=" + fixTimeDiffMs
-                + " ms, disp=" + String.format(
-                    java.util.Locale.US,
-                    "%.2f",
-                    displacementMeters
-                ) + " m, acc=" + String.format(
-                    java.util.Locale.US,
-                    "%.2f",
-                    location.hasAccuracy()
-                        ? location.getAccuracy()
-                        : -1.0f
-                ) + " m, cluster=" + String.format(
-                    java.util.Locale.US,
-                    "%.2f",
-                    computeClusterRadiusMeters()
-                ) + " m)"
-        );
-
-        return releasedFromHold;
     }
 
     private int confirmationFixesFor(int candidate) {
@@ -1469,8 +1415,6 @@ if (gestures != null) {
 
                     sendLocationAccuracyUpdate(location);
 
-                    long now = System.currentTimeMillis();
-
                     // One stream supplies display, recenter and recording. Keep fresh
                     // approximate fixes for display without admitting them to the path.
                     if (!isUsableRecenterLocation(location)) continue;
@@ -1535,9 +1479,6 @@ if (gestures != null) {
                         movementHistory.add(new Location(location));
                     }
 
-                    // Keep a fresh raw fix even while the displayed puck is pinned.
-                    latestRecenterLocation = new Location(location);
-
                     // Pin the puck while the classifier says stationary,
                     // but always let the first fix through so the dot
                     // renders immediately on tracking start
@@ -1548,15 +1489,12 @@ if (gestures != null) {
 
                     // Accept this location
                     lastAcceptedTrackingLocation = new Location(location);
-                    lastUserTrackingUpdateMs = now;
 
                     // 4. Apply weighted location smoothing
                     Point rawPoint =
                         Point.fromLngLat(longitude, latitude);
 
-                    if (releasedFromHold) {
-                        smoothedTrackingPoint = rawPoint;
-                    } else if (smoothedTrackingPoint == null) {
+                    if (releasedFromHold || smoothedTrackingPoint == null) {
                         smoothedTrackingPoint = rawPoint;
                     } else {
                         double smoothingFactor =
@@ -1705,7 +1643,6 @@ if (gestures != null) {
         stopCameraFollow();
         trackingRequestGeneration++;
         // Stopping camera/path tracking must not stop the visible puck's stream.
-        lastUserTrackingUpdateMs = 0L;
         lastAcceptedTrackingLocation = null;
         smoothedTrackingPoint = null;
         movementHistory.clear();
@@ -1911,25 +1848,16 @@ if (gestures != null) {
         });
     }
 
+    // Callers only pass fixes that passed isUsableRecenterLocation (valid coordinates,
+    // finite accuracy), so no re-validation is needed here.
     private void completeMoveToCurrentLocation(Location location) {
         updateInitialUserLocation(location);
-        currentLocationAccuracy =
-            location.hasAccuracy() ? location.getAccuracy() : -1f;
+        currentLocationAccuracy = location.getAccuracy();
         currentLocationAccuracyLabel =
             getAccuracyLabel(currentLocationAccuracy);
 
         final double latitude = location.getLatitude();
         final double longitude = location.getLongitude();
-
-        if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
-            if (moveToCurrentLocationCallback != null) {
-                moveToCurrentLocationCallback.error(
-                    "Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180]."
-                );
-            }
-            cancelMoveToCurrentLocation();
-            return;
-        }
 
         if (moveToCurrentLocationCallback == null) {
             return;
@@ -1939,7 +1867,6 @@ if (gestures != null) {
         final boolean applyZoom = moveToCurrentLocationZoomSet;
         final double zoom = moveToCurrentLocationZoom;
 
-        moveToCurrentLocationCallback = null;
         cancelMoveToCurrentLocation();
 
         runForSession(() -> {
@@ -2039,10 +1966,7 @@ if (gestures != null) {
                 double minZoom = options.optDouble("minZoom", 10.0);
                 double maxZoom = options.optDouble("maxZoom", 16.0);
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
-            if (!styleAllowed(styleUrl)) {
-                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
-                return;
-            }
+                if (rejectDisallowedStyle(styleUrl, callback)) return;
                 String regionId = options.optString(
                     "regionId",
                     area != null
@@ -2087,10 +2011,7 @@ if (gestures != null) {
                 double minZoom = options.optDouble("minZoom", 10.0);
                 double maxZoom = options.optDouble("maxZoom", 16.0);
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
-            if (!styleAllowed(styleUrl)) {
-                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
-                return;
-            }
+                if (rejectDisallowedStyle(styleUrl, callback)) return;
                 String regionId = options.optString("regionId", "offline-rect-" + System.currentTimeMillis());
 
                 Polygon polygon = createRectPolygon(x, y, width, height);
@@ -2138,14 +2059,8 @@ if (gestures != null) {
             callback.error("Invalid offline radius, zoom range, or region id."); return;
         }
         Polygon downloadGeometry = geometry == null ? createCirclePolygon(longitude, latitude, radiusKm) : geometry;
-        double south = 90, west = 180, north = -90, east = -180;
-        for (List<Point> ring : downloadGeometry.coordinates()) {
-            for (Point point : ring) {
-                south = Math.min(south, point.latitude()); north = Math.max(north, point.latitude());
-                west = Math.min(west, point.longitude()); east = Math.max(east, point.longitude());
-            }
-        }
-        if (!MapboxSecurity.offlineBounds(south, west, north, east, maxZoom)) {
+        double[] box = polygonBounds(downloadGeometry);
+        if (!MapboxSecurity.offlineBounds(box[1], box[0], box[3], box[2], maxZoom)) {
             callback.error("Offline region exceeds the geographic or 50000-tile budget."); return;
         }
         final long downloadGeneration = sessionGeneration;
@@ -2160,7 +2075,6 @@ if (gestures != null) {
         // Re-downloading an existing region always works. If the list cannot be read,
         // the download goes ahead.
         TileStore.create().getAllTileRegions(regions -> runForDownload(downloadGeneration, downloadToken, () -> {
-            if (downloadGeneration != sessionGeneration) return;
             List<TileRegion> stored = regions.isValue() ? regions.getValue() : null;
             if (stored != null && stored.size() >= MAX_OFFLINE_REGIONS) {
                 boolean exists = false;
@@ -2210,13 +2124,11 @@ if (gestures != null) {
             progress -> runForDownload(downloadGeneration, downloadToken, () -> sendOfflineProgress("style", progress.getCompletedResourceCount(), progress.getRequiredResourceCount(), progress.getCompletedResourceSize())),
             expectedStylePack -> runForDownload(downloadGeneration, downloadToken, () -> expectedStylePack.fold(
                 error -> {
-                    if (downloadGeneration != sessionGeneration) return null;
                     isOfflineDownloading = false;
                     callback.error(sanitizeError("Failed to download style pack.", error));
                     return null;
                 },
                 stylePack -> {
-                    if (downloadGeneration != sessionGeneration) return null;
                     sendOfflineProgress("tiles-start", 0, 100);
                     downloadOfflineTiles(
                         activeOfflineManager,
@@ -2266,7 +2178,8 @@ if (gestures != null) {
 
                 TilesetDescriptor descriptor = offlineManager.createTilesetDescriptor(descriptorOptions);
 
-                final Polygon area = geometry == null ? createCirclePolygon(longitude, latitude, radiusKm) : geometry;
+                // startOfflineDownload always passes the final area (circle already built).
+                final Polygon area = geometry;
                 TileRegionLoadOptions tileRegionOptions = new TileRegionLoadOptions.Builder()
                     .geometry(area)
                     .descriptors(Collections.singletonList(descriptor))
@@ -2283,13 +2196,11 @@ if (gestures != null) {
                     progress -> runForDownload(downloadGeneration, downloadToken, () -> sendOfflineProgress("tiles", progress.getCompletedResourceCount(), progress.getRequiredResourceCount(), progress.getCompletedResourceSize())),
                     expectedTileRegion -> runForDownload(downloadGeneration, downloadToken, () -> expectedTileRegion.fold(
                         error -> {
-                            if (downloadGeneration != sessionGeneration) return null;
                             isOfflineDownloading = false;
                             callback.error(sanitizeError("Failed to download tile region.", error));
                             return null;
                         },
                         tileRegion -> {
-                            if (downloadGeneration != sessionGeneration) return null;
                             isOfflineDownloading = false;
                             try {
                                 callback.success(offlineDownloadResult(
@@ -2681,11 +2592,7 @@ if (gestures != null) {
 
             double zoom = finiteOption(options, "zoom", 13.0);
             String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
-            if (!styleAllowed(styleUrl)) {
-                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
-                return;
-            }
-
+            if (rejectDisallowedStyle(styleUrl, callback)) return;
 
             mapView.getMapboxMap().setCamera(new CameraOptions.Builder()
                 .center(Point.fromLngLat(longitude, latitude))
@@ -2701,10 +2608,7 @@ if (gestures != null) {
             try {
                 String regionId = options.optString("regionId", "");
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
-            if (!styleAllowed(styleUrl)) {
-                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
-                return;
-            }
+                if (rejectDisallowedStyle(styleUrl, callback)) return;
                 // Other regions usually share this style pack; only delete it when asked.
                 boolean deleteStylePack = options.optBoolean("deleteStylePack", false);
 
@@ -2731,9 +2635,7 @@ if (gestures != null) {
     private void registerOfflineDownloadProgressCallback(CallbackContext callback) {
         releaseCallback(offlineDownloadProgressCallback);
         offlineDownloadProgressCallback = callback;
-        PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
-        result.setKeepCallback(true);
-        callback.sendPluginResult(result);
+        keepCallbackOpen(callback);
     }
 
     private void sendOfflineProgress(String phase, long completed, long required) {
@@ -2753,9 +2655,13 @@ if (gestures != null) {
                 payload.put("completedBytes", completedBytes);
                 payload.put("completedMB", Math.round(completedBytes / 1048576.0 * 10.0) / 10.0);
             }
+            // Only repeated events of the same phase are rate-limited; a phase change
+            // ("native-entered", "style-start", "tiles-start", ...) is always delivered.
             long now = System.currentTimeMillis();
-            if (now - lastKeepCallbackOfflineMs >= CALLBACK_RATE_LIMIT_MS) {
+            if (!phase.equals(lastOfflineProgressPhase)
+                    || now - lastKeepCallbackOfflineMs >= CALLBACK_RATE_LIMIT_MS) {
                 lastKeepCallbackOfflineMs = now;
+                lastOfflineProgressPhase = phase;
                 sendKeepCallback(offlineDownloadProgressCallback, payload);
             }
         } catch (Exception ignored) {
@@ -2772,41 +2678,31 @@ if (gestures != null) {
     private void registerWaypointSelectedCallback(CallbackContext callback) {
         releaseCallback(waypointSelectedCallback);
         waypointSelectedCallback = callback;
-        PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
-        result.setKeepCallback(true);
-        callback.sendPluginResult(result);
+        keepCallbackOpen(callback);
     }
 
     private void registerMarkerClickCallback(CallbackContext callback) {
         releaseCallback(markerClickCallback);
         markerClickCallback = callback;
-        PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
-        result.setKeepCallback(true);
-        callback.sendPluginResult(result);
+        keepCallbackOpen(callback);
     }
 
     private void registerMapTapCallback(CallbackContext callback) {
         releaseCallback(mapTapCallback);
         mapTapCallback = callback;
-        PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
-        result.setKeepCallback(true);
-        callback.sendPluginResult(result);
+        keepCallbackOpen(callback);
     }
 
     private void registerBoundaryAreaCallback(CallbackContext callback) {
         releaseCallback(boundaryAreaCallback);
         boundaryAreaCallback = callback;
-        PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
-        result.setKeepCallback(true);
-        callback.sendPluginResult(result);
+        keepCallbackOpen(callback);
     }
 
     private void registerTrackingStatusCallback(CallbackContext callback) {
         releaseCallback(trackingStatusCallback);
         trackingStatusCallback = callback;
-        PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
-        result.setKeepCallback(true);
-        callback.sendPluginResult(result);
+        keepCallbackOpen(callback);
         fireTrackingStatusChanged();
     }
 
@@ -2821,9 +2717,7 @@ if (gestures != null) {
             locationAccuracyCallback = callback;
             lastLocationAccuracyUpdateMs = 0L;
 
-            PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
-            result.setKeepCallback(true);
-            callback.sendPluginResult(result);
+            keepCallbackOpen(callback);
 
             // Accuracy comes from the shared location stream that also feeds the puck,
             // recentering and recording (it calls sendLocationAccuracyUpdate), so GPS is
@@ -2849,11 +2743,7 @@ if (gestures != null) {
         releaseCallback(compassCallback);
         compassCallback = callback;
 
-        PluginResult result =
-            new PluginResult(PluginResult.Status.NO_RESULT);
-
-        result.setKeepCallback(true);
-        callback.sendPluginResult(result);
+        keepCallbackOpen(callback);
 
         startCompassCameraListener();
     }
@@ -3274,15 +3164,9 @@ if (gestures != null) {
                     calculateBoundaryAreaAcres(boundaryDrawingPoints)
                 );
 
-                // Preserve the completed polygon on the map.
-                if (boundaryDrawingPolygon != null) {
-                    completedBoundaryDrawingPolygons.add(
-                        boundaryDrawingPolygon
-                    );
-
-                    // Detach it from the active drawing session.
-                    boundaryDrawingPolygon = null;
-                }
+                // Preserve the completed polygon on the map by detaching it
+                // from the active drawing session.
+                boundaryDrawingPolygon = null;
 
                 // Remove only the active drawing line and vertex markers.
                 removeBoundaryDrawingLineAndVertices();
@@ -3378,8 +3262,8 @@ if (gestures != null) {
 
     private void removeBoundaryDrawingPolygon() {
         if (boundaryDrawingPolygon != null
-                && boundaryDrawingPolygonManager != null) {
-            boundaryDrawingPolygonManager.delete(boundaryDrawingPolygon);
+                && boundaryAnnotationManager != null) {
+            boundaryAnnotationManager.delete(boundaryDrawingPolygon);
             boundaryDrawingPolygon = null;
         }
     }
@@ -3400,7 +3284,7 @@ if (gestures != null) {
                 boundaryDrawingLineManager.create(
                     new PolylineAnnotationOptions()
                         .withPoints(new ArrayList<>(boundaryDrawingPoints))
-                        .withLineColor("#FF0000")
+                        .withLineColor(DEFAULT_BOUNDARY_DRAWING_COLOR)
                         .withLineWidth(DEFAULT_BOUNDARY_LINE_WIDTH)
                 );
         }
@@ -3409,7 +3293,7 @@ if (gestures != null) {
             CircleAnnotationOptions pointOptions =
                 new CircleAnnotationOptions()
                     .withPoint(point)
-                    .withCircleColor("#FF0000")
+                    .withCircleColor(DEFAULT_BOUNDARY_DRAWING_COLOR)
                     .withCircleRadius(6.0)
                     .withCircleStrokeColor("#FFFFFF")
                     .withCircleStrokeWidth(2.0);
@@ -3426,14 +3310,13 @@ if (gestures != null) {
             closedRing.add(boundaryDrawingPoints.get(0));
 
             if (ensureBoundaryAnnotationManager()) {
-                boundaryDrawingPolygonManager = boundaryAnnotationManager;
                 boundaryDrawingPolygon =
-                    boundaryDrawingPolygonManager.create(
+                    boundaryAnnotationManager.create(
                         new PolygonAnnotationOptions()
                             .withPoints(Collections.singletonList(closedRing))
-                            .withFillColor("#FF0000")
+                            .withFillColor(DEFAULT_BOUNDARY_DRAWING_COLOR)
                             .withFillOpacity(DEFAULT_BOUNDARY_FILL_OPACITY)
-                            .withFillOutlineColor("#FF0000")
+                            .withFillOutlineColor(DEFAULT_BOUNDARY_DRAWING_COLOR)
                     );
             }
         }
@@ -3731,25 +3614,8 @@ private boolean addMarkerInternal(
         }
     }
 
-    /** Returns null when imageUrl is not an allowed image source. */
-    private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl) {
-        return markerStyle(isFind, pinColor, rawImageUrl, false);
-    }
-
-    private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl, boolean photo) {
-        return markerStyle(isFind, pinColor, rawImageUrl, photo, true);
-    }
-
-    private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl, boolean photo, boolean isOnline) {
-        return markerStyle(isFind, pinColor, rawImageUrl, photo, isOnline, true);
-    }
-
-    private MarkerStyle markerStyle(boolean isFind, String pinColor, String rawImageUrl, boolean photo,
-            boolean isOnline, boolean isPublic) {
-        return markerStyle(isFind, pinColor, rawImageUrl, photo, isOnline, isPublic, true);
-    }
-
     /**
+     * Returns null when imageUrl is not an allowed image source.
      * findGiven is false when the caller sent no isFind / IsFind at all: a plain location pin
      * (for example a searched place), not a Find or Waypoint.
      */
@@ -4014,17 +3880,9 @@ private boolean addMarkerInternal(
         }
 
         runForSession(() -> {
-            if (mapView == null) {
-                callback.error("Map is not initialized setLayerVisibility.");
-                return;
-            }
-
-            Style style = mapView.getMapboxMap().getStyle();
-
-            if (style == null) {
-                callback.error("Style is not loaded yet.");
-                return;
-            }
+            Style style = loadedStyle(callback,
+                "Map is not initialized setLayerVisibility.", "Style is not loaded yet.");
+            if (style == null) return;
 
             try {
                 if (!style.styleLayerExists(layerId)) {
@@ -4085,13 +3943,18 @@ private boolean addMarkerInternal(
 
     /** The current style, or null after telling the callback why there is none. */
     private Style loadedStyle(CallbackContext callback) {
+        return loadedStyle(callback, "Map is not initialized.", "Style is not loaded.");
+    }
+
+    /** Same as loadedStyle(callback), with the action's own error messages (matches iOS). */
+    private Style loadedStyle(CallbackContext callback, String notInitialized, String notLoaded) {
         if (mapView == null) {
-            callback.error("Map is not initialized.");
+            callback.error(notInitialized);
             return null;
         }
         Style style = mapView.getMapboxMap().getStyle();
         if (style == null) {
-            callback.error("Style is not loaded.");
+            callback.error(notLoaded);
         }
         return style;
     }
@@ -4175,17 +4038,9 @@ private boolean addMarkerInternal(
 
     private void getLayerIds(CallbackContext callback) {
         runForSession(() -> {
-            if (mapView == null) {
-                callback.error("Map is not initialized getLayerIds.");
-                return;
-            }
-
-            Style style = mapView.getMapboxMap().getStyle();
-
-            if (style == null) {
-                callback.error("Style is not loaded yet.");
-                return;
-            }
+            Style style = loadedStyle(callback,
+                "Map is not initialized getLayerIds.", "Style is not loaded yet.");
+            if (style == null) return;
 
             try {
                 JSONArray ids = new JSONArray();
@@ -4279,10 +4134,7 @@ private boolean addMarkerInternal(
                 "longitude"
             );
 
-            if (!Double.isNaN(latitude)
-                    && !Double.isNaN(longitude)
-                    && isValidLatitude(latitude)
-                    && isValidLongitude(longitude)) {
+            if (isValidLatitude(latitude) && isValidLongitude(longitude)) {
                 ring.add(
                     Point.fromLngLat(longitude, latitude)
                 );
@@ -4308,12 +4160,13 @@ private boolean addMarkerInternal(
             .withFillOutlineColor(lineColor);
     }
 
+    // Range checks also reject NaN (every comparison is false) and +/-Infinity.
     private static boolean isValidLatitude(double lat) {
-        return !Double.isNaN(lat) && !Double.isInfinite(lat) && lat >= -90.0 && lat <= 90.0;
+        return lat >= -90.0 && lat <= 90.0;
     }
 
     private static boolean isValidLongitude(double lon) {
-        return !Double.isNaN(lon) && !Double.isInfinite(lon) && lon >= -180.0 && lon <= 180.0;
+        return lon >= -180.0 && lon <= 180.0;
     }
 
     /** JSONObject.optDouble parses the strings "NaN" and "Infinity"; never pass those on. */
@@ -4414,15 +4267,12 @@ private boolean addMarkerInternal(
     private double segmentDistance(List<Point> segment) {
         double total = 0.0;
         for (int i = 1; i < segment.size(); i++) {
-            float[] results = new float[1];
-            Location.distanceBetween(
+            total += calculateDistanceMeters(
                 segment.get(i - 1).latitude(),
                 segment.get(i - 1).longitude(),
                 segment.get(i).latitude(),
-                segment.get(i).longitude(),
-                results
+                segment.get(i).longitude()
             );
-            total += results[0];
         }
         return total;
     }
@@ -4717,8 +4567,7 @@ private boolean addMarkerInternal(
                 if (pointObj == null) continue;
                 double lat = readFiniteDouble(pointObj, "lat", "latitude");
                 double lon = readFiniteDouble(pointObj, "lon", "lng", "longitude");
-                if (!Double.isNaN(lat) && !Double.isNaN(lon)
-                        && isValidLatitude(lat) && isValidLongitude(lon)) {
+                if (isValidLatitude(lat) && isValidLongitude(lon)) {
                     validPoints.add(Point.fromLngLat(lon, lat));
                     validIndexes.add(i);
                 }
@@ -4875,7 +4724,6 @@ private boolean addMarkerInternal(
     private void getCurrentLocationAccuracy(final CallbackContext callbackContext) {
         runForSession(() -> {
             if (!hasLocationPermission()) {
-                Log.d("MapboxPlugin", "getCurrentLocationAccuracy: location permission not granted");
                 deliverAccuracy(callbackContext, -1f, "Unknown");
                 return;
             }
@@ -4915,7 +4763,6 @@ private boolean addMarkerInternal(
                     .getSystemService(Context.LOCATION_SERVICE);
 
             if (locationManager == null) {
-                Log.d("MapboxPlugin", "getCurrentLocationAccuracy: LocationManager unavailable");
                 deliverAccuracy(callbackContext, -1f, "Unknown");
                 return;
             }
@@ -4923,7 +4770,6 @@ private boolean addMarkerInternal(
             Location bestLocation = getBestAvailableLocation(locationManager);
 
             if (bestLocation == null || !bestLocation.hasAccuracy()) {
-                Log.d("MapboxPlugin", "getCurrentLocationAccuracy: no recent location with accuracy available");
                 deliverAccuracy(callbackContext, -1f, "Unknown");
                 return;
             }
@@ -5023,14 +4869,8 @@ private boolean addMarkerInternal(
             }
 
             String styleUrl = options.optString("styleUrl", "");
-            if (!styleAllowed(styleUrl)) {
-                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
-                return;
-            }
-            if (styleUrl.isEmpty()) {
-                callback.error("styleUrl is required");
-                return;
-            }
+            // An empty styleUrl is rejected here too (styleAllowed is false for "").
+            if (rejectDisallowedStyle(styleUrl, callback)) return;
 
             loadReadyStyle(styleUrl, "styleChanged", callback);
         });
@@ -5192,9 +5032,20 @@ private boolean addMarkerInternal(
         boundaryAnnotationOptions.clear();
         boundaryAnnotations.clear();
         boundaryVisible = true;
+        // Boundary drawing: its annotation managers belonged to the destroyed MapView.
+        isBoundaryDrawing = false;
+        boundaryDrawingPoints.clear();
+        boundaryDrawingLine = null;
+        boundaryDrawingLineManager = null;
+        boundaryDrawingPointAnnotations.clear();
+        boundaryDrawingPointManager = null;
+        boundaryDrawingPolygon = null;
         lineAnnotationManager = null;
         pathAnnotations.clear();
         currentSegmentAnnotation = null;
+        liveChunks.clear();
+        liveChunkSegment = null;
+        liveChunkStart = 0;
         pathPoints.clear();
         isPathTrackingActive = false;
         isPathTrackingPaused = false;
@@ -5215,17 +5066,14 @@ private boolean addMarkerInternal(
         waypointSelectedCallback = null;
         markerClickCallback = null;
         mapTapCallback = null;
+        boundaryAreaCallback = null;
         offlineDownloadProgressCallback = null;
-        trackingStatusCallback = null;
-        locationAccuracyCallback = null;
         lastLocationAccuracyUpdateMs = 0L;
-        cleanupStep(this::cancelCurrentDownload);
         isOfflineDownloading = false;
         waypointSelectionEnabled = false;
         autoAddWaypointMarker = false;
         isUserLocationEnabled = false;
         isUserTrackingEnabled = false;
-        stopCameraFollow();
         isDeviceHeadingEnabled = false;
         isHeadingFollowModeEnabled = false;
         currentGestureTargetsWebView = false;
@@ -5234,6 +5082,7 @@ private boolean addMarkerInternal(
         scaleGestureListener = null;
         rawTapDownMs = 0L;
         lastMapSelectionCallbackMs = lastKeepCallbackOfflineMs = lastKeepCallbackWaypointMs = lastKeepCallbackMarkerMs = 0L;
+        lastOfflineProgressPhase = null;
         lastCompassBearing = Double.NaN;
         lastCompassVisible = false;
         fusedLocationClient = null;
@@ -5321,8 +5170,7 @@ private boolean addMarkerInternal(
             // Re-testing every MOVE can steal a bottom-sheet drag when the pointer
             // leaves its original rectangle or the sheet moves under the pointer.
             if (action == MotionEvent.ACTION_DOWN) {
-                currentGestureTargetsWebView =
-                    mapView == null || isInsideTouchableRect(event.getX(), event.getY());
+                currentGestureTargetsWebView = isInsideTouchableRect(event.getX(), event.getY());
                 if (!currentGestureTargetsWebView) {
                     view.getLocationInWindow(webViewLocation);
                     mapView.getLocationInWindow(mapViewLocation);
@@ -5337,7 +5185,7 @@ private boolean addMarkerInternal(
                 }
             }
 
-            if (currentGestureTargetsWebView || mapView == null) {
+            if (currentGestureTargetsWebView) {
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
                     currentGestureTargetsWebView = false;
                 }
@@ -5401,11 +5249,7 @@ private boolean addMarkerInternal(
         return Math.max(min, Math.min(value, Math.max(min, max)));
     }
 
-    private String sanitizeError(String contextMessage, Throwable t) {
-        Log.e("MapboxPlugin", contextMessage);
-        return contextMessage;
-    }
-
+    /** Logs and returns only the context message; t (a Throwable or Mapbox error) is never exposed. */
     private String sanitizeError(String contextMessage, Object t) {
         Log.e("MapboxPlugin", contextMessage);
         return contextMessage;

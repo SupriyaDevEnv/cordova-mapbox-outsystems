@@ -64,7 +64,7 @@ Legacy scripts using `__mapboxTouchBridge`, `__mapboxTouchHandlers`, `__mapboxTo
 
 The CI smoke builds use Cordova CLI 12.0.0, cordova-android 14.0.1 (Java 17 / Android SDK 35), and cordova-ios 8.0.0. The iOS job uses an Xcode 26 toolchain: Mapbox 11.30.0 binary dependencies failed with the Xcode 16.4 compiler. Confirm your OutSystems MABS build stack supports these native dependencies. These clean-app builds do not certify every MABS version or other plugin combination.
 
-Set the consuming iOS application's minimum deployment target explicitly to **14.0 or later**. A plain Cordova app needs `<preference name="deployment-target" value="14.0" />` in its app `config.xml`; the plugin's `default="14.0"` declaration alone did not raise the generated CocoaPods target in the smoke app. This setting is required before installing/resolving the Mapbox pod.
+Set the consuming iOS application's minimum deployment target explicitly to **14.0 or later**. A plain Cordova app needs `<preference name="deployment-target" value="14.0" />` in its app `config.xml`; the plugin does not set it, because a plugin-level declaration did not raise the generated CocoaPods target in the smoke app. This setting is required before installing/resolving the Mapbox pod.
 
 ## Security
 
@@ -72,9 +72,16 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `MAPBOX_ACCESS_TOKEN` must be a public `pk.*` token. Both platform builds reject configured secret tokens. Initialization always reads the current configuration and removes legacy cached values, so token rotation works after app upgrades. Unconfigured build templates may still be prepared, but cannot initialize the map.
 - Style URLs must be `mapbox://styles/<owner>/<style>` or HTTPS on an explicitly approved host. `MAPBOX_ALLOWED_STYLE_HOSTS` is a comma-separated build preference, defaulting to `api.mapbox.com`. Configure additional trusted style hosts through OutSystems Extensibility Configuration. Credentials in URLs, non-443 ports, fragments, HTTP and local-file URLs are rejected. Only allow hosts serving trusted styles: this entry-point policy does not inspect redirects or every resource referenced by a style.
 - Marker `imageUrl` values must be HTTPS URLs or base64 `data:image/(png|jpeg|webp|gif)` URIs, up to 256 KiB of image data. Serve thumbnails of about 256 px; larger files show a plain pin. `MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS` is an optional comma-separated build preference; when set, only those hosts (including redirect targets) are allowed. When empty (the default), any HTTPS host is allowed; set it for production builds. Android follows at most three redirects and checks each target before connecting to it. Images wider or taller than 4096 px, or larger than 4 megapixels, are rejected before decoding.
-- Numeric options that are not finite numbers, such as the strings `"NaN"` or `"Infinity"`, fall back to their defaults on both platforms. `flyTo` durations are limited to 0-10,000 ms, line widths to 0-50 and opacities to 0-1.
+- Numeric options that are not finite numbers, such as the strings `"NaN"` or `"Infinity"`, fall back to their defaults on both platforms. `flyTo` durations are limited to 0-10,000 ms and opacities to 0-1. Path `lineWidth` (tracking and `loadPath`) must be greater than 0 and is capped at 30; missing or invalid values use 3. Boundary and drawn-boundary outlines use a fixed width.
 - Native inputs are limited to approximately 4 MiB; at most 10,000 markers may exist at once, with marker IDs limited to 256 characters/bytes. Boundary batches allow 1,000 boundaries and 20,000 total vertices. Imported paths allow 2–20,000 points. Tracking stops location updates at the recording limit; call `stopPathTracking()` to retrieve the retained points. Stopping an empty recording returns an empty path with zero distance.
-- Offline zooms must be between 2 and 18, with `minZoom <= maxZoom`; invalid values are rejected. Both circle and rectangle downloads are checked against a conservative bounding-box diagonal of 100 km and an estimated 50,000-tile budget (including lower zooms). This can reject large/high-zoom requests that older releases accepted. Polar and antimeridian-crossing bounds are rejected. The budget is an estimate, not a byte quota; Mapbox's tile-store constraints still apply. At most 20 offline regions can be stored: downloading a new region beyond that fails with `Offline region limit reached`; delete a region first. Re-downloading an existing `regionId` always works. Pass `wifiOnly: true` to `downloadOfflineRegion` or `downloadOfflineRegionForRect` so tiles are never downloaded over mobile data (the small style download is not restricted).
+- Offline downloads are limited by zoom range, area, tile budget and region count; see [Offline maps](#offline-maps).
+- Style URLs and underlying SDK error details are no longer included in plugin diagnostic logs.
+
+## Offline maps
+
+Download map areas for use without a connection, then show or delete them later.
+
+- **Limits:** offline zooms must be between 2 and 18, with `minZoom <= maxZoom`; invalid values are rejected. Both circle and rectangle downloads are checked against a conservative bounding-box diagonal of 100 km and an estimated 50,000-tile budget (including lower zooms). This can reject large/high-zoom requests that older releases accepted. Polar and antimeridian-crossing bounds are rejected. The budget is an estimate, not a byte quota; Mapbox's tile-store constraints still apply. At most 20 offline regions can be stored: downloading a new region beyond that fails with `Offline region limit reached`; delete a region first. Re-downloading an existing `regionId` always works. Pass `wifiOnly: true` to `downloadOfflineRegion` or `downloadOfflineRegionForRect` so tiles are never downloaded over mobile data (the small style download is not restricted).
 - `deleteOfflineRegion` keeps the region's style pack unless you pass `deleteStylePack: true`, because other offline regions usually use the same style. Earlier releases deleted it by default.
 - `downloadOfflineRegion` can download a known area instead of a centre and radius. Pass either `bounds` (`{ south, west, north, east }`) or `polygon` (a GeoJSON Polygon, positions as `[longitude, latitude]`, up to 1,000 positions in total; open rings are closed for you). Passing both is rejected, and `latitude`, `longitude` and `radiusKm` are then ignored. The same zoom, 100 km and tile-budget limits apply. Without `regionId`, the id defaults to `offline-area-<timestamp>`; pass your own id so you can re-download the same area later ("Update now").
 - `downloadOfflineRegion` and `downloadOfflineRegionForRect` resolve with the details to store in your app database:
@@ -99,36 +106,71 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - **Cancel:** `cancelOfflineDownload()` stops the current download without closing the map and resolves with `{ cancelled }` (false when nothing was downloading). The download's own promise rejects with a cancellation error (`error.code === 'MAPBOX_OPERATION_CANCELLED'`). Tiles already fetched stay in Mapbox's storage under that `regionId`; download it again to finish it, or delete it.
 - **Stored regions:** `getOfflineRegionIds()` resolves with `{ regionIds: [...], regions: [{ regionId, sizeBytes, complete }] }` for the maps actually on the device. Use it to remove database rows for maps that are gone; `complete: false` marks a download that stopped part-way.
 - **Progress:** `onOfflineDownloadProgress` events also include `completedBytes` and `completedMB` during the `style` and `tiles` phases, alongside `completed`, `required` and `percent`.
-- Style URLs and underlying SDK error details are no longer included in plugin diagnostic logs.
+- **Keeping your database in step:** generate `regionId` in the app (for example `trail-<id>`); write the database row only after the download succeeds; delete with `deleteOfflineRegion` first, then the row; on offline screens call `getOfflineRegionIds()` and drop rows whose region is gone; disable new downloads at 20 regions.
 
 ## Actions
 
+All actions are on `window.MapboxPlugin`. They return a Promise unless noted; `on...` functions register a single listener (registering again replaces it) and return nothing.
+
+Map and camera:
+
 - `initialize(options)`
+- `close()`
 - `setViewport(options)`
+- `resizeMap(options)` — moves/resizes the native map to `x`, `y`, `width`, `height` (WebView-local native pixels).
 - `setTouchableRects(rects)`
+- `setMapStyle(options)` — replaces the style with `styleUrl`; resolves when the new style has loaded (see [Style readiness](#style-readiness-and-sequential-outsystems-actions)).
 - `setCamera(options)`
 - `flyTo(options)`
 - `getCamera()`
-- `getCurrentLocationAccuracy()`
+- `resetMapBearing()` — animates the map back to north-up.
+- `onMapTap(callback, errorCallback)` — reports taps on the map as `{ type: 'mapTapped', latitude, longitude }`.
+- `onCompassChanged(callback, errorCallback)` — reports `{ bearing, visible }` when the map bearing changes; `visible` is false when the map faces (almost) north, so a compass button can hide.
+
+Location:
+
 - `enableUserLocation()`
 - `moveToCurrentLocation(options)`
 - `setUserTrackingEnabled(options)`
 - `setDeviceHeadingEnabled(options)`
 - `setHeadingFollowMode(options)`
+- `getCurrentLocationAccuracy()`
+- `onLocationAccuracyChanged(callback, errorCallback)` — starts an accuracy monitor and reports `{ type: 'locationAccuracy', accuracy, latitude, longitude, timestamp }` (accuracy in metres).
+- `onTrackingStatusChanged(callback, errorCallback)` — reports `{ userLocation, userTracking, deviceHeading, headingFollowMode }` when any of these modes changes.
+
+Markers and waypoints:
+
 - `addMarker(options)`
 - `loadMarkers(markers, options)`
-- `removeMarker(id)`
+- `removeMarker(markerId, success?, error?)`
 - `clearMarkers()`
+- `onMarkerClick(callback, errorCallback)`
+- `setWaypointSelectionEnabled(options)`
+- `onWaypointSelected(callback, errorCallback)`
+
+Boundaries:
+
 - `loadBoundaries(boundaries, options)`
 - `setBoundaryVisibility(options)`
 - `clearBoundaries()`
+- `startBoundaryDrawing()` — starts drawing a new boundary; each map tap adds a corner.
+- `undoBoundaryPoint()` — removes the last corner drawn.
+- `saveBoundaryDrawing(options)` — finishes the drawing (at least 3 corners) and resolves with `{ name, geometry: [{ lat, lon }], count, areaAcres }`; pass `name` in `options`. The polygon stays on the map.
+- `cancelBoundaryDrawing()` — discards the drawing in progress.
+- `onBoundaryAreaChanged(callback, errorCallback)` — reports `{ areaAcres, pointCount }` while a boundary is being drawn.
+
+Paths ([full reference](https://github.com/SupriyaDevEnv/cordova-mapbox-outsystems/blob/main/docs/path-tracking-api.md)):
+
 - `startPathTracking(options)`
-- `stopPathTracking()`
 - `pausePathTracking()`
 - `continuePathTracking()`
+- `stopPathTracking()`
 - `loadPath(pathData, options)`
 - `clearPaths()`
 - `setPathVisibility(options)`
+
+Offline maps (see [Offline maps](#offline-maps)):
+
 - `downloadOfflineRegion(options)`
 - `downloadOfflineRegionForRect(options)`
 - `estimateOfflineRegionSize(options)`
@@ -139,15 +181,22 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `showOfflineRegion(options)`
 - `deleteOfflineRegion(options)`
 - `onOfflineDownloadProgress(callback, errorCallback)`
-- `setWaypointSelectionEnabled(options)`
-- `onWaypointSelected(callback, errorCallback)`
-- `onMarkerClick(callback, errorCallback)`
+- `offlineDetailMaxZoom` — read-only object (not a function) mapping `detail` levels to download max zoom: `{ low: 13, medium: 15, high: 16 }`.
+
+Style layers:
+
 - `setLayerVisibility(options)`
 - `getLayerIds()`
 - `getLayersByGroup(options)`
 - `setLayerGroupVisibility(options)`
 - `diagnoseLayerGroup(groupId)`
-- `close()`
+
+Utilities and diagnostics:
+
+- `isCancellationError(error)` — synchronous; returns true when a rejection only means the map was closed or the request was superseded (see [Navigation cancellation](#navigation-cancellation-and-location-requests)).
+- `ping()` — resolves with `{ status: 'ok', service, class }` when the native plugin is reachable.
+- `getMapboxVersion(success, error)` — callback-only (no Promise); passes the Mapbox SDK version string.
+- `diagnostic()` — synchronous; returns `{ cordova, service, pluginObject, plugins }` describing the Cordova bridge and loaded plugins, for troubleshooting.
 
 ## Initialize Map
 
@@ -221,7 +270,7 @@ the defaults. Reinitializing without bounds restores the original SDK behavior.
 These limits constrain the initial camera, zoom gestures, and later camera updates
 (including `setCamera` and `flyTo`); the SDK clamps the requested camera zoom to its
 bounds. They do not change offline downloads: download `minZoom`/`maxZoom` still use
-the separate 2â€“18 range and existing defaults of 10/16.
+the separate 2–18 range and existing defaults of 10/16.
 
 Map viewport, resize, touch-region, and offline-selection rectangles use WebView-local native pixels on both platforms. Convert CSS viewport coordinates by multiplying them by `window.devicePixelRatio`; iOS converts those values to UIKit points internally without guessing from the rectangle size.
 
@@ -423,172 +472,14 @@ window.MapboxPlugin.clearBoundaries()
 
 ## Path Tracking
 
-Full reference: [docs/path-tracking-api.md](docs/path-tracking-api.md).
+Path tracking records the user's GPS movement as a polyline on the map, for example a hunt, run or walk:
 
-Path tracking lets you record the user's GPS movement as a visible polyline on the map. This is useful for hunt tracking, running routes, or any scenario where you need a trail of where the user has been.
+- `startPathTracking({ lineColor, lineWidth, lineOpacity, trackCamera })` starts recording and drawing. GPS only runs while `trackCamera` is on (the default).
+- `pausePathTracking()` / `continuePathTracking()` pause collection; each resume starts a new segment, drawn with a gap.
+- `stopPathTracking()` resolves with `{ points, distance, duration, segments, segmentCount }`. Save `points` and `segments` together so a replay keeps the pause gaps.
+- `loadPath({ points, segments, lineColor, lineWidth, lineOpacity })` draws a saved path; `clearPaths()` removes it and `setPathVisibility({ visible })` hides or shows it.
 
-### Start Path Tracking
-
-Begins recording GPS points and drawing a live trail on the map. Optionally enables camera tracking at the same time.
-
-```javascript
-window.MapboxPlugin.startPathTracking({
-  lineColor: "#FF0000",    // optional, default "#FF0000"
-  lineWidth: 3.0,          // optional, default 3.0
-  lineOpacity: 0.8,        // optional, default 1.0
-  trackCamera: "true"      // optional, default "true" â€” also enable camera following
-})
-  .then($resolve)
-  .catch($reject);
-```
-
-### Stop Path Tracking
-
-Stops recording and returns all collected points so you can persist them.
-
-```javascript
-window.MapboxPlugin.stopPathTracking()
-  .then(function (result) {
-    // result.points = [{lat: 17.680, lon: 83.249}, ...]
-    // result.distance = 1234.5  (meters)
-    // result.duration = 45000   (milliseconds of moving time, pauses excluded)
-    // result.segments = [{startIndex: 0, endIndex: 50}, {startIndex: 51, endIndex: 100}]
-    // result.segmentCount = 2
-
-    // Save to your OutSystems database here
-  })
-  .catch($reject);
-```
-
-### Pause Path Tracking
-
-Temporarily pauses GPS collection and line drawing. The tracking session stays active but no points are collected or drawn while paused.
-
-```javascript
-window.MapboxPlugin.pausePathTracking()
-  .then(function (result) {
-    // result.status = "paused"
-    // result.segmentCount = 1 (segments completed so far)
-  })
-  .catch($reject);
-```
-
-### Continue Path Tracking
-
-Resumes GPS collection after a pause. Starts a new line segment from the current position (visual gap between paused sections).
-
-```javascript
-window.MapboxPlugin.continuePathTracking()
-  .then(function (result) {
-    // result.status = "continued"
-    // result.segmentCount = 2 (total segments including the new one)
-  })
-  .catch($reject);
-```
-
-**Pause/Continue Flow:**
-```
-Start â†’ line segment A drawn
-  Pause â†’ line stops, no GPS collected
-  Continue â†’ new line segment B starts from current position
-  Pause â†’ line stops again
-  Continue â†’ new line segment C starts
-Stop â†’ returns all points + segment boundaries
-```
-
-The `segments` array in the stop result tells you where each segment starts/ends in the flat points array:
-```json
-{
-  "points": [{"lat": 1, "lon": 2}, ..., {"lat": 5, "lon": 6}],
-  "segments": [
-    {"startIndex": 0, "endIndex": 50},
-    {"startIndex": 51, "endIndex": 100},
-    {"startIndex": 101, "endIndex": 150}
-  ],
-  "segmentCount": 3
-}
-```
-
-### Load a Pre-recorded Path
-
-Draws a path from saved coordinates. Use this to display a past hunt track.
-
-```javascript
-window.MapboxPlugin.loadPath({
-  points: [
-    { lat: 17.680, lon: 83.249 },
-    { lat: 17.681, lon: 83.250 },
-    { lat: 17.682, lon: 83.251 }
-  ],
-  segments: [              // optional, from stopPathTracking: keeps the pause gaps
-    { startIndex: 0, endIndex: 1 },
-    { startIndex: 2, endIndex: 2 }
-  ],
-  lineColor: "#FF0000",    // optional, default "#FF0000"
-  lineWidth: 3.0,          // optional, default 3.0
-  lineOpacity: 0.8         // optional, default 1.0
-})
-  .then($resolve)
-  .catch($reject);
-```
-
-### Clear Paths
-
-Removes all drawn paths from the map.
-
-```javascript
-window.MapboxPlugin.clearPaths()
-  .then($resolve)
-  .catch($reject);
-```
-
-### Show Or Hide Paths
-
-Toggle path visibility without removing it.
-
-```javascript
-window.MapboxPlugin.setPathVisibility({
-  visible: true
-})
-  .then($resolve)
-  .catch($reject);
-```
-
-### OutSystems Integration Example
-
-**Start hunt:**
-```javascript
-window.MapboxPlugin.startPathTracking({ lineColor: "#FF0000" })
-```
-
-**Pause hunt (e.g., user takes a break):**
-```javascript
-window.MapboxPlugin.pausePathTracking()
-```
-
-**Continue hunt (resume after break):**
-```javascript
-window.MapboxPlugin.continuePathTracking()
-```
-
-**Stop hunt and save:**
-```javascript
-window.MapboxPlugin.stopPathTracking()
-  .then(function (result) {
-    // In a Client Action, call a Server Action to save:
-    //   SaveHuntTrack(result.points, result.distance, result.duration, result.segments)
-    // The Server Action stores to your Entity/Database
-  })
-```
-
-**View past hunt:**
-```javascript
-// Fetch saved points from your database, then:
-window.MapboxPlugin.loadPath({
-  points: $parameters.SavedPoints,
-  segments: $parameters.SavedSegments   // optional; without it the hunt draws as one line
-})
-```
+Full reference, including styling rules, limits, errors and an OutSystems example: [docs/path-tracking-api.md](https://github.com/SupriyaDevEnv/cordova-mapbox-outsystems/blob/main/docs/path-tracking-api.md).
 
 ## Style Layers
 
@@ -614,7 +505,7 @@ Reference for the marker functions on `window.MapboxPlugin`: adding, bulk loadin
 |---|---|
 | [`addMarker(options)`](#addmarkeroptions) | Add or replace one marker |
 | [`loadMarkers(markers, options)`](#loadmarkersmarkers-options) | Add many markers in one call |
-| [`removeMarker(id)`](#removemarkerid) | Remove one marker |
+| [`removeMarker(markerId)`](#removemarkermarkerid-success-error) | Remove one marker |
 | [`clearMarkers()`](#clearmarkers) | Remove all markers |
 | [`onMarkerClick(callback, errorCallback)`](#onmarkerclickcallback-errorcallback) | Receive marker tap events |
 
@@ -750,19 +641,29 @@ window.MapboxPlugin.loadMarkers($parameters.Markers, { replace: true })
   .catch($reject);
 ```
 
-### removeMarker(id)
+### removeMarker(markerId, success?, error?)
 
-Removes one marker. Resolves with no value, whether or not the marker existed.
+Removes the marker created by `addMarker` or `loadMarkers` with that exact ID. Resolves with no value, whether or not the marker existed; other markers are unchanged.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `id` | string | The marker's ID. |
-
-The ID must be a non-empty string; numeric IDs are rejected on both platforms. See [Remove one marker](#remove-one-marker-android-and-ios) for the optional callbacks and error behavior.
+| `markerId` | string | The marker's ID. Must be a non-empty string: convert numeric record IDs with `String(...)`. |
+| `success`, `error` | function | Optional callbacks for Cordova/OutSystems callers. The returned Promise follows them, like `promise.then(success, error)`; without an error callback, failures reject the Promise. |
 
 ```javascript
 window.MapboxPlugin.removeMarker(String($parameters.Id)).then($resolve).catch($reject);
+
+// Callback form:
+MapboxPlugin.removeMarker('record-123', function () {
+  console.log('Marker removed');
+}, function (error) {
+  console.error(error);
+});
 ```
+
+- Missing, empty or non-string IDs fail with `markerId must be a non-empty string.` on both platforms.
+- Removal clears the marker's metadata and any pending image download or conversion; the registered `onMarkerClick` listener stays active.
+- Closing or reinitializing the map cancels pending removals like any other operation.
 
 To replace an offline marker with its synced version, remove it by its temporary ID and add it again with the server ID and `isOnline: true`.
 
@@ -910,7 +811,7 @@ By default, any HTTPS host is allowed. To allow only specific hosts, set the `MA
 
 ### Marker platform differences
 
-- **Pin size.** The pin is drawn 72 × 96 on both platforms, but Android uses physical pixels and iOS uses points. On a typical 3Ã— Android phone the pin appears about one third the size of the iOS pin, so images inside it are smaller too.
+- **Pin size.** The pin is drawn 72 × 96 on both platforms, but Android uses physical pixels and iOS uses points. On a typical 3× Android phone the pin appears about one third the size of the iOS pin, so images inside it are smaller too.
 - **Tap area.** Android also reports taps on the map within 150 m of a marker. iOS reports only taps on the pin.
 - **Non-object items in `loadMarkers`.** Android skips `null` items. On iOS, one non-object item makes the whole array read as empty, so with `replace: true` all markers are cleared.
 
@@ -948,7 +849,7 @@ With this attribute, tracking no longer depends on element types. **Anything dra
 - Each update visits every element once and reads styles only for elements over the map that are not already covered; in browser tests a map screen took well under a millisecond, so updates can run on every frame of a sheet drag or animation.
 - `autoTouchRouting: false` ignores the attribute and keeps protecting only `.map-control-btn`.
 
-[docs/touch-routing-demo.html](docs/touch-routing-demo.html) is a browser simulation of a map screen that compares this mode with the control-type list.
+[docs/touch-routing-demo.html](https://github.com/SupriyaDevEnv/cordova-mapbox-outsystems/blob/main/docs/touch-routing-demo.html) is a browser simulation of a map screen that compares this mode with the control-type list.
 - Normal WebView events handle clicks. The plugin does not simulate `.click()` or intercept DOM touch events. Controls must be reachable through normal DOM hit testing; check overlapping elements and `pointer-events` if a custom control still fails.
 
 After rebuilding the Android and iOS apps with this version, disable/remove the old standalone touch script. Its `window.__mapboxTouchBridge.stop()` is also called at automatic initialization if present, but the old script must not run again afterward. Remove the standalone touch script on both Android and iOS.
@@ -1012,17 +913,17 @@ The Mapbox access token is configured once through OutSystems extensibility conf
 
 ## OutSystems Setup
 
-1. Add the plugin repository URL to the mobile app extensibility configuration, pinned to a release tag or commit (for example `#v1.0.9`).
+1. Add the plugin repository URL to the mobile app extensibility configuration, pinned to a release tag or commit (for example `#v1.0.10`).
 2. Set `MAPBOX_ACCESS_TOKEN` and, for production, `MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS` and `LOCATION_USAGE_DESCRIPTION`.
 3. Create OutSystems Client Actions that call the JavaScript examples above.
 4. Generate the Android/iOS mobile app.
-5. Test on real Android and iOS devices; see [docs/testing.md](docs/testing.md).
+5. Test on real Android and iOS devices; see [docs/testing.md](https://github.com/SupriyaDevEnv/cordova-mapbox-outsystems/blob/main/docs/testing.md).
 
 ## Production packaging
 
-The production plugin contains `plugin.xml`, `package.json`, `README.md`, `CHANGELOG.md`, `www/`, `src/`, and `hooks/`. The token-check hook, the Android Gradle file, and all Android/iOS source files are build inputs and must remain included.
+The production plugin contains `plugin.xml`, `package.json`, `README.md`, `CHANGELOG.md`, `www/`, `src/`, and `hooks/`. `docs/` and `tests/` are not in the npm package or ZIP, so README links to them point to GitHub. The token-check hook, the Android Gradle file, and all Android/iOS source files are build inputs and must remain included.
 
-The npm `files` allowlist excludes development files from `npm pack` (npm also includes `package.json` and `README.md`). `.gitattributes` excludes `tests/`, `.github/`, and Git configuration files from `git archive` and GitHub source ZIPs. All regression tests, including the five native Python tests, remain in Git and CI; Python is not required to install or run the packaged plugin.
+The npm `files` allowlist excludes development files from `npm pack` (npm also includes `package.json` and `README.md`). `.gitattributes` excludes `tests/`, `.github/`, and Git configuration files from `git archive` and GitHub source ZIPs. All regression tests, including the 13 Python tests in `tests/` (12 native regression tests and the package check), remain in Git and CI; Python is not required to install or run the packaged plugin. See [docs/testing.md](https://github.com/SupriyaDevEnv/cordova-mapbox-outsystems/blob/main/docs/testing.md).
 
 Create an OutSystems plugin ZIP from a committed revision:
 
@@ -1036,7 +937,7 @@ From a development checkout, run `python3 tests/check-package.py` to verify the 
 
 ## iOS Location Prompt
 
-Set `LOCATION_USAGE_DESCRIPTION` to the text iOS shows when asking for location access. It defaults to the Realm Mapping wording, so other apps should set their own:
+Set `LOCATION_USAGE_DESCRIPTION` to the text iOS shows when asking for location access. It defaults to the generic "This app uses your location to show your position on the map."; set your own wording that names your app:
 
 ```json
 {
@@ -1047,7 +948,8 @@ Set `LOCATION_USAGE_DESCRIPTION` to the text iOS shows when asking for location 
 
 ## SDK Versions
 
-- Android uses Mapbox Maps `11.30.0` by default.
+- Android uses Mapbox Maps `11.30.0` by default. Override it with the `MAPBOX_ANDROID_VERSION` plugin variable (an exact version).
+- Android uses Google Play services location `21.0.1` by default. Override it with the `PLAY_SERVICES_LOCATION_VERSION` plugin variable (an exact version), for example to match another plugin in the app.
 - iOS pins Mapbox Maps to `11.30.0`.
 - iOS reads the token natively and assigns it via `MapboxOptions.accessToken`.
 
@@ -1059,7 +961,7 @@ The Android build filters native libraries to production device ABIs by default:
 arm64-v8a,armeabi-v7a
 ```
 
-This filter applies to every native library in the app, not only Mapbox. Set the value to `all` to keep every ABI, for example to support x86_64 Chromebooks. The plugin reads `MAPBOX_ANDROID_ABIS` and `MAPBOX_ANDROID_VERSION` from the generated `config.xml`; a Gradle property or environment variable of the same name takes precedence. Unknown ABI names and non-exact versions such as `11.+` fail the build.
+This filter applies to every native library in the app, not only Mapbox. Set the value to `all` to keep every ABI, for example to support x86_64 Chromebooks. The plugin reads `MAPBOX_ANDROID_ABIS`, `MAPBOX_ANDROID_VERSION` and `PLAY_SERVICES_LOCATION_VERSION` from the generated `config.xml`; a Gradle property or environment variable of the same name takes precedence. If none is set, the Gradle file uses the same defaults as `plugin.xml` (`arm64-v8a,armeabi-v7a`, `11.30.0`, `21.0.1`). Unknown ABI names and non-exact versions such as `11.+` fail the build.
 
 The plugin does not enable R8 minification or resource shrinking. Cordova loads plugin classes by name, so turning shrinking on is left to the app, together with keep rules for its plugins.
 
@@ -1089,30 +991,3 @@ For emulator testing, include `x86_64`:
 - Use `moveToCurrentLocation` for a one-time move to user location.
 - Use `setUserTrackingEnabled` only when the map should keep following the user.
 - Background location tracking is not part of the Mapbox map view. Add a background geolocation plugin or native background location feature for that use case.
-
-### Remove one marker (Android and iOS)
-
-`MapboxPlugin.removeMarker(markerId, success?, error?)` removes the marker created
-by `addMarker` or `loadMarkers` with that exact string ID. It returns a Promise and
-also accepts optional success/error callbacks:
-
-```javascript
-await MapboxPlugin.removeMarker('record-123');
-
-// Callback form for Cordova/OutSystems integrations:
-MapboxPlugin.removeMarker('record-123', function () {
-  console.log('Marker removed');
-}, function (error) {
-  console.error(error);
-});
-```
-
-- Success has no payload. Unknown/already removed IDs succeed without changing other markers.
-- Missing, empty, or non-string IDs fail with `markerId must be a non-empty string.`.
-  Numeric record IDs must be converted to strings explicitly.
-- Without an error callback, failures reject the Promise. With callbacks, the returned
-  Promise follows the callback result, just like `promise.then(success, error)`.
-- Removal clears marker metadata and pending image subscriptions, while keeping other
-  markers and the registered marker-click callback active. Closing/reinitializing the
-  map cancels pending operations through the existing cancellation mechanism.
-- The native Cordova action remains `removeMarker` with arguments `[{ id: markerId }]`.

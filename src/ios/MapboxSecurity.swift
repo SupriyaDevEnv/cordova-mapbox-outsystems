@@ -63,13 +63,16 @@ enum MapboxSecurity {
         let a = pow(sin((north - south) * rad / 2), 2)
             + cos(south * rad) * cos(north * rad) * pow(sin((east - west) * rad / 2), 2)
         guard 6371000 * 2 * asin(sqrt(min(1, a))) <= 100000 else { return false }
-        func mercator(_ lat: Double) -> Double {
-            (1 - log(tan(lat * rad) + 1 / cos(lat * rad)) / Double.pi) / 2
-        }
         let scale = pow(2, ceil(zoom))
         let columns = ceil((east - west) / 360 * scale) + 2
         let rows = ceil(abs(mercator(north) - mercator(south)) * scale) + 2
         return columns * rows * 4 / 3 <= 50000
+    }
+
+    /// Web Mercator y in [0, 1] (0 at the north edge) for a latitude in degrees.
+    private static func mercator(_ lat: Double) -> Double {
+        let rad = Double.pi / 180
+        return (1 - log(tan(lat * rad) + 1 / cos(lat * rad)) / Double.pi) / 2
     }
 
     // Tiles covering the box at every zoom from minZoom to maxZoom, for one tileset.
@@ -78,10 +81,6 @@ enum MapboxSecurity {
                                    minZoom: Int, maxZoom: Int) -> Int64 {
         guard [south, west, north, east].allSatisfy({ $0.isFinite }), south <= north, west <= east,
               minZoom >= 0, maxZoom <= 22, minZoom <= maxZoom else { return -1 }
-        let rad = Double.pi / 180
-        func mercator(_ lat: Double) -> Double {
-            (1 - log(tan(lat * rad) + 1 / cos(lat * rad)) / Double.pi) / 2
-        }
         func tileIndex(_ value: Double, _ n: Double) -> Int64 {
             Int64(max(0, min(n - 1, floor(value))))
         }

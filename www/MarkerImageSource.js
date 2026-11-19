@@ -194,14 +194,6 @@ function isEmptyBinary(value) {
   return Array.isArray(value) && value.length === 0;
 }
 
-function needsWork(markers, keys) {
-  for (var i = 0; i < markers.length; i++) {
-    var marker = markers[i];
-    if (marker && typeof marker === 'object' && hasField(marker, keys)) return true;
-  }
-  return false;
-}
-
 // Synchronous first step. Returns { marker, image, url }:
 // - marker: a copy without the binary fields that native can draw now (no image yet);
 // - image: the validated binary still to convert, or null when there is nothing to do;
@@ -311,12 +303,9 @@ function nativeJsonSize(value) {
 module.exports = {
   ADD_KEYS: ADD_KEYS,
   LOAD_KEYS: LOAD_KEYS,
-  needsWork: needsWork,
   prepare: prepare,
   stage: stage,
   convert: convert,
   finish: finish,
-  nativeJsonSize: nativeJsonSize,
-  readBinary: readBinary,
-  _resetWarnings: function () { warnedFind = false; }
+  nativeJsonSize: nativeJsonSize
 };

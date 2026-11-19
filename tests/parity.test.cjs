@@ -148,7 +148,7 @@ test('isOnline sync flag is accepted by addMarker and loadMarkers and returned i
   assert.match(ios, /isOnline: marker\["IsOnline"\] as\? Bool \?\? true/);
   assert.match(ios, /var isOnline = true/);
   assert.equal((android.match(/payload\.put\("isOnline"/g) || []).length, 2);
-  assert.equal((ios.match(/"isOnline": /g) || []).length, 3);
+  assert.equal((ios.match(/"isOnline": /g) || []).length, 2);
 });
 
 test('iOS implements boundary drawing actions and live acreage updates', () => {
@@ -167,7 +167,10 @@ test('iOS implements boundary drawing actions and live acreage updates', () => {
   assert.match(ios, /"areaAcres": calculateBoundaryAreaAcres\(boundaryDrawingPoints\)/);
   assert.match(ios, /"pointCount": boundaryDrawingPoints\.count/);
   assert.match(ios, /"areaAcres": self\.calculateBoundaryAreaAcres\(self\.boundaryDrawingPoints\)/);
-  assert.match(ios, /completedBoundaryDrawingPolygons\.append\(polygon\)/);
+  // A saved polygon stays on the map: save forgets it without removing it from its manager.
+  const iosSave = ios.split('func saveBoundaryDrawing(command:')[1].split('@objc(cancelBoundaryDrawing:', 1)[0];
+  assert.match(iosSave, /self\.boundaryDrawingPolygon = nil/);
+  assert.doesNotMatch(iosSave, /removeActiveBoundaryDrawingPolygon\(\)/);
 });
 
 test('marker image size limit and offline limits match on both platforms', () => {

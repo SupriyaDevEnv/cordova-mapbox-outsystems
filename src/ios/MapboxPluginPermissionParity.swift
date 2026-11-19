@@ -55,7 +55,8 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
         runWhenLocationAuthorized(.startPathTracking(command))
     }
 
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    override func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        super.locationManagerDidChangeAuthorization(manager)
         guard manager === permissionLocationManager else {
             return
         }
@@ -144,12 +145,6 @@ class MapboxPluginPermissionParity: MapboxPluginParity {
              .startPathTracking(let command):
             callbackId = command.callbackId
         }
-
-        let result = CDVPluginResult(
-            status: CDVCommandStatus_ERROR,
-            messageAs: message
-        )
-        forgetCallback(callbackId)
-        commandDelegate.send(result, callbackId: callbackId)
+        sendError(message, callbackId: callbackId)
     }
 }

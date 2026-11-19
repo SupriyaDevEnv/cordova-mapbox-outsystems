@@ -1,6 +1,6 @@
 // Cordova copies plugin variables into res/xml/config.xml. Read them there so that
-// MAPBOX_ANDROID_VERSION and MAPBOX_ANDROID_ABIS set in Extensibility Configuration
-// take effect; Gradle properties and environment variables still win.
+// MAPBOX_ANDROID_VERSION, MAPBOX_ANDROID_ABIS and PLAY_SERVICES_LOCATION_VERSION set in
+// Extensibility Configuration take effect; Gradle properties and environment variables still win.
 def mapboxConfigPreference = { String name ->
     try {
         def value = project.ext.has("cdvHelpers")
@@ -22,26 +22,25 @@ if (!(mapboxAndroidVersion ==~ /\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?/)) {
     throw new GradleException("MAPBOX_ANDROID_VERSION must be an exact version such as 11.30.0, not '${mapboxAndroidVersion}'.")
 }
 
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-        maven {
-            url = uri("https://api.mapbox.com/downloads/v2/releases/maven")
-            content { includeGroupByRegex "com\\.mapbox.*" }
-        }
-    }
+def playServicesLocationVersion = (project.findProperty("PLAY_SERVICES_LOCATION_VERSION")
+        ?: System.getenv("PLAY_SERVICES_LOCATION_VERSION")
+        ?: mapboxConfigPreference("PLAY_SERVICES_LOCATION_VERSION")
+        ?: "21.0.1").toString().trim()
+
+if (!(playServicesLocationVersion ==~ /\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?/)) {
+    throw new GradleException("PLAY_SERVICES_LOCATION_VERSION must be an exact version such as 21.0.1, not '${playServicesLocationVersion}'.")
 }
 
 android {
 
     // abiFilters applies to every native library in the host app, not only Mapbox.
-    // "all" keeps every ABI that the app's dependencies ship.
+    // "all" keeps every ABI that the app's dependencies ship. The fallback matches the
+    // MAPBOX_ANDROID_ABIS default in plugin.xml.
     def knownAbis = ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"]
     def configuredAbis = (project.findProperty("MAPBOX_ANDROID_ABIS")
             ?: System.getenv("MAPBOX_ANDROID_ABIS")
             ?: mapboxConfigPreference("MAPBOX_ANDROID_ABIS")
-            ?: "all")
+            ?: "arm64-v8a,armeabi-v7a")
             .toString()
             .split(",")
             .collect { it.trim() }
@@ -83,6 +82,6 @@ dependencies {
         exclude group: "com.google.android.gms", module: "play-services-cronet"
     }
 
-    implementation "com.google.android.gms:play-services-location:21.0.1"
+    implementation "com.google.android.gms:play-services-location:${playServicesLocationVersion}"
 
 }
