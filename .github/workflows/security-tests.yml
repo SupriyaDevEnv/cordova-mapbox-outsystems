@@ -7,7 +7,8 @@ permissions:
   contents: read
 jobs:
   security:
-    runs-on: macos-14
+    # macos-14 is no longer offered for this repository; match the iOS build job.
+    runs-on: macos-26
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
