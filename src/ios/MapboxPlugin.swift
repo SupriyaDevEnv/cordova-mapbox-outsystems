@@ -21,15 +21,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
-    // Like runForGeneration, but also dropped once the download was cancelled or replaced.
-    private func runForDownload(_ generation: UInt64, _ downloadToken: UInt64, _ work: @escaping () -> Void) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.sessionGeneration == generation,
-                  self.offlineDownloadToken == downloadToken else { return }
-            work()
-        }
-    }
-
     private var sessionCallbacks: [String: Bool] = [:]
     private var streamCallbacks: [String: String] = [:]
     private var closeCallbackId: String?
@@ -1718,6 +1709,15 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                     self.sendError(self.sanitizeError(contextMessage: "Failed to download tile region.", error: error), command)
                 }
             }
+        }
+    }
+
+    // Like runForGeneration, but also dropped once the download was cancelled or replaced.
+    private func runForDownload(_ generation: UInt64, _ downloadToken: UInt64, _ work: @escaping () -> Void) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.sessionGeneration == generation,
+                  self.offlineDownloadToken == downloadToken else { return }
+            work()
         }
     }
 

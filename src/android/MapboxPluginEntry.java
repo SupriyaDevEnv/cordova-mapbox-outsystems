@@ -168,13 +168,6 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
         });
     }
 
-    // Like runForGeneration, but also dropped once the download was cancelled or replaced.
-    private void runForDownload(long generation, long downloadToken, Runnable action) {
-        cordova.getActivity().runOnUiThread(() -> {
-            if (generation == sessionGeneration && downloadToken == offlineDownloadToken) action.run();
-        });
-    }
-
     private final List<CallbackContext> sessionCallbacks = new ArrayList<>();
     private CallbackContext closeCallback;
     private FrameLayout touchRouter;
@@ -2452,6 +2445,13 @@ if (gestures != null) {
         iso.setTimeZone(TimeZone.getTimeZone("UTC"));
         result.put("downloadedAt", iso.format(new Date()));
         return result;
+    }
+
+    // Like runForGeneration, but also dropped once the download was cancelled or replaced.
+    private void runForDownload(long generation, long downloadToken, Runnable action) {
+        cordova.getActivity().runOnUiThread(() -> {
+            if (generation == sessionGeneration && downloadToken == offlineDownloadToken) action.run();
+        });
     }
 
     /** {x, y, width, height} in native pixels, or null when the rectangle is invalid. */
