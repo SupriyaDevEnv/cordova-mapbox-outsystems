@@ -674,18 +674,8 @@ var api = {
     return call('setLayerGroupVisibility', [options || {}]);
   },
 
-  diagnoseLayerGroup: function (groupId) {
-    return call('diagnoseLayerGroup', [{
-      groupId: groupId || ''
-    }]);
-  },
-
   getLayersByGroup: function (options) {
     return call('getLayersByGroup', [options || {}]);
-  },
-
-  getLayerIds: function () {
-    return call('getLayerIds', []);
   },
 
   clearBoundaries: function () {

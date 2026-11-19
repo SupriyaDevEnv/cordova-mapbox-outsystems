@@ -143,10 +143,8 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `onWaypointSelected(callback, errorCallback)`
 - `onMarkerClick(callback, errorCallback)`
 - `setLayerVisibility(options)`
-- `getLayerIds()`
 - `getLayersByGroup(options)`
 - `setLayerGroupVisibility(options)`
-- `diagnoseLayerGroup(groupId)`
 - `close()`
 
 ## Initialize Map
@@ -597,10 +595,8 @@ These actions work on the layers of the current map style, on both Android and i
 | Action | Options | Result |
 |---|---|---|
 | `setLayerVisibility(options)` | `layerId` (required), `visible` (default `true`) | Nothing |
-| `getLayerIds()` | None | Array of layer IDs, in drawing order |
 | `getLayersByGroup(options)` | `groupId` (required) | `{ groupId, totalLayers, layers: [{ id, name, type }] }` |
-| `setLayerGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | `{ groupId, visible, updatedCount, updatedLayers }`. Fails if no layer is in the group. |
-| `diagnoseLayerGroup(groupId)` | Group ID string | `{ requestedGroup, totalLayers, layersWithMetadata, matchingLayerCount, matchingLayers, targetLayerDetails }`. Debugging only; `targetLayerDetails` is always empty. |
+| `setLayerGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | Success: `{ groupId, visible, updatedCount, updatedLayers, failedCount, failedLayers }`. If no layers update, the error is JSON text with `matchedLayers`, `updatedCount`, and `failedLayers`. |
 
 ```javascript
 await MapboxPlugin.setLayerGroupVisibility({ groupId: $parameters.GroupId, visible: false });

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed:** removed `diagnoseLayerGroup` and `getLayerIds` from the Android and iOS APIs.
+- **Changed:** iOS `setLayerGroupVisibility` reports per-layer failures and partial updates like Android.
 - **New:** `downloadOfflineRegion` accepts `bounds` (`{ south, west, north, east }`) or a GeoJSON `polygon` to download a known area, such as a recommended trail, instead of a centre and radius.
 - **New:** `downloadOfflineRegion` and `downloadOfflineRegionForRect` resolve with `sizeBytes`, `bounds`, `polygon` (the exact area downloaded), `minZoom`, `maxZoom`, `styleUrl` and `downloadedAt`, alongside the existing `regionId`, `latitude`, `longitude` and `radiusKm`.
 - **New:** `estimateOfflineRegionSize` and `estimateOfflineRegionSizeForRect` return an approximate tile count and download size, and whether the download would be within the limits.

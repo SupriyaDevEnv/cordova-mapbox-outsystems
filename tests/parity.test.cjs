@@ -213,35 +213,55 @@ test('every Android action has an iOS implementation, and the reverse', () => {
 
 test('iOS reads layer groups from mapbox:group metadata like Android', () => {
   const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
-  for (const name of ['getLayerIds', 'getLayersByGroup', 'setLayerGroupVisibility', 'diagnoseLayerGroup']) {
+  for (const name of ['getLayersByGroup', 'setLayerGroupVisibility']) {
     assert.ok(parity.includes('@objc(' + name + ':)'), name + ' is missing on iOS');
   }
   assert.match(parity, /\["mapbox:group"\]/);
   assert.match(parity, /property: "metadata"/);
-  assert.match(parity, /"updatedCount": updated\.count/);
-  assert.match(parity, /"updatedLayers": updated/);
+  assert.match(parity, /"updatedCount": updatedLayers\.count/);
+  assert.match(parity, /"updatedLayers": updatedLayers/);
+  assert.match(parity, /"failedCount": failedLayers\.count/);
+  assert.match(parity, /"failedLayers": failedLayers/);
   assert.match(parity, /"totalLayers": layers\.count/);
   // isStyleLoaded broke the iOS build on Nov 13; keep it out.
   assert.doesNotMatch(parity.replace(/\/\/.*$/gm, ''), /isStyleLoaded/);
 });
 
-test('diagnoseLayerGroup logs nothing and inspects no project-specific layer', () => {
-  const body = javaMethod('diagnoseLayerGroup', 'getLayerIds');
-  assert.match(body, /runForSession\(/);
-  assert.doesNotMatch(body, /Log\.d\(/);
-  assert.doesNotMatch(body, /fossick/);
+test('removed layer inspection actions are not exposed', () => {
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const javascript = fs.readFileSync('www/MapboxPlugin.js', 'utf8');
+  for (const name of ['diagnoseLayerGroup', 'getLayerIds']) {
+    assert.doesNotMatch(android, new RegExp('case "' + name + '":'));
+    assert.doesNotMatch(parity, new RegExp('@objc\\(' + name + ':\\)'));
+    assert.doesNotMatch(javascript, new RegExp('^\\s*' + name + ': function', 'm'));
+  }
 });
 
-test('Android sets visibility for runtime style layers in a metadata group', () => {
-  const body = javaMethod('setLayerGroupVisibility', 'diagnoseLayerGroup');
-  // One metadata reader for every layer-group action; none parses the whole style JSON.
-  assert.match(body, /layersWithMetadata\(style\)/);
+test('Android updates style layers by metadata group and reports per-layer failures', () => {
+  const body = javaMethod('setLayerGroupVisibility', 'getLayersByGroup');
+  assert.match(body, /style\.getStyleJSON\(\)/);
+  assert.match(body, /styleJson\.optJSONArray\("layers"\)/);
   assert.match(android, /metadata\.optString\("mapbox:group", ""\)/);
-  assert.doesNotMatch(android, /getStyleJSON\(\)/);
+  assert.match(body, /style\.styleLayerExists\(layerId\)/);
   assert.match(body, /style\.setStyleLayerProperty\([\s\S]*?"visibility"/);
   assert.match(body, /result\.put\("updatedCount", updatedLayers\.length\(\)\)/);
   assert.match(body, /result\.put\("updatedLayers", updatedLayers\)/);
+  assert.match(body, /result\.put\("failedCount", failedLayers\.length\(\)\)/);
+  assert.match(body, /result\.put\("failedLayers", failedLayers\)/);
+  assert.match(body, /errorResult\.put\("matchedLayers", matchedLayerCount\)/);
   assert.match(body, /callback\.success\(result\)/);
+});
+
+test('iOS reports partial and total failures when updating a layer group', () => {
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const body = parity.split('func setLayerGroupVisibility(command:')[1]
+    .split('private func requiredGroupId(')[0];
+  assert.match(body, /trimmingCharacters\(in: \.whitespacesAndNewlines\)/);
+  assert.match(body, /failedLayers\.append/);
+  assert.match(body, /"failedCount": failedLayers\.count/);
+  assert.match(body, /"failedLayers": failedLayers/);
+  assert.match(body, /"matchedLayers": layerIds\.count/);
+  assert.match(body, /self\.sendError\(message, command\)/);
 });
 
 test('path line style is validated the same way on both platforms', () => {

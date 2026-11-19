@@ -43,4 +43,4 @@ Download with `wifiOnly: true` on mobile data and confirm no tiles download unti
 
 ## Style layers
 
-On both platforms: call `getLayerIds()` after `initialize` resolves; call `getLayersByGroup` and `setLayerGroupVisibility` with a real Mapbox Studio folder name and confirm its layers hide and show; confirm an unknown group returns an error rather than waiting forever.
+On both platforms: call `getLayersByGroup` and `setLayerGroupVisibility` with a real Mapbox Studio folder name and confirm its layers hide and show; confirm an unknown group returns an error rather than waiting forever.
