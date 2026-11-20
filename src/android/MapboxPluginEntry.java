@@ -50,7 +50,10 @@ import com.mapbox.common.TileRegion;
 import com.mapbox.common.TileRegionLoadOptions;
 import com.mapbox.common.TileStore;
 import com.mapbox.common.TilesetDescriptor;
+import com.mapbox.geojson.Geometry;
+import com.mapbox.geojson.GeometryCollection;
 import com.mapbox.geojson.LineString;
+import com.mapbox.geojson.MultiPolygon;
 import com.mapbox.geojson.Point;
 import com.mapbox.geojson.Polygon;
 import com.mapbox.maps.CameraOptions;
@@ -2264,7 +2267,8 @@ if (gestures != null) {
                 TileRegionLoadOptions tileRegionOptions = new TileRegionLoadOptions.Builder()
                     .geometry(area)
                     .descriptors(Collections.singletonList(descriptor))
-                    .metadata(metadataValue(regionId))
+                    // Style and zooms are saved so showOfflineRegion can reopen the region by id.
+                    .metadata(regionMetadataValue(regionId, styleUrl, toZoomByte(minZoom), toZoomByte(maxZoom)))
                     .acceptExpired(false)
                     // wifiOnly: never use mobile data (or other metered networks) for tiles.
                     .networkRestriction(wifiOnly ? NetworkRestriction.DISALLOW_EXPENSIVE : NetworkRestriction.NONE)
@@ -2658,10 +2662,89 @@ if (gestures != null) {
         return Value.valueOf(metadata);
     }
 
+    private Value regionMetadataValue(String regionId, String styleUrl, int minZoom, int maxZoom) {
+        HashMap<String, Value> metadata = new HashMap<>();
+        metadata.put("regionId", Value.valueOf(regionId));
+        metadata.put("styleUrl", Value.valueOf(styleUrl));
+        metadata.put("minZoom", Value.valueOf((long) minZoom));
+        metadata.put("maxZoom", Value.valueOf((long) maxZoom));
+        return Value.valueOf(metadata);
+    }
+
+    private static Object metadataEntry(Value metadata, String key) {
+        if (metadata == null) return null;
+        Object contents = metadata.getContents();
+        if (!(contents instanceof Map)) return null;
+        Object value = ((Map<?, ?>) contents).get(key);
+        return value instanceof Value ? ((Value) value).getContents() : value;
+    }
+
+    private static Double metadataNumber(Value metadata, String key) {
+        Object value = metadataEntry(metadata, key);
+        return value instanceof Number ? ((Number) value).doubleValue() : null;
+    }
+
+    private static String metadataString(Value metadata, String key) {
+        Object value = metadataEntry(metadata, key);
+        return value instanceof String && !((String) value).isEmpty() ? (String) value : null;
+    }
+
+    private static void collectGeometryPoints(Geometry geometry, List<Point> out) {
+        if (geometry instanceof Point) {
+            out.add((Point) geometry);
+        } else if (geometry instanceof LineString) {
+            out.addAll(((LineString) geometry).coordinates());
+        } else if (geometry instanceof Polygon) {
+            for (List<Point> ring : ((Polygon) geometry).coordinates()) out.addAll(ring);
+        } else if (geometry instanceof MultiPolygon) {
+            for (List<List<Point>> polygon : ((MultiPolygon) geometry).coordinates()) {
+                for (List<Point> ring : polygon) out.addAll(ring);
+            }
+        } else if (geometry instanceof GeometryCollection) {
+            for (Geometry child : ((GeometryCollection) geometry).geometries()) collectGeometryPoints(child, out);
+        }
+    }
+
+    /** {west, south, east, north} of a stored region outline, or null when it has no points. */
+    private static double[] geometryBounds(Geometry geometry) {
+        List<Point> points = new ArrayList<>();
+        collectGeometryPoints(geometry, points);
+        if (points.isEmpty()) return null;
+        double west = 180, south = 90, east = -180, north = -90;
+        for (Point point : points) {
+            west = Math.min(west, point.longitude()); east = Math.max(east, point.longitude());
+            south = Math.min(south, point.latitude()); north = Math.max(north, point.latitude());
+        }
+        return new double[] { west, south, east, north };
+    }
+
+    private static double mercatorY(double latitude) {
+        double rad = Math.toRadians(Math.max(-85.0511, Math.min(85.0511, latitude)));
+        return (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2;
+    }
+
+    /**
+     * Zoom at which the box fills about 90% of a view of the given size (in dp; the
+     * map's world is 512 dp wide at zoom 0). Shared formula with iOS (points).
+     */
+    static double fitZoom(double[] box, double viewWidth, double viewHeight) {
+        double spanX = (box[2] - box[0]) / 360.0;
+        double spanY = Math.abs(mercatorY(box[1]) - mercatorY(box[3]));
+        double zoomX = spanX > 0 ? Math.log(viewWidth * 0.9 / (512.0 * spanX)) / Math.log(2) : Double.POSITIVE_INFINITY;
+        double zoomY = spanY > 0 ? Math.log(viewHeight * 0.9 / (512.0 * spanY)) / Math.log(2) : Double.POSITIVE_INFINITY;
+        return Math.min(zoomX, zoomY);
+    }
+
     private void showOfflineRegion(JSONObject options, CallbackContext callback) {
         runForSession(() -> {
             if (mapView == null) {
                 callback.error("Map is not initialized showOfflineRegion.");
+                return;
+            }
+
+            final String regionId = options.optString("regionId", "").trim();
+            if (!regionId.isEmpty()) {
+                showDownloadedRegion(regionId, options, callback);
                 return;
             }
 
@@ -2688,6 +2771,83 @@ if (gestures != null) {
 
             loadReadyStyle(styleUrl, null, callback);
         });
+    }
+
+    /**
+     * Opens a region downloaded on this device: reads its outline and saved style and
+     * zooms from the tile store, centres on it and fits it on screen, then loads the
+     * style it was downloaded with. latitude, longitude, zoom and styleUrl in options
+     * override the saved values; styleUrl is only used when the region has none saved
+     * (regions downloaded by older versions).
+     */
+    private void showDownloadedRegion(String regionId, JSONObject options, CallbackContext callback) {
+        if (regionId.length() > 256) {
+            callback.error("Invalid region id."); return;
+        }
+        if (pendingStyle != null) {
+            callback.error("A style load is already in progress. Await its completion first.");
+            return;
+        }
+        final long generation = sessionGeneration;
+        final TileStore tileStore = TileStore.create();
+        tileStore.getTileRegionGeometry(regionId, geometryResult -> runForGeneration(generation, () -> {
+            if (mapView == null) { callback.error("Map is not initialized showOfflineRegion."); return; }
+            final double[] box = geometryResult.isValue() ? geometryBounds(geometryResult.getValue()) : null;
+            if (box == null) {
+                callback.error("Offline region '" + regionId + "' is not downloaded on this device.");
+                return;
+            }
+            tileStore.getTileRegionMetadata(regionId, metadataResult -> runForGeneration(generation, () -> {
+                if (mapView == null) { callback.error("Map is not initialized showOfflineRegion."); return; }
+                Value metadata = metadataResult.isValue() ? metadataResult.getValue() : null;
+                openDownloadedRegion(box, metadata, options, callback);
+            }));
+        }));
+    }
+
+    private void openDownloadedRegion(double[] box, Value metadata, JSONObject options, CallbackContext callback) {
+        String styleUrl = metadataString(metadata, "styleUrl");
+        if (styleUrl == null) styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
+        if (!styleAllowed(styleUrl)) {
+            callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
+            return;
+        }
+
+        double latitude = (box[1] + box[3]) / 2.0;
+        double longitude = (box[0] + box[2]) / 2.0;
+        if (options.has("latitude") && options.has("longitude")) {
+            latitude = options.optDouble("latitude", Double.NaN);
+            longitude = options.optDouble("longitude", Double.NaN);
+            if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) {
+                callback.error("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].");
+                return;
+            }
+        }
+
+        // Keep the camera within the zooms that were downloaded.
+        Double savedMin = metadataNumber(metadata, "minZoom");
+        Double savedMax = metadataNumber(metadata, "maxZoom");
+        double minZoom = savedMin != null ? savedMin : MIN_OFFLINE_ZOOM;
+        double maxZoom = savedMax != null ? savedMax : MAX_OFFLINE_ZOOM;
+        double zoom;
+        if (options.has("zoom")) {
+            zoom = finiteOption(options, "zoom", 13.0);
+        } else {
+            float density = cordova.getActivity().getResources().getDisplayMetrics().density;
+            double width = (mapView.getWidth() > 0 ? mapView.getWidth()
+                : cordova.getActivity().getResources().getDisplayMetrics().widthPixels) / density;
+            double height = (mapView.getHeight() > 0 ? mapView.getHeight()
+                : cordova.getActivity().getResources().getDisplayMetrics().heightPixels) / density;
+            zoom = fitZoom(box, width, height);
+        }
+        zoom = clamp(zoom, minZoom, maxZoom);
+
+        mapView.getMapboxMap().setCamera(new CameraOptions.Builder()
+            .center(Point.fromLngLat(longitude, latitude))
+            .zoom(zoom)
+            .build());
+
+        loadReadyStyle(styleUrl, null, callback);
     }
 
     private void deleteOfflineRegion(JSONObject options, CallbackContext callback) {

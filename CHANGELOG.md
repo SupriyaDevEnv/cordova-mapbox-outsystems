@@ -12,6 +12,7 @@
 - **New:** `getOfflineRegionIds` lists the regions stored on the device, with size and whether each finished.
 - **New:** `detail: 'low' | 'medium' | 'high'` sets the download zoom (13, 15 or 16) for downloads and estimates.
 - **New:** offline progress events include `completedBytes` and `completedMB`.
+- **New:** `showOfflineRegion({ regionId })` opens a downloaded region by id: it centres on the region, fits it on screen within the downloaded zooms and loads the style it was downloaded with. Downloads now save their style URL and zoom range for this. Calls without `regionId` are unchanged.
 
 ## 1.0.10
 

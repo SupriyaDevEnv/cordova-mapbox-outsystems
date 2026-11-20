@@ -8,8 +8,9 @@ ios = Path('src/ios/MapboxPlugin.swift').read_text()
 assert 'MapInitOptions(cameraOptions: camera, styleURI: nil)' in ios
 assert android.count('.loadStyle(') == 1
 assert ios.count('.loadStyle(') == 1
-assert android.count('loadReadyStyle(styleUrl,') == 3
-assert ios.count('self.loadReadyStyle(styleURI,') == 3
+# initialize, setMapStyle, showOfflineRegion and showOfflineRegion by regionId.
+assert android.count('loadReadyStyle(styleUrl,') == 4
+assert ios.count('self.loadReadyStyle(styleURI,') == 4
 assert 'sessionGeneration++;\n        cancelPendingStyle();' in android
 assert 'sessionGeneration &+= 1\n        resetRecenterAnimation()\n        cancelPendingStyle()' in ios
 java_helper = android.split('    // All style replacements use this gate. Never resolve readiness on a timer.', 1)[1].split('    private void cancelCurrentDownload()', 1)[0]

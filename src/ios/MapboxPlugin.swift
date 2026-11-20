@@ -1667,7 +1667,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         guard let loadOptions = TileRegionLoadOptions(
             geometry: area,
             descriptors: [descriptor],
-            metadata: ["regionId": regionId],
+            // Style and zooms are saved so showOfflineRegion can reopen the region by id.
+            metadata: [
+                "regionId": regionId,
+                "styleUrl": styleURI.rawValue,
+                "minZoom": Int(minZoom),
+                "maxZoom": Int(maxZoom)
+            ],
             acceptExpired: false,
             // wifiOnly: never use mobile data (or other metered networks) for tiles.
             networkRestriction: wifiOnly ? .disallowExpensive : .none
@@ -2041,6 +2047,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
+
+            let regionId = (options["regionId"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !regionId.isEmpty {
+                self.showDownloadedRegion(regionId: regionId, options: options, command: command)
+                return
+            }
+
             let latitude = self.doubleOption(options["latitude"], defaultValue: 0)
             let longitude = self.doubleOption(options["longitude"], defaultValue: 0)
 
@@ -2063,6 +2076,126 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             ))
             self.loadReadyStyle(styleURI, status: nil, command: command)
         }
+    }
+
+    /// Opens a region downloaded on this device: reads its outline and saved style and
+    /// zooms from the tile store, centres on it and fits it on screen, then loads the
+    /// style it was downloaded with. latitude, longitude, zoom and styleUrl in options
+    /// override the saved values; styleUrl is only used when the region has none saved
+    /// (regions downloaded by older versions).
+    private func showDownloadedRegion(regionId: String, options: [String: Any], command: CDVInvokedUrlCommand) {
+        guard regionId.utf8.count <= 256 else {
+            sendError("Invalid region id.", command); return
+        }
+        guard pendingStyle == nil else {
+            sendError("A style load is already in progress. Await its completion first.", command)
+            return
+        }
+        let generation = sessionGeneration
+        TileStore.default.tileRegionGeometry(forId: regionId) { geometryResult in
+            self.runForGeneration(generation) {
+                guard case .success(let geometry) = geometryResult,
+                      let box = self.geometryBounds(geometry) else {
+                    self.sendError("Offline region '\(regionId)' is not downloaded on this device.", command)
+                    return
+                }
+                TileStore.default.tileRegionMetadata(forId: regionId) { metadataResult in
+                    self.runForGeneration(generation) {
+                        var metadata: [String: Any] = [:]
+                        if case .success(let value) = metadataResult, let dictionary = value as? [String: Any] {
+                            metadata = dictionary
+                        }
+                        self.openDownloadedRegion(box: box, metadata: metadata, options: options, command: command)
+                    }
+                }
+            }
+        }
+    }
+
+    private func geometryCoordinates(_ geometry: Geometry) -> [CLLocationCoordinate2D] {
+        switch geometry {
+        case .point(let point): return [point.coordinates]
+        case .lineString(let line): return line.coordinates
+        case .polygon(let polygon): return polygon.coordinates.flatMap { $0 }
+        case .multiPolygon(let multi): return multi.coordinates.flatMap { $0.flatMap { $0 } }
+        case .geometryCollection(let collection): return collection.geometries.flatMap { geometryCoordinates($0) }
+        default: return []
+        }
+    }
+
+    /// Bounds of a stored region outline, or nil when it has no points.
+    private func geometryBounds(_ geometry: Geometry) -> (south: Double, west: Double, north: Double, east: Double)? {
+        let points = geometryCoordinates(geometry)
+        guard let south = points.map({ $0.latitude }).min(),
+              let north = points.map({ $0.latitude }).max(),
+              let west = points.map({ $0.longitude }).min(),
+              let east = points.map({ $0.longitude }).max() else { return nil }
+        return (south: south, west: west, north: north, east: east)
+    }
+
+    /// Zoom at which the box fills about 90% of a view of the given size in points
+    /// (the map's world is 512 points wide at zoom 0). Same formula as Android (dp).
+    static func fitZoom(south: Double, west: Double, north: Double, east: Double,
+                        viewWidth: Double, viewHeight: Double) -> Double {
+        func mercatorY(_ latitude: Double) -> Double {
+            let rad = max(-85.0511, min(85.0511, latitude)) * Double.pi / 180
+            return (1 - log(tan(rad) + 1 / cos(rad)) / Double.pi) / 2
+        }
+        let spanX = (east - west) / 360
+        let spanY = abs(mercatorY(south) - mercatorY(north))
+        let zoomX = spanX > 0 ? log2(viewWidth * 0.9 / (512 * spanX)) : Double.infinity
+        let zoomY = spanY > 0 ? log2(viewHeight * 0.9 / (512 * spanY)) : Double.infinity
+        return min(zoomX, zoomY)
+    }
+
+    private func openDownloadedRegion(
+        box: (south: Double, west: Double, north: Double, east: Double),
+        metadata: [String: Any],
+        options: [String: Any],
+        command: CDVInvokedUrlCommand
+    ) {
+        guard let mapView = mapView else { sendError("Map is not initialized.", command); return }
+
+        let savedStyle = (metadata["styleUrl"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let styleUrl = savedStyle ?? options["styleUrl"] as? String ?? StyleURI.streets.rawValue
+        guard styleAllowed(styleUrl), let styleURI = StyleURI(rawValue: styleUrl) else {
+            sendError("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.", command)
+            return
+        }
+
+        var latitude = (box.south + box.north) / 2
+        var longitude = (box.west + box.east) / 2
+        if options["latitude"] != nil && options["longitude"] != nil {
+            latitude = doubleOption(options["latitude"], defaultValue: .nan)
+            longitude = doubleOption(options["longitude"], defaultValue: .nan)
+            guard isValidLatitude(latitude), isValidLongitude(longitude) else {
+                sendError("Invalid coordinates: latitude must be in [-90, 90], longitude in [-180, 180].", command)
+                return
+            }
+        }
+
+        // Keep the camera within the zooms that were downloaded.
+        let minZoom = (metadata["minZoom"] as? NSNumber)?.doubleValue ?? Double(minOfflineZoom)
+        let maxZoom = (metadata["maxZoom"] as? NSNumber)?.doubleValue ?? Double(maxOfflineZoom)
+        var zoom: Double
+        if options["zoom"] != nil {
+            zoom = doubleOption(options["zoom"], defaultValue: 13)
+        } else {
+            // Before the first layout the view can be 0 x 0; use the screen size then.
+            let size = mapView.bounds.width > 0 && mapView.bounds.height > 0
+                ? mapView.bounds.size : UIScreen.main.bounds.size
+            zoom = MapboxPlugin.fitZoom(
+                south: box.south, west: box.west, north: box.north, east: box.east,
+                viewWidth: Double(size.width), viewHeight: Double(size.height)
+            )
+        }
+        zoom = Swift.max(minZoom, Swift.min(maxZoom, zoom))
+
+        mapView.mapboxMap.setCamera(to: CameraOptions(
+            center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+            zoom: zoom
+        ))
+        self.loadReadyStyle(styleURI, status: nil, command: command)
     }
 
     @objc(deleteOfflineRegion:)
