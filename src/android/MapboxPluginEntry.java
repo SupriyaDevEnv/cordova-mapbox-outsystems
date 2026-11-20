@@ -58,6 +58,7 @@ import com.mapbox.geojson.Point;
 import com.mapbox.geojson.Polygon;
 import com.mapbox.maps.CameraOptions;
 import com.mapbox.maps.CameraBoundsOptions;
+import com.mapbox.maps.CoordinateBounds;
 import com.mapbox.maps.GlyphsRasterizationMode;
 import com.mapbox.maps.MapView;
 import com.mapbox.maps.MapboxMap;
@@ -158,6 +159,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
 
     private volatile long sessionGeneration = 0;
     private MapView mapView;
+    private Double initialCameraMinZoom;
+    private Double initialCameraMaxZoom;
+    private boolean offlineRegionCameraBoundsActive;
 
     protected void cancelPendingLocationActions() { }
 
@@ -602,6 +606,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
                 }
 
                 closeInternal();
+                initialCameraMinZoom = minZoom;
+                initialCameraMaxZoom = maxZoom;
+                offlineRegionCameraBoundsActive = false;
                 sessionCallbacks.add(callback);
 
                 boolean behindWebView = options.optBoolean("behindWebView", false);
@@ -2763,6 +2770,7 @@ if (gestures != null) {
                 return;
             }
 
+            if (!restoreInitialCameraBounds(callback)) return;
 
             mapView.getMapboxMap().setCamera(new CameraOptions.Builder()
                 .center(Point.fromLngLat(longitude, latitude))
@@ -2771,6 +2779,25 @@ if (gestures != null) {
 
             loadReadyStyle(styleUrl, null, callback);
         });
+    }
+
+    private boolean restoreInitialCameraBounds(CallbackContext callback) {
+        if (!offlineRegionCameraBoundsActive || mapView == null) return true;
+
+        CameraBoundsOptions.Builder bounds = new CameraBoundsOptions.Builder()
+            .bounds(new CoordinateBounds(
+                Point.fromLngLat(-180.0, -90.0),
+                Point.fromLngLat(180.0, 90.0)
+            ));
+        if (initialCameraMinZoom != null) bounds.minZoom(initialCameraMinZoom);
+        if (initialCameraMaxZoom != null) bounds.maxZoom(initialCameraMaxZoom);
+        if (mapView.getMapboxMap().setBounds(bounds.build()).isError()) {
+            callback.error("Failed to restore camera bounds.");
+            return false;
+        }
+
+        offlineRegionCameraBoundsActive = false;
+        return true;
     }
 
     /**
@@ -2824,11 +2851,21 @@ if (gestures != null) {
             }
         }
 
-        // Keep the camera within the zooms that were downloaded.
+        // Keep the camera within the region's bounds and downloaded zoom range.
         Double savedMin = metadataNumber(metadata, "minZoom");
         Double savedMax = metadataNumber(metadata, "maxZoom");
-        double minZoom = savedMin != null ? savedMin : MIN_OFFLINE_ZOOM;
-        double maxZoom = savedMax != null ? savedMax : MAX_OFFLINE_ZOOM;
+        double minZoom = Math.max(
+            savedMin != null ? savedMin : MIN_OFFLINE_ZOOM,
+            initialCameraMinZoom != null ? initialCameraMinZoom : MIN_OFFLINE_ZOOM
+        );
+        double maxZoom = Math.min(
+            savedMax != null ? savedMax : MAX_OFFLINE_ZOOM,
+            initialCameraMaxZoom != null ? initialCameraMaxZoom : MAX_OFFLINE_ZOOM
+        );
+        if (minZoom > maxZoom) {
+            callback.error("Offline region zoom range conflicts with map camera limits.");
+            return;
+        }
         double zoom;
         if (options.has("zoom")) {
             zoom = finiteOption(options, "zoom", 13.0);
@@ -2841,6 +2878,21 @@ if (gestures != null) {
             zoom = fitZoom(box, width, height);
         }
         zoom = clamp(zoom, minZoom, maxZoom);
+
+        CoordinateBounds regionBounds = new CoordinateBounds(
+            Point.fromLngLat(box[0], box[1]),
+            Point.fromLngLat(box[2], box[3])
+        );
+        CameraBoundsOptions bounds = new CameraBoundsOptions.Builder()
+            .bounds(regionBounds)
+            .minZoom(minZoom)
+            .maxZoom(maxZoom)
+            .build();
+        if (mapView.getMapboxMap().setBounds(bounds).isError()) {
+            callback.error("Failed to constrain camera to offline region.");
+            return;
+        }
+        offlineRegionCameraBoundsActive = true;
 
         mapView.getMapboxMap().setCamera(new CameraOptions.Builder()
             .center(Point.fromLngLat(longitude, latitude))

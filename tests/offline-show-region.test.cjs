@@ -74,6 +74,24 @@ test('showOfflineRegion uses the stored region when regionId is given, on both p
   assert.match(a, /zoom = clamp\(zoom, minZoom, maxZoom\);/);
   assert.match(i, /let styleUrl = savedStyle \?\? options\["styleUrl"\] as\? String/);
   assert.match(i, /zoom = Swift\.max\(minZoom, Swift\.min\(maxZoom, zoom\)\)/);
+  assert.match(a, /CoordinateBounds regionBounds = new CoordinateBounds\([\s\S]*?Point\.fromLngLat\(box\[0\], box\[1\]\)[\s\S]*?Point\.fromLngLat\(box\[2\], box\[3\]\)/);
+  assert.match(a, /\.bounds\(regionBounds\)[\s\S]*?\.minZoom\(minZoom\)[\s\S]*?\.maxZoom\(maxZoom\)/);
+  assert.match(i, /CameraBoundsOptions\(\s*bounds: regionBounds,[\s\S]*?maxZoom:[\s\S]*?minZoom:/);
+  assert.ok(a.indexOf('setBounds(bounds.build())') < a.indexOf('setCamera(new CameraOptions.Builder()'));
+  assert.ok(i.indexOf('setCameraBounds(with: CameraBoundsOptions') < i.indexOf('setCamera(to: CameraOptions'));
+  assert.match(a, /offlineRegionCameraBoundsActive = true/);
+  assert.match(i, /offlineRegionCameraBoundsActive = true/);
+});
+
+test('opening a regular location restores the map bounds from initialize', () => {
+  const a = between(android, 'private void showOfflineRegion(', 'private boolean restoreInitialCameraBounds(');
+  const i = between(ios, 'func showOfflineRegion(command:', 'private func restoreInitialCameraBounds(');
+  assert.match(a, /restoreInitialCameraBounds\(callback\)/);
+  assert.match(i, /restoreInitialCameraBounds\(command\)/);
+  assert.match(android, /initialCameraMinZoom = minZoom/);
+  assert.match(android, /initialCameraMaxZoom = maxZoom/);
+  assert.match(ios, /self\.initialCameraMinZoom = minZoom/);
+  assert.match(ios, /self\.initialCameraMaxZoom = maxZoom/);
 });
 
 test('both platforms fit the region with the same formula', () => {

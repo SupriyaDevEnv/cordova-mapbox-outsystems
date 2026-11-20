@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Changed:** `showOfflineRegion({ regionId })` constrains the camera center to the saved region bounds and zoom range on Android and iOS.
 - **Changed:** removed `diagnoseLayerGroup` and `getLayerIds` from the Android and iOS APIs.
 - **Changed:** iOS `setLayerGroupVisibility` reports per-layer failures and partial updates like Android.
 - **New:** `downloadOfflineRegion` accepts `bounds` (`{ south, west, north, east }`) or a GeoJSON `polygon` to download a known area, such as a recommended trail, instead of a centre and radius.

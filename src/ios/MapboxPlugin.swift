@@ -61,6 +61,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     private(set) var mapView: MapView?
+    private var initialCameraMinZoom: CGFloat?
+    private var initialCameraMaxZoom: CGFloat?
+    private var offlineRegionCameraBoundsActive = false
     private var mapTouchOverlay: MapTouchOverlayView?
     private var annotations: PointAnnotationManager?
     private var markers: [String: PointAnnotation] = [:]
@@ -218,6 +221,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let behindWebView = options["behindWebView"] as? Bool ?? false
 
             self.closeInternal()
+            self.initialCameraMinZoom = minZoom
+            self.initialCameraMaxZoom = maxZoom
+            self.offlineRegionCameraBoundsActive = false
             self.rememberCommand(command)
 
             MapboxOptions.accessToken = token
@@ -2069,6 +2075,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 return
             }
             let styleURI = StyleURI(rawValue: styleUrl) ?? .streets
+            guard self.restoreInitialCameraBounds(command) else { return }
 
             mapView.mapboxMap.setCamera(to: CameraOptions(
                 center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
@@ -2148,6 +2155,22 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         return min(zoomX, zoomY)
     }
 
+    private func restoreInitialCameraBounds(_ command: CDVInvokedUrlCommand) -> Bool {
+        guard offlineRegionCameraBoundsActive, let mapView = mapView else { return true }
+        do {
+            try mapView.mapboxMap.setCameraBounds(with: CameraBoundsOptions(
+                bounds: CoordinateBounds.world,
+                maxZoom: initialCameraMaxZoom,
+                minZoom: initialCameraMinZoom
+            ))
+        } catch {
+            sendError("Failed to restore camera bounds: \(error.localizedDescription)", command)
+            return false
+        }
+        offlineRegionCameraBoundsActive = false
+        return true
+    }
+
     private func openDownloadedRegion(
         box: (south: Double, west: Double, north: Double, east: Double),
         metadata: [String: Any],
@@ -2174,9 +2197,17 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             }
         }
 
-        // Keep the camera within the zooms that were downloaded.
-        let minZoom = (metadata["minZoom"] as? NSNumber)?.doubleValue ?? Double(minOfflineZoom)
-        let maxZoom = (metadata["maxZoom"] as? NSNumber)?.doubleValue ?? Double(maxOfflineZoom)
+        // Keep the camera within the region and the zooms available in both map and region.
+        let savedMinZoom = (metadata["minZoom"] as? NSNumber)?.doubleValue ?? Double(minOfflineZoom)
+        let savedMaxZoom = (metadata["maxZoom"] as? NSNumber)?.doubleValue ?? Double(maxOfflineZoom)
+        let configuredMinZoom = initialCameraMinZoom.map { Double($0) } ?? Double(minOfflineZoom)
+        let configuredMaxZoom = initialCameraMaxZoom.map { Double($0) } ?? Double(maxOfflineZoom)
+        let minZoom = Swift.max(savedMinZoom, configuredMinZoom)
+        let maxZoom = Swift.min(savedMaxZoom, configuredMaxZoom)
+        guard minZoom <= maxZoom else {
+            sendError("Offline region zoom range conflicts with map camera limits.", command)
+            return
+        }
         var zoom: Double
         if options["zoom"] != nil {
             zoom = doubleOption(options["zoom"], defaultValue: 13)
@@ -2190,6 +2221,22 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             )
         }
         zoom = Swift.max(minZoom, Swift.min(maxZoom, zoom))
+
+        let regionBounds = CoordinateBounds(
+            southwest: CLLocationCoordinate2D(latitude: box.south, longitude: box.west),
+            northeast: CLLocationCoordinate2D(latitude: box.north, longitude: box.east)
+        )
+        do {
+            try mapView.mapboxMap.setCameraBounds(with: CameraBoundsOptions(
+                bounds: regionBounds,
+                maxZoom: CGFloat(maxZoom),
+                minZoom: CGFloat(minZoom)
+            ))
+        } catch {
+            sendError("Failed to constrain camera to offline region: \(error.localizedDescription)", command)
+            return
+        }
+        offlineRegionCameraBoundsActive = true
 
         mapView.mapboxMap.setCamera(to: CameraOptions(
             center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
