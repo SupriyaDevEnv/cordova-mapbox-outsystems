@@ -2195,7 +2195,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
             zoom: zoom
         ))
-        loadReadyStyle(styleURI, status: nil, command: command)
+        self.loadReadyStyle(styleURI, status: nil, command: command)
     }
 
     @objc(deleteOfflineRegion:)
