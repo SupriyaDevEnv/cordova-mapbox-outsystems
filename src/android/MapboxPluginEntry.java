@@ -818,8 +818,15 @@ if (gestures != null) {
             rootView.setLayoutParams(layoutParamsFromOptions(options));
 
             // No starting style: the online default map is never requested.
-            MapInitOptions initOptions = new MapInitOptions(cordova.getActivity());
-            initOptions.setStyleUri(null);
+            MapInitOptions defaults = new MapInitOptions(cordova.getActivity());
+            MapInitOptions initOptions = new MapInitOptions(
+                cordova.getActivity(),
+                defaults.getMapOptions(),
+                defaults.getPlugins(),
+                defaults.getCameraOptions(),
+                defaults.getTextureView(),
+                null
+            );
             mapView = new MapView(cordova.getActivity(), initOptions);
 
             if (minZoom != null || maxZoom != null) {
