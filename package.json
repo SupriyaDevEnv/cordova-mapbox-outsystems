@@ -1,0 +1,33 @@
+{
+  "name": "cordova-plugin-outsystems-mapbox",
+  "version": "1.0.10",
+  "files": [
+    "plugin.xml",
+    "CHANGELOG.md",
+    "www/",
+    "src/",
+    "hooks/"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.cjs"
+  },
+  "description": "OutSystems-compatible Cordova plugin wrapper for Mapbox Maps Android and iOS.",
+  "cordova": {
+    "id": "cordova-plugin-outsystems-mapbox",
+    "platforms": [
+      "android",
+      "ios"
+    ]
+  },
+  "keywords": [
+    "outsystems",
+    "cordova",
+    "mapbox",
+    "maps",
+    "android",
+    "ios"
+  ],
+  "license": "MIT",
+  "main": "www/MapboxPlugin.js"
+}
+

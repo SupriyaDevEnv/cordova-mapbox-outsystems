@@ -1,0 +1,114 @@
+package com.outsystems.mapbox;
+
+import java.net.URI;
+
+/** Input policy shared by every native entry point. No Android dependencies. */
+final class MapboxSecurity {
+    static final int MAX_POINTS = 20000;
+    static final int MAX_INPUT_CHARS = 4 * 1024 * 1024;
+    static final double MAX_TILES = 50000;
+
+    static boolean publicToken(String token) {
+        return token != null && token.matches("pk\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+");
+    }
+
+    static boolean styleAllowed(String value, String hosts) {
+        if (value == null || value.length() > 4096) return false;
+        if (value.matches("mapbox://styles/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+")) return true;
+        try {
+            URI uri = new URI(value);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                    || uri.getRawUserInfo() != null || uri.getRawFragment() != null
+                    || (uri.getPort() != -1 && uri.getPort() != 443)) return false;
+            for (String host : hosts.split(",")) {
+                if (uri.getHost().equalsIgnoreCase(host.trim())) return true;
+            }
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    // Marker images are shown as small thumbnails; serve them at about 256 px.
+    static final int MAX_MARKER_IMAGE_BYTES = 256 * 1024;
+
+    // HTTPS URLs (optionally limited to a host list) or base64 image data URIs.
+    static boolean markerImageAllowed(String value, String hosts) {
+        if (value == null || value.isEmpty()) return false;
+        if (value.startsWith("data:")) {
+            int comma = value.indexOf(',');
+            if (comma < 0 || comma > 64 || value.length() - comma - 1 > MAX_MARKER_IMAGE_BYTES / 3 * 4 + 4
+                    || !value.substring(0, comma + 1).matches("data:image/(png|jpeg|jpg|webp|gif);base64,")) return false;
+            for (int i = comma + 1; i < value.length(); i++) {
+                char c = value.charAt(i);
+                if (!(Character.isLetterOrDigit(c) && c < 128) && c != '+' && c != '/' && c != '=') return false;
+            }
+            return comma + 1 < value.length();
+        }
+        if (value.length() > 4096) return false;
+        try {
+            URI uri = new URI(value);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null
+                    || uri.getRawUserInfo() != null) return false;
+            boolean restricted = false;
+            for (String host : (hosts == null ? "" : hosts).split(",")) {
+                if (host.trim().isEmpty()) continue;
+                restricted = true;
+                if (uri.getHost().equalsIgnoreCase(host.trim())) return true;
+            }
+            return !restricted;
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    static boolean validZoom(double zoom) {
+        return Double.isFinite(zoom) && zoom >= 2 && zoom <= 18;
+    }
+
+    // Conservative bounding-box budget, including lower zoom levels. Reject
+    // antimeridian-crossing boxes instead of underestimating their download cost.
+    static boolean offlineBounds(double south, double west, double north, double east, double zoom) {
+        if (!validZoom(zoom) || !Double.isFinite(south) || !Double.isFinite(west)
+                || !Double.isFinite(north) || !Double.isFinite(east)
+                || south < -85 || north > 85 || west < -180 || east > 180
+                || south > north || west > east || east - west > 180) return false;
+        if (distance(south, west, north, east) > 100000) return false;
+        double scale = Math.pow(2, Math.ceil(zoom));
+        double columns = Math.ceil((east - west) / 360 * scale) + 2;
+        double rows = Math.ceil(Math.abs(mercator(north) - mercator(south)) * scale) + 2;
+        return columns * rows * 4 / 3 <= MAX_TILES;
+    }
+
+    // Tiles covering the box at every zoom from minZoom to maxZoom, for one tileset.
+    // Returns -1 for invalid input. Used for download-size estimates, not limits.
+    static long estimatedTileCount(double south, double west, double north, double east, int minZoom, int maxZoom) {
+        if (!Double.isFinite(south) || !Double.isFinite(west) || !Double.isFinite(north) || !Double.isFinite(east)
+                || south > north || west > east || minZoom < 0 || maxZoom > 22 || minZoom > maxZoom) return -1;
+        double top = mercator(Math.min(north, 85.0511));
+        double bottom = mercator(Math.max(south, -85.0511));
+        long total = 0;
+        for (int z = minZoom; z <= maxZoom; z++) {
+            long n = 1L << z;
+            long x0 = tileIndex((west + 180) / 360 * n, n);
+            long x1 = tileIndex((east + 180) / 360 * n, n);
+            long y0 = tileIndex(top * n, n);
+            long y1 = tileIndex(bottom * n, n);
+            total += (x1 - x0 + 1) * (y1 - y0 + 1);
+        }
+        return total;
+    }
+
+    private static long tileIndex(double value, long n) {
+        return (long) Math.max(0, Math.min(n - 1, Math.floor(value)));
+    }
+
+    private static double mercator(double lat) {
+        double rad = Math.toRadians(lat);
+        return (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2;
+    }
+
+    private static double distance(double lat1, double lon1, double lat2, double lon2) {
+        double a = Math.pow(Math.sin(Math.toRadians(lat2 - lat1) / 2), 2)
+            + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+            * Math.pow(Math.sin(Math.toRadians(lon2 - lon1) / 2), 2);
+        return 6371000 * 2 * Math.asin(Math.sqrt(Math.min(1, a)));
+    }
+}
