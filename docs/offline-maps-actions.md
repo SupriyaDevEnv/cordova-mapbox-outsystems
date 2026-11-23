@@ -19,25 +19,21 @@ for exact options and results.
 | 5 | `cancelOfflineDownload` | Done |
 | 6 | `getOfflineRegionIds` (with size and `complete` per region) | Done |
 | 7 | `detail: 'low' \| 'medium' \| 'high'` → `maxZoom` 13 / 15 / 16 | Done |
-| 8 | Progress with downloaded `completedMB` and selected `estimatedMB` | Done |
+| 8 | Progress with `completedBytes` / `completedMB` (`percent` already existed) | Done |
 | 9 | Lock `showOfflineRegion` to the downloaded region | Not planned for now |
 | 10 | Cache custom marker images with a download | Not started |
 
 `downloadOfflineRegionForRect` gets the same richer result, `detail`, byte
-progress and cancel support, and has its own estimate call. Pass the selected
-estimate as `estimatedMB` to include it in tile progress events.
+progress and cancel support, and has its own estimate call.
 
 ## Screen → plugin call
 
-- **Select area:** `estimateOfflineRegionSizesForRect` once; pass the selected
-  detail and matching `estimatedMB` to `downloadOfflineRegionForRect`.
+- **Select area:** `estimateOfflineRegionSizeForRect`, then `downloadOfflineRegionForRect`.
 - **Download options:** `estimateOfflineRegionSize*` per detail level for
   "Estimated download size"; `getAvailableStorage` for "Available storage".
 - **Recommended maps:** `downloadOfflineRegion` with the trail's `polygon` or `bounds`.
-- **Downloading:** `onOfflineDownloadProgress` for the progress bar, using
-  `completedMB` and `estimatedMB` during the tile phase. The download Promise
-  resolves when complete; handle rejection as failure or cancellation.
-  `cancelOfflineDownload` is for Cancel.
+- **Downloading:** `onOfflineDownloadProgress` for the progress bar;
+  `cancelOfflineDownload` for Cancel.
 - **Downloaded maps / offline landing:** list from the app database, cleaned with
   `getOfflineRegionIds`.
 - **Update now:** `downloadOfflineRegion` with the stored `regionId`, `polygon`,

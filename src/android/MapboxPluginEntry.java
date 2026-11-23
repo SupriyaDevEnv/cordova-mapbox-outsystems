@@ -445,9 +445,6 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             case "estimateOfflineRegionSizeForRect":
                 estimateOfflineRegionSize(options, true, callbackContext);
                 return true;
-            case "estimateOfflineRegionSizesForRect":
-                estimateOfflineRegionSizesForRect(options, callbackContext);
-                return true;
             case "getAvailableStorage":
                 getAvailableStorage(callbackContext);
                 return true;
@@ -2245,14 +2242,6 @@ gestures.addOnMoveListener(moveGestureListener);
                 double radiusKm = area != null ? 0.0 : options.optDouble("radiusKm", 10.0);
                 double minZoom = options.optDouble("minZoom", 10.0);
                 double maxZoom = options.optDouble("maxZoom", 16.0);
-                double estimatedMB = Double.NaN;
-                if (options.has("estimatedMB") && !options.isNull("estimatedMB")) {
-                    estimatedMB = options.optDouble("estimatedMB", Double.NaN);
-                    if (!Double.isFinite(estimatedMB) || estimatedMB < 0) {
-                        callback.error("estimatedMB must be a non-negative finite number.");
-                        return;
-                    }
-                }
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
             if (!styleAllowed(styleUrl)) {
                 callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
@@ -2275,7 +2264,6 @@ gestures.addOnMoveListener(moveGestureListener);
                     styleUrl,
                     area,
                     options.optBoolean("wifiOnly", false),
-                    estimatedMB,
                     callback
                 );
             } catch (Throwable e) {
@@ -2302,14 +2290,6 @@ gestures.addOnMoveListener(moveGestureListener);
                 double x = rect[0], y = rect[1], width = rect[2], height = rect[3];
                 double minZoom = options.optDouble("minZoom", 10.0);
                 double maxZoom = options.optDouble("maxZoom", 16.0);
-                double estimatedMB = Double.NaN;
-                if (options.has("estimatedMB") && !options.isNull("estimatedMB")) {
-                    estimatedMB = options.optDouble("estimatedMB", Double.NaN);
-                    if (!Double.isFinite(estimatedMB) || estimatedMB < 0) {
-                        callback.error("estimatedMB must be a non-negative finite number.");
-                        return;
-                    }
-                }
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
             if (!styleAllowed(styleUrl)) {
                 callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
@@ -2332,7 +2312,6 @@ gestures.addOnMoveListener(moveGestureListener);
                     styleUrl,
                     polygon,
                     options.optBoolean("wifiOnly", false),
-                    estimatedMB,
                     callback
                 );
             } catch (Throwable e) {
@@ -2351,7 +2330,6 @@ gestures.addOnMoveListener(moveGestureListener);
         String styleUrl,
         Polygon geometry,
         boolean wifiOnly,
-        double estimatedMB,
         CallbackContext callback
     ) {
         if (isOfflineDownloading) {
@@ -2362,9 +2340,6 @@ gestures.addOnMoveListener(moveGestureListener);
                 || !MapboxSecurity.validZoom(minZoom) || !MapboxSecurity.validZoom(maxZoom)
                 || minZoom > maxZoom || regionId.isEmpty() || regionId.length() > 256) {
             callback.error("Invalid offline radius, zoom range, or region id."); return;
-        }
-        if (!Double.isNaN(estimatedMB) && (!Double.isFinite(estimatedMB) || estimatedMB < 0)) {
-            callback.error("estimatedMB must be a non-negative finite number."); return;
         }
         Polygon downloadGeometry = geometry == null ? createCirclePolygon(longitude, latitude, radiusKm) : geometry;
         double south = 90, west = 180, north = -90, east = -180;
@@ -2405,7 +2380,7 @@ gestures.addOnMoveListener(moveGestureListener);
             }
             // Pass the final area (circle already built) so the result reports exactly what was downloaded.
             beginOfflineDownload(downloadGeneration, downloadToken, regionId, latitude, longitude, clampedRadiusKm,
-                clampedMinZoom, clampedMaxZoom, styleUrl, downloadGeometry, wifiOnly, estimatedMB, callback);
+                clampedMinZoom, clampedMaxZoom, styleUrl, downloadGeometry, wifiOnly, callback);
         }));
     }
 
@@ -2421,7 +2396,6 @@ gestures.addOnMoveListener(moveGestureListener);
         String styleUrl,
         Polygon geometry,
         boolean wifiOnly,
-        double estimatedMB,
         CallbackContext callback
     ) {
         cancelCurrentDownload();
@@ -2447,7 +2421,7 @@ gestures.addOnMoveListener(moveGestureListener);
                 },
                 stylePack -> {
                     if (downloadGeneration != sessionGeneration) return null;
-                    sendOfflineProgress("tiles-start", 0, 100, -1, estimatedMB);
+                    sendOfflineProgress("tiles-start", 0, 100);
                     downloadOfflineTiles(
                         activeOfflineManager,
                         downloadGeneration,
@@ -2461,7 +2435,6 @@ gestures.addOnMoveListener(moveGestureListener);
                         styleUrl,
                         geometry,
                         wifiOnly,
-                        estimatedMB,
                         callback
                     );
                     return null;
@@ -2483,7 +2456,6 @@ gestures.addOnMoveListener(moveGestureListener);
         String styleUrl,
         Polygon geometry,
         boolean wifiOnly,
-        double estimatedMB,
         CallbackContext callback
     ) {
         runForSession(() -> {
@@ -2513,7 +2485,7 @@ gestures.addOnMoveListener(moveGestureListener);
                 activeTileRegionDownload = activeOfflineTileStore.loadTileRegion(
                     regionId,
                     tileRegionOptions,
-                    progress -> runForDownload(downloadGeneration, downloadToken, () -> sendOfflineProgress("tiles", progress.getCompletedResourceCount(), progress.getRequiredResourceCount(), progress.getCompletedResourceSize(), estimatedMB)),
+                    progress -> runForDownload(downloadGeneration, downloadToken, () -> sendOfflineProgress("tiles", progress.getCompletedResourceCount(), progress.getRequiredResourceCount(), progress.getCompletedResourceSize())),
                     expectedTileRegion -> runForDownload(downloadGeneration, downloadToken, () -> expectedTileRegion.fold(
                         error -> {
                             if (downloadGeneration != sessionGeneration) return null;
@@ -2704,51 +2676,6 @@ gestures.addOnMoveListener(moveGestureListener);
     // Default when the app has no measured value; real sizes vary a lot by style and area.
     private static final double DEFAULT_BYTES_PER_TILE = 50 * 1024;
     private static final double MAX_BYTES_PER_TILE = 10 * 1024 * 1024;
-
-    private void estimateOfflineRegionSizesForRect(JSONObject options, CallbackContext callback) {
-        runForSession(() -> {
-            try {
-                if (mapView == null) {
-                    callback.error("Map is not initialized estimateOfflineRegionSizesForRect.");
-                    return;
-                }
-                if (!options.isNull("detail") || !options.isNull("maxZoom")) {
-                    callback.error("This action estimates all detail levels; do not pass detail or maxZoom.");
-                    return;
-                }
-                double[] rect = offlineRect(options);
-                if (rect == null) { callback.error("Invalid offline rectangle."); return; }
-
-                double minZoom = options.optDouble("minZoom", 10.0);
-                if (!MapboxSecurity.validZoom(minZoom) || minZoom > 13.0) {
-                    callback.error("minZoom must be between 2 and 13 to estimate all detail levels.");
-                    return;
-                }
-                double bytesPerTile = options.optDouble("bytesPerTile", DEFAULT_BYTES_PER_TILE);
-                if (!Double.isFinite(bytesPerTile) || bytesPerTile <= 0 || bytesPerTile > MAX_BYTES_PER_TILE) {
-                    callback.error("bytesPerTile must be a positive number up to 10 MiB.");
-                    return;
-                }
-
-                double[] box = polygonBounds(createRectPolygon(rect[0], rect[1], rect[2], rect[3]));
-                int min = toZoomByte(minZoom);
-                String[] resultKeys = {"lowEstimatedMB", "mediumEstimatedMB", "highEstimatedMB"};
-                int[] maxZooms = {13, 15, 16};
-                JSONObject result = new JSONObject();
-                for (int i = 0; i < resultKeys.length; i++) {
-                    long tileCount = MapboxSecurity.estimatedTileCount(
-                        box[1], box[0], box[3], box[2], min, maxZooms[i]
-                    );
-                    long estimatedBytes = Math.round(tileCount * bytesPerTile);
-                    result.put(resultKeys[i],
-                        Math.round(estimatedBytes / 1048576.0 * 10.0) / 10.0);
-                }
-                callback.success(result);
-            } catch (Throwable e) {
-                callback.error(sanitizeError("Failed to estimate offline region sizes.", e));
-            }
-        });
-    }
 
     /**
      * Approximate download size for the same options as downloadOfflineRegion
@@ -3221,11 +3148,6 @@ gestures.addOnMoveListener(moveGestureListener);
 
     /** completedBytes is -1 when unknown (start/setup phases). */
     private void sendOfflineProgress(String phase, long completed, long required, long completedBytes) {
-        sendOfflineProgress(phase, completed, required, completedBytes, Double.NaN);
-    }
-
-    private void sendOfflineProgress(String phase, long completed, long required, long completedBytes,
-                                     double estimatedMB) {
         try {
             JSONObject payload = new JSONObject();
             payload.put("type", "offlineDownloadProgress");
@@ -3236,10 +3158,6 @@ gestures.addOnMoveListener(moveGestureListener);
             if (completedBytes >= 0) {
                 payload.put("completedBytes", completedBytes);
                 payload.put("completedMB", Math.round(completedBytes / 1048576.0 * 10.0) / 10.0);
-            }
-            if ((phase.equals("tiles-start") || phase.equals("tiles"))
-                    && Double.isFinite(estimatedMB) && estimatedMB >= 0) {
-                payload.put("estimatedMB", estimatedMB);
             }
             long now = System.currentTimeMillis();
             if (now - lastKeepCallbackOfflineMs >= CALLBACK_RATE_LIMIT_MS) {

@@ -31,8 +31,8 @@ function bridge(reply) {
   return { api: context.module.exports, calls };
 }
 
-const NEW_ACTIONS = ['estimateOfflineRegionSize', 'estimateOfflineRegionSizeForRect',
-  'estimateOfflineRegionSizesForRect', 'getAvailableStorage', 'cancelOfflineDownload', 'getOfflineRegionIds'];
+const NEW_ACTIONS = ['estimateOfflineRegionSize', 'estimateOfflineRegionSizeForRect', 'getAvailableStorage',
+  'cancelOfflineDownload', 'getOfflineRegionIds'];
 
 test('new offline calls reach their native actions', async () => {
   const { api, calls } = bridge();
@@ -57,19 +57,6 @@ test('detail sets maxZoom for downloads and estimates without changing the calle
   assert.ok(Object.isFrozen(api.offlineDetailMaxZoom));
 });
 
-test('download forwards the selected estimate and rejects invalid values', async () => {
-  const { api, calls } = bridge();
-  const options = { detail: 'medium', estimatedMB: 18.4, regionId: 'trail-1' };
-  await api.downloadOfflineRegionForRect(options);
-  assert.equal(calls[0].args[0].maxZoom, 15);
-  assert.equal(calls[0].args[0].estimatedMB, 18.4);
-  assert.deepEqual(options, { detail: 'medium', estimatedMB: 18.4, regionId: 'trail-1' });
-
-  await assert.rejects(api.downloadOfflineRegionForRect({ estimatedMB: -1 }), /estimatedMB must be/);
-  await assert.rejects(api.downloadOfflineRegion({ estimatedMB: 'not a size' }), /estimatedMB must be/);
-  assert.equal(calls.length, 1);
-});
-
 test('invalid detail or zoom is rejected before native', async () => {
   const { api, calls } = bridge();
   await assert.rejects(api.downloadOfflineRegion({ detail: 'ultra' }), /detail must be/);
@@ -77,31 +64,6 @@ test('invalid detail or zoom is rejected before native', async () => {
   await assert.rejects(api.estimateOfflineRegionSize({ minZoom: 0 }), /Offline zoom/);
   await assert.rejects(api.estimateOfflineRegionSizeForRect({ minZoom: 14, detail: 'low' }), /Offline zoom/);
   assert.equal(calls.length, 0);
-});
-
-test('one rectangle request returns all detail estimates without a maxZoom', async () => {
-  const { api, calls } = bridge();
-  const options = { x: 2, y: 3, width: 40, height: 50, minZoom: 10 };
-  await api.estimateOfflineRegionSizesForRect(options);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].action, 'estimateOfflineRegionSizesForRect');
-  assert.equal(calls[0].args[0].minZoom, 10);
-  assert.equal(calls[0].args[0].maxZoom, undefined);
-  assert.equal(options.minZoom, 10);
-
-  await assert.rejects(
-    api.estimateOfflineRegionSizesForRect({ minZoom: 14 }),
-    /minZoom must be 2 through 13/
-  );
-  await assert.rejects(
-    api.estimateOfflineRegionSizesForRect({ detail: 'low' }),
-    /All detail levels are estimated/
-  );
-  await assert.rejects(
-    api.estimateOfflineRegionSizesForRect({ maxZoom: 13 }),
-    /All detail levels are estimated/
-  );
-  assert.equal(calls.length, 1);
 });
 
 test('a cancelled download rejects as a cancellation', async () => {
@@ -154,35 +116,12 @@ test('estimates use the shared tile count and report the download limits', () =>
   assert.match(ios, /defaultBytesPerTile: Double = 50 \* 1024/);
 });
 
-test('rectangle multi-estimate returns low, medium and high MB values on both platforms', () => {
-  const a = between(android, 'private void estimateOfflineRegionSizesForRect(', 'private void estimateOfflineRegionSize(');
-  const i = between(ios, '@objc(estimateOfflineRegionSizesForRect:)', 'private func sendOfflineEstimate(');
-  for (const source of [a, i]) {
-    for (const key of ['lowEstimatedMB', 'mediumEstimatedMB', 'highEstimatedMB']) {
-      assert.match(source, new RegExp(key));
-    }
-  }
-  assert.match(a, /int\[\] maxZooms = \{13, 15, 16\}/);
-  assert.match(i, /\("lowEstimatedMB", 13\), \("mediumEstimatedMB", 15\), \("highEstimatedMB", 16\)/);
-});
-
 test('storage, region ids and byte progress return the same fields on both platforms', () => {
   for (const key of ['availableBytes', 'totalBytes', 'availableGB', 'regionIds', 'regions', 'complete',
     'completedBytes', 'completedMB']) {
     assert.match(android, new RegExp('"' + key + '"'), 'Android missing ' + key);
     assert.match(ios, new RegExp('"' + key + '"'), 'iOS missing ' + key);
   }
-  assert.equal((android.match(/progress\.getCompletedResourceSize\(\)/g) || []).length, 2);
+  assert.equal((android.match(/progress\.getCompletedResourceSize\(\)\)/g) || []).length, 2);
   assert.equal((ios.match(/completedBytes: Int64\(progress\.completedResourceSize\)/g) || []).length, 2);
-});
-
-test('tile progress carries the selected estimate beside downloaded MB on both platforms', () => {
-  const aDownload = between(android, 'private void downloadOfflineRegion(JSONObject options', 'private void startOfflineDownload(');
-  const iDownload = between(ios, '@objc(downloadOfflineRegion:)', 'private func startOfflineDownload(');
-  assert.equal((aDownload.match(/optDouble\("estimatedMB", Double\.NaN\)/g) || []).length, 2);
-  assert.equal((iDownload.match(/estimatedMB: estimatedMB/g) || []).length, 2);
-  assert.match(android, /payload\.put\("estimatedMB", estimatedMB\)/);
-  assert.match(ios, /payload\["estimatedMB"\] = estimatedMB/);
-  assert.match(android, /"tiles", progress\.getCompletedResourceCount\(\), progress\.getRequiredResourceCount\(\), progress\.getCompletedResourceSize\(\), estimatedMB/);
-  assert.match(ios, /phase: "tiles"[\s\S]*?estimatedMB: estimatedMB/);
 });

@@ -93,27 +93,13 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
   ```
 
   To update a map, call `downloadOfflineRegion` again with the stored `regionId`, `polygon`, zooms and `styleUrl`; Mapbox only fetches what changed.
-- **Detail levels:** pass `detail: 'low' | 'medium' | 'high'` to `downloadOfflineRegion`, `downloadOfflineRegionForRect` or either single-level estimate call instead of `maxZoom`. They use maximum zooms 13, 15 and 16 (`MapboxPlugin.offlineDetailMaxZoom`). Passing both `detail` and `maxZoom` is rejected. `minZoom` still defaults to 10. The all-level rectangle estimate returns all three values together and takes neither `detail` nor `maxZoom`.
-- **Size estimates:** `estimateOfflineRegionSize(options)` takes the same area options as `downloadOfflineRegion` (centre and `radiusKm`, `bounds` or `polygon`), and `estimateOfflineRegionSizeForRect(options)` the same rectangle as `downloadOfflineRegionForRect`. These return `{ tileCount, bytesPerTile, estimatedBytes, estimatedMB, minZoom, maxZoom, bounds, withinLimits }` for one zoom range. `estimateOfflineRegionSizesForRect(options)` estimates the selected rectangle at all three detail levels in one native call and returns `{ lowEstimatedMB, mediumEstimatedMB, highEstimatedMB }`. It uses max zooms 13, 15 and 16 respectively; `minZoom` defaults to 10 and must be at most 13. Do not pass `detail` or `maxZoom` to this all-level action. Estimates count tiles over the area's bounding box, so circles and polygons come out a little high. They assume 50 KiB per tile by default; real sizes depend on the style and area, and the shared style pack is not included.
+- **Detail levels:** pass `detail: 'low' | 'medium' | 'high'` to `downloadOfflineRegion`, `downloadOfflineRegionForRect` or either estimate call instead of `maxZoom`. They download up to zoom 13, 15 and 16 (`MapboxPlugin.offlineDetailMaxZoom`). Passing both `detail` and `maxZoom` is rejected. `minZoom` still defaults to 10.
+- **Size estimates:** `estimateOfflineRegionSize(options)` takes the same area options as `downloadOfflineRegion` (centre and `radiusKm`, `bounds` or `polygon`), and `estimateOfflineRegionSizeForRect(options)` the same rectangle as `downloadOfflineRegionForRect`. Both resolve with `{ tileCount, bytesPerTile, estimatedBytes, estimatedMB, minZoom, maxZoom, bounds, withinLimits }`. `withinLimits` is false when the matching download would be rejected (too large or too many tiles). The estimate counts tiles over the area's bounding box, so circles and polygons come out a little high. It assumes 50 KiB per tile; real sizes depend on the style and area, so pass `bytesPerTile` from your own downloads (`sizeBytes` divided by that area's `tileCount`) for better numbers. Call it once per detail level to show Low, Medium and High.
 - **Free storage:** `getAvailableStorage()` resolves with `{ availableBytes, totalBytes, availableGB }`. iOS reports the space available for important downloads, which includes space the system can free.
 - **Cancel:** `cancelOfflineDownload()` stops the current download without closing the map and resolves with `{ cancelled }` (false when nothing was downloading). The download's own promise rejects with a cancellation error (`error.code === 'MAPBOX_OPERATION_CANCELLED'`). Tiles already fetched stay in Mapbox's storage under that `regionId`; download it again to finish it, or delete it.
 - **Stored regions:** `getOfflineRegionIds()` resolves with `{ regionIds: [...], regions: [{ regionId, sizeBytes, complete }] }` for the maps actually on the device. Use it to remove database rows for maps that are gone; `complete: false` marks a download that stopped part-way.
 - **Showing a stored region:** `showOfflineRegion({ regionId })` applies camera bounds from the saved region's rectangular extent and saved zoom range. The map camera center cannot be panned outside those bounds; this does not disable network tile requests or enforce an irregular polygon boundary.
-- **Progress:** Pass the selected size estimate as `estimatedMB` to `downloadOfflineRegionForRect` (or `downloadOfflineRegion`). The `tiles-start` and `tiles` progress events include that value beside `completedMB`/`completedBytes`, so the UI can show estimated MB and downloaded MB. `percent` is based on Mapbox resource counts and is phase-specific, not an exact byte percentage; style-pack progress is separate and is not included in the tile estimate. The download Promise resolves when the tile region finishes and rejects on failure or cancellation.
-
-  ```javascript
-  MapboxPlugin.onOfflineDownloadProgress(function (progress) {
-    if (progress.phase === 'tiles-start' || progress.phase === 'tiles') {
-      showProgress(progress.completedMB || 0, progress.estimatedMB);
-    }
-  });
-
-  MapboxPlugin.downloadOfflineRegionForRect({
-    ...rect,
-    detail: 'medium',
-    estimatedMB: estimates.mediumEstimatedMB
-  }).then(notifyDownloadComplete);
-  ```
+- **Progress:** `onOfflineDownloadProgress` events also include `completedBytes` and `completedMB` during the `style` and `tiles` phases, alongside `completed`, `required` and `percent`.
 - **Opening a downloaded map:** `showOfflineRegion({ regionId: 'trail-42' })` opens that region from the device. It reads the region's saved outline, centres the map on it, zooms so the whole region fits on screen (kept within the zooms that were downloaded) and loads the style it was downloaded with. It rejects with `Offline region '<id>' is not downloaded on this device.` when the region is missing. Pass `latitude` and `longitude` or `zoom` to override the centre or zoom. `styleUrl` is used only for regions downloaded before this change, which have no saved style; re-download those to save it. The map is not locked to the region, so users can still pan outside it. Without `regionId`, `showOfflineRegion` works as before (`latitude`, `longitude`, `zoom` and `styleUrl`). As with any style load, add your boundaries, paths and layer settings again after it resolves.
 - Style URLs and underlying SDK error details are no longer included in plugin diagnostic logs.
 
@@ -161,7 +147,6 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `downloadOfflineRegionForRect(options)`
 - `estimateOfflineRegionSize(options)`
 - `estimateOfflineRegionSizeForRect(options)`
-- `estimateOfflineRegionSizesForRect(options)`
 - `getAvailableStorage()`
 - `cancelOfflineDownload()`
 - `getOfflineRegionIds()`

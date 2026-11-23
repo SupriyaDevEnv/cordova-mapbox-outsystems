@@ -137,8 +137,7 @@ var OFFLINE_AREA_ACTIONS = {
   downloadOfflineRegion: true,
   downloadOfflineRegionForRect: true,
   estimateOfflineRegionSize: true,
-  estimateOfflineRegionSizeForRect: true,
-  estimateOfflineRegionSizesForRect: true
+  estimateOfflineRegionSizeForRect: true
 };
 
 // Returns a copy with maxZoom set from `detail`; the caller's object is not modified.
@@ -158,32 +157,16 @@ function call(action, args) {
   return new Promise(function (resolve, reject) {
     try {
       if (OFFLINE_AREA_ACTIONS[action] && args && args[0]) {
-        if (action === 'estimateOfflineRegionSizesForRect') {
-          if (args[0].detail != null || args[0].maxZoom != null) {
-            throw new Error('All detail levels are estimated; do not pass detail or maxZoom.');
-          }
-        } else {
-          args = [applyOfflineDetail(args[0])].concat(args.slice(1));
-        }
-      }
-      if ((action === 'downloadOfflineRegion' || action === 'downloadOfflineRegionForRect')
-          && args && args[0] && args[0].estimatedMB != null) {
-        var estimatedMB = Number(args[0].estimatedMB);
-        if (!isFinite(estimatedMB) || estimatedMB < 0) {
-          throw new Error('estimatedMB must be a non-negative finite number.');
-        }
+        args = [applyOfflineDetail(args[0])].concat(args.slice(1));
       }
       var json = JSON.stringify(args || []);
       if (utf8Length(json) > 4 * 1024 * 1024) throw new Error('Map input exceeds the 4 MiB limit.');
       var options = (args || [])[0] || {};
       if (OFFLINE_AREA_ACTIONS[action]) {
         var minZoom = options.minZoom === undefined ? 10 : Number(options.minZoom);
-        var maxZoom = options.maxZoom == null ? 16 : Number(options.maxZoom);
+        var maxZoom = options.maxZoom === undefined ? 16 : Number(options.maxZoom);
         if (!isFinite(minZoom) || !isFinite(maxZoom) || minZoom < 2 || maxZoom > 18 || minZoom > maxZoom) {
           throw new Error('Offline zoom must be between 2 and 18 with minZoom <= maxZoom.');
-        }
-        if (action === 'estimateOfflineRegionSizesForRect' && minZoom > OFFLINE_DETAIL_MAX_ZOOM.low) {
-          throw new Error('minZoom must be 2 through 13 to estimate all detail levels.');
         }
       }
     } catch (error) {
@@ -516,10 +499,6 @@ var api = {
 
   estimateOfflineRegionSizeForRect: function (options) {
     return call('estimateOfflineRegionSizeForRect', [options || {}]);
-  },
-
-  estimateOfflineRegionSizesForRect: function (options) {
-    return call('estimateOfflineRegionSizesForRect', [options || {}]);
   },
 
   getAvailableStorage: function () {

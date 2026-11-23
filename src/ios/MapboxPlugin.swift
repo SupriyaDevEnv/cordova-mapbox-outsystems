@@ -1525,17 +1525,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let estimatedMB: Double?
-            if let rawEstimatedMB = options["estimatedMB"], !(rawEstimatedMB is NSNull) {
-                let value = self.doubleOption(rawEstimatedMB, defaultValue: .nan)
-                guard value.isFinite, value >= 0 else {
-                    self.sendError("estimatedMB must be a non-negative finite number.", command)
-                    return
-                }
-                estimatedMB = value
-            } else {
-                estimatedMB = nil
-            }
 
             // Optional area (bounds or GeoJSON polygon) instead of centre + radius.
             let area: Polygon?
@@ -1592,7 +1581,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 styleURI: styleURI,
                 geometry: area?.geometry,
                 wifiOnly: self.boolOption(options["wifiOnly"], defaultValue: false),
-                estimatedMB: estimatedMB,
                 command: command
             )
         }
@@ -1612,17 +1600,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
             guard self.validInput(options, command) else { return }
-            let estimatedMB: Double?
-            if let rawEstimatedMB = options["estimatedMB"], !(rawEstimatedMB is NSNull) {
-                let value = self.doubleOption(rawEstimatedMB, defaultValue: .nan)
-                guard value.isFinite, value >= 0 else {
-                    self.sendError("estimatedMB must be a non-negative finite number.", command)
-                    return
-                }
-                estimatedMB = value
-            } else {
-                estimatedMB = nil
-            }
             let nativeX = self.doubleOption(options["x"], defaultValue: 0)
             let nativeY = self.doubleOption(options["y"], defaultValue: 0)
             let nativeWidth = self.doubleOption(options["width"], defaultValue: 1)
@@ -1677,7 +1654,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 styleURI: styleURI,
                 geometry: polygon.geometry,
                 wifiOnly: self.boolOption(options["wifiOnly"], defaultValue: false),
-                estimatedMB: estimatedMB,
                 command: command
             )
         }
@@ -1693,7 +1669,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         styleURI: StyleURI,
         geometry: Geometry?,
         wifiOnly: Bool,
-        estimatedMB: Double?,
         command: CDVInvokedUrlCommand
     ) {
         guard !isOfflineDownloading else {
@@ -1703,10 +1678,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         guard radiusKm.isFinite, radiusKm >= 0, radiusKm <= maxOfflineRadiusKm,
               !regionId.isEmpty, regionId.utf8.count <= 256 else {
             sendError("Invalid offline radius or region id.", command); return
-        }
-        if let estimatedMB = estimatedMB, (!estimatedMB.isFinite || estimatedMB < 0) {
-            sendError("estimatedMB must be a non-negative finite number.", command)
-            return
         }
         let downloadGeneration = sessionGeneration
         // A cancelled download's late Mapbox callbacks are ignored by token.
@@ -1756,7 +1727,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                     // Final area (circle already built) so the result reports exactly what was downloaded.
                     geometry: regionGeometry,
                     wifiOnly: wifiOnly,
-                    estimatedMB: estimatedMB,
                     command: command
                 )
             }
@@ -1775,7 +1745,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         styleURI: StyleURI,
         geometry: Geometry?,
         wifiOnly: Bool,
-        estimatedMB: Double?,
         command: CDVInvokedUrlCommand
     ) {
         cancelCurrentDownload()
@@ -1808,12 +1777,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.runForDownload(downloadGeneration, downloadToken) {
                 switch result {
                 case .success:
-                    self.sendOfflineProgress(
-                        phase: "tiles-start",
-                        completed: 0,
-                        required: 100,
-                        estimatedMB: estimatedMB
-                    )
+                    self.sendOfflineProgress(phase: "tiles-start", completed: 0, required: 100)
                     self.downloadOfflineTiles(
                         offlineManager: offlineManager,
                         downloadGeneration: downloadGeneration,
@@ -1827,7 +1791,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                         styleURI: styleURI,
                         geometry: geometry,
                         wifiOnly: wifiOnly,
-                        estimatedMB: estimatedMB,
                         command: command
                     )
                 case .failure(let error):
@@ -1851,7 +1814,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         styleURI: StyleURI,
         geometry: Geometry? = nil,
         wifiOnly: Bool = false,
-        estimatedMB: Double? = nil,
         command: CDVInvokedUrlCommand
     ) {
         guard downloadGeneration == sessionGeneration, downloadToken == offlineDownloadToken else { return }
@@ -1893,8 +1855,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                     phase: "tiles",
                     completed: UInt64(progress.completedResourceCount),
                     required: UInt64(progress.requiredResourceCount),
-                    completedBytes: Int64(progress.completedResourceSize),
-                    estimatedMB: estimatedMB
+                    completedBytes: Int64(progress.completedResourceSize)
                 )
             }
         } completion: { result in
@@ -2007,72 +1968,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             let bottomLeft = mapView.mapboxMap.coordinate(for: CGPoint(x: x, y: y + height))
             let area = Polygon([[topLeft, topRight, bottomRight, bottomLeft, topLeft]])
             self.sendOfflineEstimate(area: area, options: options, command: command)
-        }
-    }
-
-    /// Returns low, medium and high estimates for the same on-screen rectangle in one call.
-    @objc(estimateOfflineRegionSizesForRect:)
-    func estimateOfflineRegionSizesForRect(command: CDVInvokedUrlCommand) {
-        rememberCommand(command)
-        runForSession {
-            guard let mapView = self.mapView else {
-                self.sendError("Map is not initialized.", command)
-                return
-            }
-            let options = command.argument(at: 0) as? [String: Any] ?? [:]
-            guard self.validInput(options, command) else { return }
-            guard (options["detail"] == nil || options["detail"] is NSNull),
-                  (options["maxZoom"] == nil || options["maxZoom"] is NSNull) else {
-                self.sendError("This action estimates all detail levels; do not pass detail or maxZoom.", command)
-                return
-            }
-            let nativeX = self.doubleOption(options["x"], defaultValue: 0)
-            let nativeY = self.doubleOption(options["y"], defaultValue: 0)
-            let nativeWidth = self.doubleOption(options["width"], defaultValue: 1)
-            let nativeHeight = self.doubleOption(options["height"], defaultValue: 1)
-            guard [nativeX, nativeY, nativeWidth, nativeHeight].allSatisfy({
-                $0.isFinite && abs($0) <= 1000000
-            }), nativeWidth > 0, nativeHeight > 0 else {
-                self.sendError("Invalid offline rectangle.", command)
-                return
-            }
-            let minZoomValue = self.doubleOption(options["minZoom"], defaultValue: 10)
-            guard minZoomValue <= 13,
-                  let minZoom = MapboxSecurity.zoom(minZoomValue) else {
-                self.sendError("minZoom must be between 2 and 13 to estimate all detail levels.", command)
-                return
-            }
-            let bytesPerTile = self.doubleOption(options["bytesPerTile"], defaultValue: self.defaultBytesPerTile)
-            guard bytesPerTile > 0, bytesPerTile <= self.maxBytesPerTile else {
-                self.sendError("bytesPerTile must be a positive number up to 10 MiB.", command)
-                return
-            }
-
-            let scale = Double(UIScreen.main.scale)
-            let x = nativeX / scale
-            let y = nativeY / scale
-            let width = nativeWidth / scale
-            let height = nativeHeight / scale
-            let topLeft = mapView.mapboxMap.coordinate(for: CGPoint(x: x, y: y))
-            let topRight = mapView.mapboxMap.coordinate(for: CGPoint(x: x + width, y: y))
-            let bottomRight = mapView.mapboxMap.coordinate(for: CGPoint(x: x + width, y: y + height))
-            let bottomLeft = mapView.mapboxMap.coordinate(for: CGPoint(x: x, y: y + height))
-            let area = Polygon([[topLeft, topRight, bottomRight, bottomLeft, topLeft]])
-            let box = self.polygonBounds(area)
-            let maxZooms: [(String, UInt8)] = [
-                ("lowEstimatedMB", 13), ("mediumEstimatedMB", 15), ("highEstimatedMB", 16)
-            ]
-            var result: [String: Any] = [:]
-            for (resultKey, maxZoom) in maxZooms {
-                let tileCount = MapboxSecurity.estimatedTileCount(
-                    south: box.south, west: box.west, north: box.north, east: box.east,
-                    minZoom: Int(minZoom), maxZoom: Int(maxZoom)
-                )
-                let estimatedBytes = Int64((Double(tileCount) * bytesPerTile).rounded())
-                result[resultKey] =
-                    (Double(estimatedBytes) / 1048576.0 * 10).rounded() / 10
-            }
-            self.sendSuccess(result, command)
         }
     }
 
@@ -2664,13 +2559,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     }
 
     /// completedBytes is -1 when unknown (start/setup phases).
-    private func sendOfflineProgress(
-        phase: String,
-        completed: UInt64,
-        required: UInt64,
-        completedBytes: Int64 = -1,
-        estimatedMB: Double? = nil
-    ) {
+    private func sendOfflineProgress(phase: String, completed: UInt64, required: UInt64, completedBytes: Int64 = -1) {
         let percent = required > 0 ? Int(round((Double(completed) * 100.0) / Double(required))) : 0
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastKeepCallbackOfflineTs >= callbackRateLimit else { return }
@@ -2685,10 +2574,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         if completedBytes >= 0 {
             payload["completedBytes"] = NSNumber(value: completedBytes)
             payload["completedMB"] = (Double(completedBytes) / 1048576.0 * 10).rounded() / 10
-        }
-        if (phase == "tiles-start" || phase == "tiles"),
-           let estimatedMB = estimatedMB, estimatedMB.isFinite, estimatedMB >= 0 {
-            payload["estimatedMB"] = estimatedMB
         }
         sendKeepCallback(offlineDownloadProgressCallbackId, payload: payload)
     }
