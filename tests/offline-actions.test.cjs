@@ -31,8 +31,8 @@ function bridge(reply) {
   return { api: context.module.exports, calls };
 }
 
-const NEW_ACTIONS = ['estimateOfflineRegionSize', 'estimateOfflineRegionSizeForRect', 'getAvailableStorage',
-  'cancelOfflineDownload', 'getOfflineRegionIds'];
+const NEW_ACTIONS = ['estimateOfflineRegionSize', 'estimateOfflineRegionSizeForRect',
+  'estimateOfflineRegionSizesForRect', 'getAvailableStorage', 'cancelOfflineDownload', 'getOfflineRegionIds'];
 
 test('new offline calls reach their native actions', async () => {
   const { api, calls } = bridge();
@@ -64,6 +64,31 @@ test('invalid detail or zoom is rejected before native', async () => {
   await assert.rejects(api.estimateOfflineRegionSize({ minZoom: 0 }), /Offline zoom/);
   await assert.rejects(api.estimateOfflineRegionSizeForRect({ minZoom: 14, detail: 'low' }), /Offline zoom/);
   assert.equal(calls.length, 0);
+});
+
+test('one rectangle request returns all detail estimates without a maxZoom', async () => {
+  const { api, calls } = bridge();
+  const options = { x: 2, y: 3, width: 40, height: 50, minZoom: 10 };
+  await api.estimateOfflineRegionSizesForRect(options);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].action, 'estimateOfflineRegionSizesForRect');
+  assert.equal(calls[0].args[0].minZoom, 10);
+  assert.equal(calls[0].args[0].maxZoom, undefined);
+  assert.equal(options.minZoom, 10);
+
+  await assert.rejects(
+    api.estimateOfflineRegionSizesForRect({ minZoom: 14 }),
+    /minZoom must be 2 through 13/
+  );
+  await assert.rejects(
+    api.estimateOfflineRegionSizesForRect({ detail: 'low' }),
+    /All detail levels are estimated/
+  );
+  await assert.rejects(
+    api.estimateOfflineRegionSizesForRect({ maxZoom: 13 }),
+    /All detail levels are estimated/
+  );
+  assert.equal(calls.length, 1);
 });
 
 test('a cancelled download rejects as a cancellation', async () => {
@@ -114,6 +139,18 @@ test('estimates use the shared tile count and report the download limits', () =>
   }
   assert.match(android, /DEFAULT_BYTES_PER_TILE = 50 \* 1024;/);
   assert.match(ios, /defaultBytesPerTile: Double = 50 \* 1024/);
+});
+
+test('rectangle multi-estimate returns low, medium and high MB values on both platforms', () => {
+  const a = between(android, 'private void estimateOfflineRegionSizesForRect(', 'private void estimateOfflineRegionSize(');
+  const i = between(ios, '@objc(estimateOfflineRegionSizesForRect:)', 'private func sendOfflineEstimate(');
+  for (const source of [a, i]) {
+    for (const key of ['lowEstimatedMB', 'mediumEstimatedMB', 'highEstimatedMB']) {
+      assert.match(source, new RegExp(key));
+    }
+  }
+  assert.match(a, /int\[\] maxZooms = \{13, 15, 16\}/);
+  assert.match(i, /\("lowEstimatedMB", 13\), \("mediumEstimatedMB", 15\), \("highEstimatedMB", 16\)/);
 });
 
 test('storage, region ids and byte progress return the same fields on both platforms', () => {

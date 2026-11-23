@@ -445,6 +445,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             case "estimateOfflineRegionSizeForRect":
                 estimateOfflineRegionSize(options, true, callbackContext);
                 return true;
+            case "estimateOfflineRegionSizesForRect":
+                estimateOfflineRegionSizesForRect(options, callbackContext);
+                return true;
             case "getAvailableStorage":
                 getAvailableStorage(callbackContext);
                 return true;
@@ -2676,6 +2679,51 @@ gestures.addOnMoveListener(moveGestureListener);
     // Default when the app has no measured value; real sizes vary a lot by style and area.
     private static final double DEFAULT_BYTES_PER_TILE = 50 * 1024;
     private static final double MAX_BYTES_PER_TILE = 10 * 1024 * 1024;
+
+    private void estimateOfflineRegionSizesForRect(JSONObject options, CallbackContext callback) {
+        runForSession(() -> {
+            try {
+                if (mapView == null) {
+                    callback.error("Map is not initialized estimateOfflineRegionSizesForRect.");
+                    return;
+                }
+                if (!options.isNull("detail") || !options.isNull("maxZoom")) {
+                    callback.error("This action estimates all detail levels; do not pass detail or maxZoom.");
+                    return;
+                }
+                double[] rect = offlineRect(options);
+                if (rect == null) { callback.error("Invalid offline rectangle."); return; }
+
+                double minZoom = options.optDouble("minZoom", 10.0);
+                if (!MapboxSecurity.validZoom(minZoom) || minZoom > 13.0) {
+                    callback.error("minZoom must be between 2 and 13 to estimate all detail levels.");
+                    return;
+                }
+                double bytesPerTile = options.optDouble("bytesPerTile", DEFAULT_BYTES_PER_TILE);
+                if (!Double.isFinite(bytesPerTile) || bytesPerTile <= 0 || bytesPerTile > MAX_BYTES_PER_TILE) {
+                    callback.error("bytesPerTile must be a positive number up to 10 MiB.");
+                    return;
+                }
+
+                double[] box = polygonBounds(createRectPolygon(rect[0], rect[1], rect[2], rect[3]));
+                int min = toZoomByte(minZoom);
+                String[] resultKeys = {"lowEstimatedMB", "mediumEstimatedMB", "highEstimatedMB"};
+                int[] maxZooms = {13, 15, 16};
+                JSONObject result = new JSONObject();
+                for (int i = 0; i < resultKeys.length; i++) {
+                    long tileCount = MapboxSecurity.estimatedTileCount(
+                        box[1], box[0], box[3], box[2], min, maxZooms[i]
+                    );
+                    long estimatedBytes = Math.round(tileCount * bytesPerTile);
+                    result.put(resultKeys[i],
+                        Math.round(estimatedBytes / 1048576.0 * 10.0) / 10.0);
+                }
+                callback.success(result);
+            } catch (Throwable e) {
+                callback.error(sanitizeError("Failed to estimate offline region sizes.", e));
+            }
+        });
+    }
 
     /**
      * Approximate download size for the same options as downloadOfflineRegion

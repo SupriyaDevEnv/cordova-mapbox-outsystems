@@ -1971,6 +1971,72 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
+    /// Returns low, medium and high estimates for the same on-screen rectangle in one call.
+    @objc(estimateOfflineRegionSizesForRect:)
+    func estimateOfflineRegionSizesForRect(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let mapView = self.mapView else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard self.validInput(options, command) else { return }
+            guard (options["detail"] == nil || options["detail"] is NSNull),
+                  (options["maxZoom"] == nil || options["maxZoom"] is NSNull) else {
+                self.sendError("This action estimates all detail levels; do not pass detail or maxZoom.", command)
+                return
+            }
+            let nativeX = self.doubleOption(options["x"], defaultValue: 0)
+            let nativeY = self.doubleOption(options["y"], defaultValue: 0)
+            let nativeWidth = self.doubleOption(options["width"], defaultValue: 1)
+            let nativeHeight = self.doubleOption(options["height"], defaultValue: 1)
+            guard [nativeX, nativeY, nativeWidth, nativeHeight].allSatisfy({
+                $0.isFinite && abs($0) <= 1000000
+            }), nativeWidth > 0, nativeHeight > 0 else {
+                self.sendError("Invalid offline rectangle.", command)
+                return
+            }
+            let minZoomValue = self.doubleOption(options["minZoom"], defaultValue: 10)
+            guard minZoomValue <= 13,
+                  let minZoom = MapboxSecurity.zoom(minZoomValue) else {
+                self.sendError("minZoom must be between 2 and 13 to estimate all detail levels.", command)
+                return
+            }
+            let bytesPerTile = self.doubleOption(options["bytesPerTile"], defaultValue: self.defaultBytesPerTile)
+            guard bytesPerTile > 0, bytesPerTile <= self.maxBytesPerTile else {
+                self.sendError("bytesPerTile must be a positive number up to 10 MiB.", command)
+                return
+            }
+
+            let scale = Double(UIScreen.main.scale)
+            let x = nativeX / scale
+            let y = nativeY / scale
+            let width = nativeWidth / scale
+            let height = nativeHeight / scale
+            let topLeft = mapView.mapboxMap.coordinate(for: CGPoint(x: x, y: y))
+            let topRight = mapView.mapboxMap.coordinate(for: CGPoint(x: x + width, y: y))
+            let bottomRight = mapView.mapboxMap.coordinate(for: CGPoint(x: x + width, y: y + height))
+            let bottomLeft = mapView.mapboxMap.coordinate(for: CGPoint(x: x, y: y + height))
+            let area = Polygon([[topLeft, topRight, bottomRight, bottomLeft, topLeft]])
+            let box = self.polygonBounds(area)
+            let maxZooms: [(String, UInt8)] = [
+                ("lowEstimatedMB", 13), ("mediumEstimatedMB", 15), ("highEstimatedMB", 16)
+            ]
+            var result: [String: Any] = [:]
+            for (resultKey, maxZoom) in maxZooms {
+                let tileCount = MapboxSecurity.estimatedTileCount(
+                    south: box.south, west: box.west, north: box.north, east: box.east,
+                    minZoom: Int(minZoom), maxZoom: Int(maxZoom)
+                )
+                let estimatedBytes = Int64((Double(tileCount) * bytesPerTile).rounded())
+                result[resultKey] =
+                    (Double(estimatedBytes) / 1048576.0 * 10).rounded() / 10
+            }
+            self.sendSuccess(result, command)
+        }
+    }
+
     private func sendOfflineEstimate(area: Polygon, options: [String: Any], command: CDVInvokedUrlCommand) {
         guard let minZoom = MapboxSecurity.zoom(doubleOption(options["minZoom"], defaultValue: 10)),
               let maxZoom = MapboxSecurity.zoom(doubleOption(options["maxZoom"], defaultValue: 16)), minZoom <= maxZoom else {
