@@ -1,0 +1,320 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+
+const android = fs.readFileSync('src/android/MapboxPluginEntry.java', 'utf8');
+const androidPermissions = fs.readFileSync('src/android/MapboxPluginPermissionEntry.java', 'utf8');
+const ios = fs.readFileSync('src/ios/MapboxPlugin.swift', 'utf8');
+const iosMarkerIcons = fs.readFileSync('src/ios/MarkerIcons.swift', 'utf8');
+
+function javaMethod(name, nextName) {
+  return android.split('private void ' + name + '(')[1].split('private void ' + nextName + '(')[0];
+}
+
+test('camera actions preserve omitted center coordinates on both platforms', () => {
+  for (const body of [javaMethod('setCamera', 'flyTo'), javaMethod('flyTo', 'enableUserLocation')]) {
+    assert.match(body, /getCameraState\(\)\.getCenter\(\)/);
+    assert.match(body, /optDouble\("latitude", currentCenter\.latitude\(\)\)/);
+    assert.match(body, /optDouble\("longitude", currentCenter\.longitude\(\)\)/);
+  }
+  for (const name of ['setCamera', 'flyTo']) {
+    const body = ios.split('func ' + name + '(command:')[1].split('@objc', 1)[0];
+    assert.match(body, /self\.cameraFromOptions\(options, mapView: mapView, command\)/);
+  }
+  const iosCamera = ios.split('private func cameraFromOptions(')[1].split('@objc', 1)[0];
+  assert.match(iosCamera, /defaultValue: mapView\.cameraState\.center\.latitude/);
+  assert.match(iosCamera, /defaultValue: mapView\.cameraState\.center\.longitude/);
+});
+
+test('initial camera applies bearing and pitch on both platforms', () => {
+  const androidInitialize = android.split('private void initialize(')[1].split('private String getAccessToken')[0];
+  assert.match(androidInitialize, /finiteOption\(options, "bearing", 0\.0\)/);
+  assert.match(androidInitialize, /finiteOption\(options, "pitch", 0\.0\)/);
+  assert.match(androidInitialize, /\.bearing\(bearing\)/);
+  assert.match(androidInitialize, /\.pitch\(pitch\)/);
+
+  const iosInitialize = ios.split('func initialize(command:')[1].split('@objc(setCamera:', 1)[0];
+  assert.match(iosInitialize, /options\["bearing"\]/);
+  assert.match(iosInitialize, /options\["pitch"\]/);
+  assert.match(iosInitialize, /bearing: bearing/);
+  assert.match(iosInitialize, /pitch: pitch/);
+});
+
+test('iOS consistently converts native-pixel rectangles to UIKit points', () => {
+  const frame = ios.split('private func frameFromOptions')[1].split('private func touchRectFromOptions')[0];
+  assert.doesNotMatch(frame, /appearsDevicePixelScaled/);
+  assert.match(frame, /options\["x"\][\s\S]*\/ scale/);
+  assert.match(frame, /options\["width"\][\s\S]*\/ scale/);
+
+  const offline = ios.split('func downloadOfflineRegionForRect(command:')[1]
+    .split('private func startOfflineDownload')[0];
+  for (const name of ['x', 'y', 'width', 'height']) {
+    assert.match(offline, new RegExp('let ' + name + ' = native' +
+      name[0].toUpperCase() + name.slice(1) + ' / scale'));
+  }
+});
+
+test('iOS matches Android option coercion and idempotent path visibility', () => {
+  const pathStart = ios.split('func startPathTracking(command:')[1].split('@objc(stopPathTracking:', 1)[0];
+  assert.match(pathStart, /boolOption\(options\["trackCamera"\], defaultValue: true\)/);
+
+  const markers = ios.split('func loadMarkers(command:')[1].split('@objc(removeMarker:', 1)[0];
+  assert.match(markers, /marker\["Id"\]\.flatMap\(self\.stringOption\)/);
+  assert.match(markers, /marker\["Latitude"\]/);
+  assert.match(markers, /marker\["Longitude"\]/);
+  assert.match(markers, /marker\["IsFind"\]/);
+  assert.match(iosMarkerIcons, /cg\.setLineCap\(\.round\)/);
+  assert.match(iosMarkerIcons, /cg\.strokeEllipse\(in:/);
+  assert.match(iosMarkerIcons, /format\.scale = 1/);
+  assert.match(ios, /private func stringOption/);
+
+  const visibility = ios.split('func setPathVisibility(command:')[1].split('@objc(downloadOfflineRegion:', 1)[0];
+  assert.doesNotMatch(visibility, /No path is loaded/);
+  assert.match(visibility, /self\.isPathVisible = visible/);
+  assert.match(visibility, /self\.sendSuccess\(command\)/);
+});
+
+test('markers accept imageUrl and pinColor on both platforms and reject disallowed images', () => {
+  const androidAdd = javaMethod('addMarker', 'loadMarkers');
+  const androidLoad = android.split('private void loadMarkers(')[1].split('private boolean addMarkerInternal(')[0];
+  for (const body of [androidAdd, androidLoad]) {
+    assert.match(body, /markerStyle\(/);
+    assert.match(body, /MARKER_IMAGE_NOT_ALLOWED/);
+  }
+  assert.match(androidAdd, /optString\("imageUrl"/);
+  assert.match(androidAdd, /optString\("pinColor"/);
+  assert.match(androidLoad, /optString\("ImageUrl"/);
+  assert.match(androidLoad, /optString\("PinColor"/);
+  assert.match(android, /markerImageAllowed\(imageUrl, allowedMarkerImageHosts\(\)\)/);
+
+  const iosAdd = ios.split('func addMarker(command:')[1].split('@objc(loadMarkers:', 1)[0];
+  const iosLoad = ios.split('func loadMarkers(command:')[1].split('@objc(removeMarker:', 1)[0];
+  for (const body of [iosAdd, iosLoad]) {
+    assert.match(body, /markerStyle\(isFind:/);
+    assert.match(body, /markerImageNotAllowed/);
+  }
+  assert.match(iosAdd, /options\["imageUrl"\]/);
+  assert.match(iosAdd, /options\["pinColor"\]/);
+  assert.match(iosLoad, /marker\["ImageUrl"\]/);
+  assert.match(iosLoad, /marker\["PinColor"\]/);
+  assert.match(ios, /marker\.iconSize = 0\.5/);
+  // Android draws pins at half scale and shows them at 1.0: the same 36x48 dp as iOS at 0.5.
+  assert.match(android, /\.withIconSize\(MarkerIcons\.ICON_SIZE\)/);
+  assert.match(fs.readFileSync('src/android/MarkerIcons.java', 'utf8'), /static final double ICON_SIZE = 1\.0;/);
+  assert.match(ios, /MAPBOX_ALLOWED_MARKER_IMAGE_HOSTS/);
+});
+
+test('location accuracy subscriptions actively monitor and clean up on both platforms', () => {
+  const androidRegistration = javaMethod('registerLocationAccuracyCallback', 'stopLocationAccuracyMonitoring');
+  // Android uses the one shared GPS stream, which reports accuracy for every fix.
+  assert.match(androidRegistration, /ensureLocationUpdates\(/);
+  assert.doesNotMatch(androidRegistration, /requestLocationUpdates/);
+  const sharedStream = android.split('private void ensureLocationUpdates(')[1].split('private void stopSharedLocationUpdates(')[0];
+  assert.match(sharedStream, /sendLocationAccuracyUpdate\(location\)/);
+  assert.strictEqual((android.match(/requestLocationUpdates\(/g) || []).length, 1, 'one GPS subscription');
+  assert.match(androidPermissions, /"registerLocationAccuracyCallback"\.equals\(action\)/);
+  assert.match(android, /cleanupStep\(this::stopLocationAccuracyMonitoring\);\s*locationAccuracyCallback = null;/);
+
+  const iosParity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const iosRegistration = iosParity.split('func registerLocationAccuracyCallback(command:')[1]
+    .split('@objc(getCurrentLocationAccuracy:', 1)[0];
+  assert.match(iosRegistration, /startUpdatingLocation\(\)/);
+  assert.match(iosParity, /stopAccuracyMonitoring\(\)/);
+});
+test('pinStyle "photo" is still accepted but every marker uses the Find/Waypoint design', () => {
+  const androidIcons = fs.readFileSync('src/android/MarkerIcons.java', 'utf8');
+  // Older screens may still send pinStyle; it must keep parsing on both platforms.
+  assert.match(android, /optString\("pinStyle"/);
+  assert.match(android, /optString\("PinStyle"/);
+  assert.match(ios, /pinStyle: options\["pinStyle"\]/);
+  assert.match(ios, /pinStyle: marker\["PinStyle"\]/);
+  // ...but it no longer selects the retired teardrop pin.
+  for (const source of [android, ios, androidIcons, iosMarkerIcons]) {
+    assert.doesNotMatch(source, /photoPin|drawPhoto|PHOTO_PIN_COLOR|photoPinColor/);
+  }
+  assert.match(android, /\.withIconImage\(!style\.isPublic[\s\S]*?:\s*markerIcons\.pin\(style\.color, style\.isFind, style\.imageUrl,/);
+  assert.match(ios, /marker\.image = !style\.isPublic[\s\S]*?:\s*markerIcons\.pin\(color: style\.color, isFind: style\.isFind, source: style\.imageUrl\)/);
+  // Square Find and circular Waypoint shapes on both platforms.
+  assert.match(androidIcons, /if \(isFind\) \{[\s\S]*?addRoundRect[\s\S]*?addCircle/);
+  assert.match(iosMarkerIcons, /if isFind \{\s*return UIBezierPath\(roundedRect:[\s\S]*?UIBezierPath\(ovalIn:/);
+  assert.match(android, /MarkerStyle\(int color, boolean isFind, String imageUrl\)\s*\{\s*this\(color, isFind, imageUrl, false\)/);
+  assert.match(ios, /var photo = false/);
+});
+
+test('isOnline sync flag is accepted by addMarker and loadMarkers and returned in tap events on both platforms', () => {
+  assert.match(android, /optBoolean\("isOnline", true\)/);
+  assert.match(android, /optBoolean\("IsOnline", true\)/);
+  assert.match(ios, /isOnline: options\["isOnline"\] as\? Bool \?\? true/);
+  assert.match(ios, /isOnline: marker\["IsOnline"\] as\? Bool \?\? true/);
+  assert.match(ios, /var isOnline = true/);
+  assert.equal((android.match(/payload\.put\("isOnline"/g) || []).length, 2);
+  assert.equal((ios.match(/"isOnline": /g) || []).length, 3);
+});
+
+test('iOS implements boundary drawing actions and live acreage updates', () => {
+  for (const action of [
+    'startBoundaryDrawing',
+    'undoBoundaryPoint',
+    'saveBoundaryDrawing',
+    'cancelBoundaryDrawing',
+    'registerBoundaryAreaCallback'
+  ]) {
+    assert.match(ios, new RegExp('@objc\\(' + action + ':\\)'));
+  }
+
+  assert.match(ios, /if self\.isBoundaryDrawing[\s\S]*?addBoundaryDrawingPoint\(context\.coordinate\)/);
+  assert.match(ios, /if isBoundaryDrawing[\s\S]*?addBoundaryDrawingPoint\(coordinate\)/);
+  assert.match(ios, /"areaAcres": calculateBoundaryAreaAcres\(boundaryDrawingPoints\)/);
+  assert.match(ios, /"pointCount": boundaryDrawingPoints\.count/);
+  assert.match(ios, /"areaAcres": self\.calculateBoundaryAreaAcres\(self\.boundaryDrawingPoints\)/);
+  assert.match(ios, /completedBoundaryDrawingPolygons\.append\(polygon\)/);
+});
+
+test('marker image size limit and offline limits match on both platforms', () => {
+  const androidSecurity = fs.readFileSync('src/android/MapboxSecurity.java', 'utf8');
+  const iosSecurity = fs.readFileSync('src/ios/MapboxSecurity.swift', 'utf8');
+  const markerSource = fs.readFileSync('www/MarkerImageSource.js', 'utf8');
+  assert.match(androidSecurity, /MAX_MARKER_IMAGE_BYTES = 256 \* 1024;/);
+  assert.match(iosSecurity, /maxMarkerImageBytes = 256 \* 1024/);
+  assert.match(markerSource, /MAX_NATIVE_BYTES = 256 \* 1024;/);
+  assert.match(markerSource, /MAX_PARALLEL_DECODES = 1;/);
+  assert.match(android, /MAX_OFFLINE_REGIONS = 20;/);
+  assert.match(ios, /maxOfflineRegions = 20/);
+  assert.match(android, /optBoolean\("wifiOnly", false\)/);
+  assert.match(ios, /options\["wifiOnly"\]/);
+  assert.match(android, /NetworkRestriction\.DISALLOW_EXPENSIVE/);
+  assert.match(ios, /networkRestriction: wifiOnly \? \.disallowExpensive : \.none/);
+  assert.match(android, /getAllTileRegions\(/);
+  assert.match(ios, /allTileRegions \{/);
+});
+
+test('the live recording line is redrawn in 500-point pieces on both platforms', () => {
+  const androidUpdate = android.split('private void updatePathAnnotation()')[1].split('private PolylineAnnotationOptions pathLineOptions(')[0];
+  assert.match(android, /PATH_CHUNK_POINTS = 500;/);
+  assert.match(androidUpdate, /currentSegment\.subList\(liveChunkStart, currentSegment\.size\(\)\)/);
+  assert.doesNotMatch(androidUpdate, /LineString\.fromLngLats\(currentSegment\)/);
+  const iosUpdate = ios.split('private func updatePathAnnotation()')[1].split('private func pathLine(')[0];
+  assert.match(ios, /pathChunkPoints = 500/);
+  assert.match(iosUpdate, /currentSegment\[liveChunkStart\.\.\.\]/);
+  assert.doesNotMatch(iosUpdate, /lineCoordinates: currentSegment\)/);
+});
+
+test('every Android action has an iOS implementation, and the reverse', () => {
+  // A missing iOS selector is only logged by Cordova and never answers JS, so the caller's
+  // promise would hang forever. Keep both platforms' action lists identical.
+  const iosAll = ['MapboxPlugin', 'MapboxPluginParity', 'MapboxPluginPermissionParity']
+    .map((name) => fs.readFileSync('src/ios/' + name + '.swift', 'utf8')).join('\n');
+  const androidActions = new Set([...(android + androidPermissions).matchAll(/case "(\w+)":/g)].map((m) => m[1]));
+  const iosActions = new Set([...iosAll.matchAll(/@objc\((\w+):\)/g)].map((m) => m[1]));
+  assert.ok(androidActions.size > 40, 'Android action list was not found');
+  assert.deepEqual([...androidActions].filter((a) => !iosActions.has(a)), [], 'Android-only actions');
+  assert.deepEqual([...iosActions].filter((a) => !androidActions.has(a)), [], 'iOS-only actions');
+});
+
+test('iOS reads layer groups from mapbox:group metadata like Android', () => {
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  for (const name of ['getLayersByGroup', 'setLayerGroupVisibility']) {
+    assert.ok(parity.includes('@objc(' + name + ':)'), name + ' is missing on iOS');
+  }
+  assert.match(parity, /\["mapbox:group"\]/);
+  assert.match(parity, /property: "metadata"/);
+  assert.match(parity, /"updatedCount": updatedLayers\.count/);
+  assert.match(parity, /"updatedLayers": updatedLayers/);
+  assert.match(parity, /"failedCount": failedLayers\.count/);
+  assert.match(parity, /"failedLayers": failedLayers/);
+  assert.match(parity, /"totalLayers": layers\.count/);
+  // isStyleLoaded broke the iOS build on Nov 13; keep it out.
+  assert.doesNotMatch(parity.replace(/\/\/.*$/gm, ''), /isStyleLoaded/);
+});
+
+test('removed layer inspection actions are not exposed', () => {
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const javascript = fs.readFileSync('www/MapboxPlugin.js', 'utf8');
+  for (const name of ['diagnoseLayerGroup', 'getLayerIds']) {
+    assert.doesNotMatch(android, new RegExp('case "' + name + '":'));
+    assert.doesNotMatch(parity, new RegExp('@objc\\(' + name + ':\\)'));
+    assert.doesNotMatch(javascript, new RegExp('^\\s*' + name + ': function', 'm'));
+  }
+});
+
+test('Android updates style layers by metadata group and reports per-layer failures', () => {
+  const body = javaMethod('setLayerGroupVisibility', 'getLayersByGroup');
+  assert.match(body, /style\.getStyleJSON\(\)/);
+  assert.match(body, /styleJson\.optJSONArray\("layers"\)/);
+  assert.match(android, /metadata\.optString\("mapbox:group", ""\)/);
+  assert.match(body, /style\.styleLayerExists\(layerId\)/);
+  assert.match(body, /style\.setStyleLayerProperty\([\s\S]*?"visibility"/);
+  assert.match(body, /result\.put\("updatedCount", updatedLayers\.length\(\)\)/);
+  assert.match(body, /result\.put\("updatedLayers", updatedLayers\)/);
+  assert.match(body, /result\.put\("failedCount", failedLayers\.length\(\)\)/);
+  assert.match(body, /result\.put\("failedLayers", failedLayers\)/);
+  assert.match(body, /errorResult\.put\("matchedLayers", matchedLayerCount\)/);
+  assert.match(body, /callback\.success\(result\)/);
+});
+
+test('iOS reports partial and total failures when updating a layer group', () => {
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const body = parity.split('func setLayerGroupVisibility(command:')[1]
+    .split('private func requiredGroupId(')[0];
+  assert.match(body, /trimmingCharacters\(in: \.whitespacesAndNewlines\)/);
+  assert.match(body, /failedLayers\.append/);
+  assert.match(body, /"failedCount": failedLayers\.count/);
+  assert.match(body, /"failedLayers": failedLayers/);
+  assert.match(body, /"matchedLayers": layerIds\.count/);
+  assert.match(body, /self\.sendError\(message, command\)/);
+});
+
+test('path line style is validated the same way on both platforms', () => {
+  const androidStart = android.split('private void startPathTracking(')[1].split('private void stopPathTracking(')[0];
+  const androidLoad = android.split('private void loadPath(')[1].split('private void clearPaths(')[0];
+  for (const body of [androidStart, androidLoad]) {
+    assert.match(body, /MarkerIcons\.parseColor\(options\.optString\("lineColor"/);
+    assert.match(body, /readLineWidth\(options\)/);
+    assert.match(body, /readLineOpacity\(options\)/);
+  }
+  const iosStart = ios.split('func startPathTracking(command:')[1].split('@objc(stopPathTracking:', 1)[0];
+  const iosLoad = ios.split('func loadPath(command:')[1].split('@objc(clearPaths:', 1)[0];
+  for (const body of [iosStart, iosLoad]) {
+    assert.match(body, /lineWidthOption\(options\["lineWidth"\]\)/);
+    assert.match(body, /lineOpacityOption\(options\["lineOpacity"\]\)/);
+  }
+});
+
+test('IsPublic false draws a lock tile on both platforms and never loads the image', () => {
+  const androidIcons = fs.readFileSync('src/android/MarkerIcons.java', 'utf8');
+  assert.match(android, /optBoolean\("isPublic", true\)/);
+  assert.match(android, /optBoolean\("IsPublic", true\)/);
+  assert.match(ios, /isPublic: options\["isPublic"\] as\? Bool \?\? true/);
+  assert.match(ios, /isPublic: marker\["IsPublic"\] as\? Bool \?\? true/);
+  // Private styles carry no image URL, so nothing is validated or downloaded.
+  assert.match(android, /if \(!isPublic\) \{[\s\S]*?new MarkerStyle\(color, isFind, null, photo, isOnline, false\)/);
+  assert.match(ios, /if !isPublic \{[\s\S]*?imageUrl: nil, photo: photo, isOnline: isOnline, isPublic: false\)/);
+  assert.match(android, /!style\.isPublic\s*\?\s*markerIcons\.lockedPin\(style\.color, style\.isFind,/);
+  assert.match(ios, /!style\.isPublic\s*\?\s*markerIcons\.lockedPin\(color: style\.color, isFind: style\.isFind\)/);
+  assert.match(androidIcons, /Bitmap lockedPin\(int color, boolean isFind, float density\)/);
+  assert.match(iosMarkerIcons, /func lockedPin\(color: UIColor, isFind: Bool\)/);
+  for (const source of [androidIcons, iosMarkerIcons]) assert.match(source, /drawLockTile/);
+});
+
+test('plain location pins (no isFind) and offline markers without an image use the classic red teardrop', () => {
+  const androidIcons = fs.readFileSync('src/android/MarkerIcons.java', 'utf8');
+  // "isFind not sent" is detected on both platforms; null counts as not sent.
+  assert.match(android, /!options\.isNull\("isFind"\)/);
+  assert.match(android, /!marker\.isNull\("IsFind"\)/);
+  assert.match(ios, /findGiven: \(options\["isFind"\] as\? Bool\) != nil/);
+  assert.match(ios, /findGiven: \(marker\["IsFind"\] as\? Bool\) != nil/);
+  // Public, no image, and either offline or no isFind. Private (lock) and images win.
+  assert.match(android, /boolean classicPin = isPublic && trimmedUrl\.isEmpty\(\) && \(!isOnline \|\| !findGiven\);/);
+  assert.match(ios, /let classicPin = isPublic && trimmedUrl\.isEmpty && \(!isOnline \|\| !findGiven\)/);
+  assert.match(android, /!style\.isPublic[\s\S]*?: style\.classicPin\s*\?\s*markerIcons\.offlinePin\(style\.color,/);
+  assert.match(ios, /!style\.isPublic[\s\S]*?: style\.classicPin\s*\?\s*markerIcons\.offlinePin\(color: style\.color\)/);
+  // Red by default (pinColor still overrides), same canvas and tip as the other markers.
+  assert.match(androidIcons, /OFFLINE_PIN_COLOR = Color\.rgb\(220, 38, 38\)/);
+  assert.match(iosMarkerIcons, /offlinePinColor = UIColor\(red: 220 \/ 255, green: 38 \/ 255, blue: 38 \/ 255/);
+  assert.match(android, /int defaultColor = classicPin \? MarkerIcons\.OFFLINE_PIN_COLOR/);
+  assert.match(ios, /let defaultColor = classicPin \? MarkerIcons\.offlinePinColor/);
+  assert.match(androidIcons, /quadTo\(CENTER_X - 5\.0f, headY \+ 52\.0f, CENTER_X, HEIGHT - 10\.0f\)/);
+  assert.match(iosMarkerIcons, /addQuadCurve\(to: CGPoint\(x: centerX, y: size\.height - 10\)/);
+  // The map-tap auto marker keeps the Waypoint default (no classic pin).
+  assert.match(android, /static final MarkerStyle DEFAULT = new MarkerStyle\(MarkerIcons\.DEFAULT_PIN_COLOR, false, null\);/);
+});

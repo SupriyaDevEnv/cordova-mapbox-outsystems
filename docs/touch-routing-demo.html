@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Touch Routing Demo</title>
+<!--
+  Browser simulation of the Mapbox plugin's behind-WebView touch routing.
+  The <canvas> stands in for the native Mapbox view; the transparent .webview
+  layer is the OutSystems page. A capture-phase router on .phone plays the role
+  of the native router (Android touchRouter / iOS MapTouchOverlayView): on
+  pointer-down it sends the whole gesture either to the "native map" or to the
+  page, based on the regions the tracker last reported.
+
+  Strategies:
+    Current       - the tracking used before 1.0.10 (control-type selector list,
+                    20/50 limit, whole-screen fallback when it is exceeded).
+                    Since 1.0.10 the plugin still uses the selector list when no
+                    [data-mapbox-map] element exists, but with a 256 limit and merging.
+    Hit-test grid - samples the [data-mapbox-map] area with
+                    document.elementsFromPoint(); shown for comparison only.
+    Element scan  - what www/AndroidTouchRegions.js does when a
+                    [data-mapbox-map] element exists: every element drawn over
+                    the map takes its touches, transparent wrappers let them through.
+  The demo reimplements the rules scoped to the phone mock-up; the plugin code
+  is tested in tests/touch-regions-scan.test.cjs.
+-->
+<style>
+  :root {
+    --bg: #f3f4f6; --panel: #ffffff; --text: #111827; --muted: #6b7280; --line: #e5e7eb;
+    --map: #16a34a; --page: #2563eb; --bad: #dc2626; --accent: #4b5d2a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { display: flex; gap: 24px; padding: 20px 16px; justify-content: center; align-items: flex-start; flex-wrap: wrap; }
+
+  /* ---------- phone ---------- */
+  .phone { position: relative; width: 375px; height: 760px; border-radius: 36px; overflow: hidden;
+    background: #fff; box-shadow: 0 0 0 10px #1f2937, 0 20px 40px rgba(0,0,0,.25); flex: none;
+    touch-action: none; user-select: none; -webkit-user-select: none; }
+  #nativeMap { position: absolute; left: 0; right: 0; top: 76px; bottom: 0; width: 100%; height: calc(100% - 76px); z-index: 0; }
+  .webview { position: absolute; inset: 0; z-index: 1; background: transparent; display: flex; flex-direction: column; }
+  .statusbar { height: 28px; background: #fff; display: flex; justify-content: space-between; align-items: center;
+    padding: 0 26px; font-weight: 600; font-size: 13px; }
+  .header { height: 48px; background: #fff; display: flex; align-items: center; gap: 6px; padding: 0 10px; }
+  .header .title { font-weight: 700; font-size: 20px; flex: 1; }
+  .hbtn { width: 36px; height: 36px; display: grid; place-items: center; font-size: 20px; border-radius: 50%; cursor: pointer; }
+  .hbtn:active { background: #eee; }
+  .content { position: relative; flex: 1; }
+  .map-holder { position: absolute; inset: 0; }
+
+  .chips { position: absolute; top: 8px; left: 0; right: 0; display: flex; gap: 8px; padding: 0 10px;
+    overflow-x: auto; scrollbar-width: none; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip { flex: none; padding: 6px 14px; border-radius: 8px; background: #fff; border: 1px solid #d1d5db;
+    font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .dropdown { position: absolute; top: 0; right: 8px; width: 170px; background: #fff; border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.2); padding: 4px 0; display: none; z-index: 5; }
+  .dropdown.open { display: block; }
+  .mitem { padding: 9px 14px; font-size: 13px; cursor: pointer; }
+  .mitem:active { background: #f3f4f6; }
+
+  /* Transparent full-height wrapper, a common layout pattern */
+  .ctrl-col { position: absolute; right: 0; top: 52px; bottom: 112px; width: 64px; display: flex;
+    flex-direction: column; justify-content: flex-end; align-items: center; gap: 10px; }
+  .ctrl { width: 40px; height: 40px; background: #fff; border-radius: 6px; display: grid; place-items: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,.25); font-size: 18px; cursor: pointer; }
+  .compass { position: absolute; left: 12px; bottom: 112px; width: 32px; height: 32px; border-radius: 50%;
+    background: rgba(255,255,255,.85); border: 1.5px solid #374151; display: grid; place-items: center; cursor: pointer; }
+  .scalebar { position: absolute; left: 18px; bottom: 156px; width: 3px; height: 70px; background: #111;
+    pointer-events: none; } /* opt-out: never captures touches */
+  .add-marker { position: absolute; left: 50%; transform: translateX(-50%); bottom: 112px; display: flex;
+    align-items: center; background: #d32f2f; color: #fff; border-radius: 6px; font-weight: 600; font-size: 14px;
+    cursor: pointer; overflow: hidden; }
+  .add-marker span { padding: 8px 12px; }
+  .add-marker .chev { border-left: 1px solid rgba(255,255,255,.4); padding: 8px 10px; }
+
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; height: 96px; background: #fff;
+    border-radius: 16px 16px 0 0; box-shadow: 0 -2px 12px rgba(0,0,0,.15); display: flex; flex-direction: column; overflow: hidden; }
+  .grab { height: 22px; display: grid; place-items: center; cursor: grab; flex: none; }
+  .handle { width: 40px; height: 4px; border-radius: 2px; background: #c4c4c4; }
+  .sheet-head { display: flex; justify-content: space-between; align-items: center; padding: 0 16px 10px; flex: none; }
+  .sheet-title { font-size: 18px; font-weight: 700; }
+  .weather { padding: 4px 10px; border: 1px solid #e5e7eb; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .list { overflow-y: auto; flex: 1; scrollbar-width: thin; }
+  .row { padding: 12px 16px; border-top: 1px solid #f0f0f0; cursor: pointer; font-size: 14px; }
+  .row small { color: var(--muted); display: block; }
+
+  #regions { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; }
+  .ripple { position: absolute; width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%;
+    z-index: 11; pointer-events: none; animation: rip .5s ease-out forwards; }
+  @keyframes rip { from { transform: scale(.3); opacity: .9; } to { transform: scale(1.4); opacity: 0; } }
+
+  /* ---------- side panel ---------- */
+  .panel { width: 400px; max-width: 100%; background: var(--panel); border-radius: 12px; padding: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .panel h1 { font-size: 18px; margin: 0 0 4px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 16px 0 6px; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg label { flex: 1; text-align: center; padding: 7px 4px; cursor: pointer; font-size: 13px; }
+  .seg input { display: none; }
+  .seg label:has(input:checked) { background: var(--text); color: #fff; }
+  .opt { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; font-size: 13px; cursor: pointer; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .stat { border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .stat b { display: block; font-size: 20px; }
+  .stat span { font-size: 11px; color: var(--muted); }
+  .banner { margin-top: 8px; padding: 8px 10px; border-radius: 8px; font-size: 13px; display: none; }
+  .banner.bad { display: block; background: #fef2f2; color: var(--bad); border: 1px solid #fecaca; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
+  ol.tries { margin: 0; padding-left: 18px; font-size: 13px; }
+  ol.tries li { margin: 3px 0; }
+  #log { height: 210px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px;
+    font: 12px/1.45 ui-monospace, Consolas, monospace; }
+  #log div { padding: 1px 2px; }
+  .t-map { color: var(--map); } .t-page { color: var(--page); } .t-bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="phone" id="phone">
+    <canvas id="nativeMap"></canvas>
+
+    <div class="webview" id="webview">
+      <div class="statusbar"><span>9:41</span><span>▂▄▆ ▮</span></div>
+      <div class="header">
+        <div class="hbtn" data-name="Back">‹</div>
+        <div class="title">Map</div>
+        <div class="hbtn" data-name="Search">⌕</div>
+        <div class="hbtn" data-name="More (⋯)" data-action="more">⋯</div>
+      </div>
+      <div class="content">
+        <div class="map-holder" data-mapbox-map></div>
+
+        <div class="chips" data-drag-scroll="x" data-label="Chips row">
+          <div class="chip on" data-name="Chip: All" data-action="chip">All</div>
+          <div class="chip" data-name="Chip: My Finds" data-action="chip">My Finds</div>
+          <div class="chip" data-name="Chip: Nearby Trails" data-action="chip">Nearby Trails</div>
+          <div class="chip" data-name="Chip: Streams" data-action="chip">Streams</div>
+          <div class="chip" data-name="Chip: Campsites" data-action="chip">Campsites</div>
+          <div class="chip" data-name="Chip: Viewpoints" data-action="chip">Viewpoints</div>
+        </div>
+
+        <div class="dropdown" id="menu">
+          <div class="mitem" data-name="Menu: Offline Maps" data-action="menu-item">🗺 Offline Maps</div>
+          <div class="mitem" data-name="Menu: My Bookmarks" data-action="menu-item">🔖 My Bookmarks</div>
+          <div class="mitem" data-name="Menu: My Tracks" data-action="menu-item">〰 My Tracks</div>
+        </div>
+
+        <div class="ctrl-col">
+          <div class="ctrl" data-name="Search area">⌕</div>
+          <div class="ctrl" data-name="Layers">◈</div>
+          <div class="ctrl" data-name="Tools">✕</div>
+          <div class="ctrl" data-name="Locate me">◎</div>
+        </div>
+
+        <div class="compass" data-name="Compass">➚</div>
+        <div class="scalebar"></div>
+        <div class="add-marker" data-name="Add Marker">
+          <span data-name="Add Marker">＋ Add Marker</span><span class="chev" data-name="Add Marker options">⌃</span>
+        </div>
+
+        <div class="sheet" id="sheet">
+          <div class="grab" id="grab"><div class="handle"></div></div>
+          <div class="sheet-head">
+            <div class="sheet-title">Explore</div>
+            <div class="weather" data-name="Weather chip">☀ 31°</div>
+          </div>
+          <div class="list" id="list" data-drag-scroll="y" data-label="Explore list"></div>
+        </div>
+      </div>
+    </div>
+
+    <svg id="regions"></svg>
+  </div>
+
+  <aside class="panel">
+    <h1>Touch routing demo</h1>
+    <div style="color:var(--muted);font-size:13px">The canvas is the "native map". The page on top is transparent.
+      A simulated native router sends each gesture to the <b class="t-map">map</b> or the <b class="t-page">page</b> when the pointer goes down.</div>
+
+    <h2>Routing strategy</h2>
+    <div class="seg">
+      <label><input type="radio" name="mode" value="current">Current</label>
+      <label><input type="radio" name="mode" value="grid">Hit-test grid</label>
+      <label><input type="radio" name="mode" value="scan" checked>Element scan</label>
+    </div>
+    <div style="color:var(--muted);font-size:12px;margin-top:4px">Hit-test grid and Element scan apply the same rule
+      (anything visible over the map belongs to the page). Element scan checks each page element once instead of sampling a grid of points.</div>
+    <h2>Platform limit (current strategy)</h2>
+    <div class="seg">
+      <label><input type="radio" name="platform" value="ios" checked>iOS · 20</label>
+      <label><input type="radio" name="platform" value="android">Android · 50</label>
+    </div>
+
+    <h2>Options</h2>
+    <label class="opt"><input type="checkbox" id="optSemantic"> <span>Semantic markup: add <code>role="button"</code> to every clickable div (what the current strategy needs)</span></label>
+    <label class="opt"><input type="checkbox" id="optCloseMenu"> <span>Close the ⋯ menu from the <code>mapTapped</code> callback</span></label>
+    <label class="opt"><input type="checkbox" id="optShow" checked> <span>Show regions</span></label>
+
+    <h2>Live state</h2>
+    <div class="stats">
+      <div class="stat"><b id="sCount">0</b><span>page regions</span></div>
+      <div class="stat"><b id="sLimit">20</b><span>limit</span></div>
+      <div class="stat"><b id="sMs">0</b><span>scan ms (last)</span></div>
+    </div>
+    <div class="banner" id="banner"></div>
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+      <button id="bench" type="button" style="padding:6px 12px;border-radius:6px;border:1px solid var(--line);background:#fff;cursor:pointer">Benchmark (50 scans each)</button>
+      <span id="benchOut" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+    <div class="legend">
+      <span><i style="background:rgba(37,99,235,.25);border:1px solid #2563eb"></i>page region</span>
+      <span><i style="border:1.5px dashed #16a34a"></i>map frame</span>
+      <span><i style="background:rgba(220,38,38,.2)"></i>frozen</span>
+    </div>
+
+    <h2>Try these (switch strategy and repeat)</h2>
+    <ol class="tries">
+      <li>Tap a filter chip, then drag the chips row sideways.</li>
+      <li>Tap ⋯, pick a menu item. Open it again and tap empty map.</li>
+      <li>Tap the right-side controls, the compass and Add Marker.</li>
+      <li>Drag the sheet handle up, then scroll the Explore list.</li>
+      <li>Turn on semantic markup, use Current on iOS, and expand the sheet: the limit is exceeded and the map freezes.</li>
+      <li>Drag empty map to pan it, and use the mouse wheel to zoom. Tap a pin, or tap empty map to drop a waypoint.</li>
+    </ol>
+
+    <h2>Router log</h2>
+    <div id="log"></div>
+  </aside>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (s) { return document.querySelector(s); };
+  var phone = $('#phone'), webview = $('#webview'), mapHolder = $('[data-mapbox-map]');
+  var canvas = $('#nativeMap'), svg = $('#regions'), menu = $('#menu'), sheet = $('#sheet');
+
+  var LIMITS = { ios: 20, android: 50 };
+  var PROPOSED_LIMIT = 256;
+  var SAMPLE_STEP = 10; // CSS px between hit-test samples
+
+  // Exact selector from www/AndroidTouchRegions.js
+  var SELECTOR = [
+    '.osui-bottom-sheet--is-open', '.osui-bottom-sheet-overlay',
+    '.popup-dialog', '.popup-backdrop', '.osui-modal--is-open', '.osui-modal-overlay',
+    '.osui-sidebar--is-open', '.osui-sidebar-overlay',
+    '.feedback-message',
+    '[role="dialog"]', '[role="menu"]', '[role="listbox"]',
+    '.map-control-btn', '.map-touchable', '.map-touch-region', '[data-map-touch-region]',
+    '[data-button]', 'button', 'a', 'input', 'select', 'textarea',
+    '[contenteditable="true"]', '[role="button"]', '[role="link"]', '[role="tab"]',
+    '[role="checkbox"]', '[role="radio"]', '[role="switch"]', '[role="slider"]',
+    '[role="menuitem"]', '[role="option"]',
+    '.tags-container [style*="cursor: pointer"]', '.tags-container [style*="cursor:pointer"]'
+  ].join(',');
+
+  var state = { mode: 'scan', platform: 'ios', regions: [], frozen: false, merged: 0, scanMs: 0 };
+
+  // ---------- list content ----------
+  var trails = ['Prairie Rd Loop', 'Riverbend Trail', 'Ridge Overlook', 'Cedar Creek', 'Fox Hollow', 'Old Mill Path',
+    'Bluff Point', 'Hawk Ridge', 'Stony Brook', 'Pine Meadow', 'Lakeside Walk', 'Summit Spur'];
+  $('#list').innerHTML = trails.map(function (t, i) {
+    return '<div class="row" data-name="Row: ' + t + '">' + t + '<small>' + (1.2 + i * 0.7).toFixed(1) + ' km · Trail</small></div>';
+  }).join('');
+
+  // ---------- geometry helpers (phone-relative CSS px) ----------
+  function rel(b, pr) { return { l: b.left - pr.left, t: b.top - pr.top, r: b.right - pr.left, b: b.bottom - pr.top }; }
+  function inside(r, x, y) { return x >= r.l && x <= r.r && y >= r.t && y <= r.b; }
+  function contains(o, i) { return i.l >= o.l && i.t >= o.t && i.r <= o.r && i.b <= o.b; }
+  function area(r) { return Math.max(0, r.r - r.l) * Math.max(0, r.b - r.t); }
+  function union(a, b) { return { l: Math.min(a.l, b.l), t: Math.min(a.t, b.t), r: Math.max(a.r, b.r), b: Math.max(a.b, b.b) }; }
+  function mapFrame() { return rel(mapHolder.getBoundingClientRect(), phone.getBoundingClientRect()); }
+  function addRect(rects, box) {
+    if (box.r <= box.l || box.b <= box.t) return rects;
+    if (rects.some(function (e) { return contains(e, box); })) return rects;
+    rects = rects.filter(function (e) { return !contains(box, e); });
+    rects.push(box);
+    return rects;
+  }
+  // Clip to scroll/overflow ancestors; returns null when hidden.
+  function clipToAncestors(el, box, pr, checkHidden) {
+    for (var a = el; a && a !== phone; a = a.parentElement) {
+      var css = getComputedStyle(a);
+      if (checkHidden && (css.display === 'none' || css.opacity === '0' || a.hidden)) return null;
+      if (a !== el) {
+        var c = rel(a.getBoundingClientRect(), pr);
+        if (/^(hidden|clip|scroll|auto)$/.test(css.overflowX)) { box.l = Math.max(box.l, c.l); box.r = Math.min(box.r, c.r); }
+        if (/^(hidden|clip|scroll|auto)$/.test(css.overflowY)) { box.t = Math.max(box.t, c.t); box.b = Math.min(box.b, c.b); }
+      }
+    }
+    return box;
+  }
+
+  // ---------- CURRENT strategy (mirrors AndroidTouchRegions.js collect()) ----------
+  function collectCurrent() {
+    var pr = phone.getBoundingClientRect();
+    var rects = [];
+    webview.querySelectorAll(SELECTOR).forEach(function (el) {
+      var style = getComputedStyle(el);
+      if (style.pointerEvents === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return;
+      var b = rel(el.getBoundingClientRect(), pr);
+      var box = { l: Math.max(0, b.l), t: Math.max(0, b.t), r: Math.min(pr.width, b.r), b: Math.min(pr.height, b.b) };
+      box = clipToAncestors(el, box, pr, true);
+      if (box) rects = addRect(rects, box);
+    });
+    var limit = LIMITS[state.platform];
+    if (rects.length > limit) {
+      state.frozen = true;
+      state.overflowCount = rects.length;
+      return [{ l: 0, t: 0, r: pr.width, b: pr.height }];
+    }
+    return rects;
+  }
+
+  // ---------- PROPOSED strategy (hit-test) ----------
+  function alpha(c) {
+    if (!c || c === 'transparent') return 0;
+    var m = c.match(/rgba?\(([^)]+)\)/);
+    if (!m) return 1;
+    var p = m[1].split(/[\s,\/]+/).filter(Boolean);
+    return p.length >= 4 ? parseFloat(p[3]) : 1;
+  }
+  function hasBorder(cs) {
+    return ['Top', 'Right', 'Bottom', 'Left'].some(function (s) {
+      return parseFloat(cs['border' + s + 'Width']) > 0 && cs['border' + s + 'Style'] !== 'none' && alpha(cs['border' + s + 'Color']) > 0;
+    });
+  }
+  function isScrollable(el, cs) {
+    return (/^(auto|scroll)$/.test(cs.overflowX) && el.scrollWidth > el.clientWidth + 1) ||
+           (/^(auto|scroll)$/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 1);
+  }
+  function isInteractive(el, cs) { return el.matches(SELECTOR) || cs.cursor === 'pointer'; }
+  // A wrapper that paints nothing, is not interactive and does not scroll lets touches through.
+  function isPassThrough(el, cs) {
+    cs = cs || getComputedStyle(el);
+    if (isInteractive(el, cs)) return false;
+    if (el instanceof SVGElement || /^(IMG|VIDEO|CANVAS|IFRAME|INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return false;
+    if (isScrollable(el, cs)) return false;
+    // Same rule as the plugin: a border or shadow alone does not claim the area inside it.
+    if (alpha(cs.backgroundColor) > 0 || cs.backgroundImage !== 'none') return false;
+    for (var n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 3 && n.textContent.trim()) return false;
+    return true;
+  }
+  // Grow a hit (e.g. a text span) to the control that owns it, so regions match whole controls.
+  function promote(el) {
+    for (var a = el; a && a !== webview; a = a.parentElement) {
+      if (a.contains(mapHolder)) break;
+      var cs = getComputedStyle(a);
+      if (isInteractive(a, cs) || isScrollable(a, cs)) return a;
+    }
+    return el;
+  }
+  function mergeToLimit(rects, limit) {
+    var merged = 0;
+    while (rects.length > limit) {
+      var best = null, cost = Infinity;
+      for (var i = 0; i < rects.length; i++) for (var j = i + 1; j < rects.length; j++) {
+        var u = union(rects[i], rects[j]);
+        var c = area(u) - area(rects[i]) - area(rects[j]);
+        if (c < cost) { cost = c; best = [i, j, u]; }
+      }
+      rects.splice(best[1], 1); rects.splice(best[0], 1, best[2]);
+      merged++;
+    }
+    state.merged = merged;
+    return rects;
+  }
+  function collectProposed() {
+    var pr = phone.getBoundingClientRect();
+    var m = mapFrame();
+    var rects = [], seen = new Set();
+    for (var y = m.t + SAMPLE_STEP / 2; y < m.b; y += SAMPLE_STEP) {
+      for (var x = m.l + SAMPLE_STEP / 2; x < m.r; x += SAMPLE_STEP) {
+        if (rects.some(function (r) { return inside(r, x, y); })) continue;
+        var stack = document.elementsFromPoint(pr.left + x, pr.top + y);
+        var owner = null;
+        for (var k = 0; k < stack.length; k++) {
+          var el = stack[k];
+          if (el === mapHolder || el.contains(mapHolder) || !webview.contains(el)) break; // map shows here
+          if (isPassThrough(el)) continue;
+          owner = promote(el);
+          break;
+        }
+        if (!owner || seen.has(owner)) continue;
+        seen.add(owner);
+        var box = rel(owner.getBoundingClientRect(), pr);
+        box = { l: Math.max(box.l, m.l), t: Math.max(box.t, m.t), r: Math.min(box.r, m.r), b: Math.min(box.b, m.b) };
+        box = clipToAncestors(owner, box, pr, false);
+        if (box) rects = addRect(rects, box);
+      }
+    }
+    return mergeToLimit(rects, PROPOSED_LIMIT);
+  }
+
+  // ---------- PROPOSED strategy, fast variant (element scan) ----------
+  // Same rule as the grid, but each element is checked once, in document order.
+  // Parents come before children, so children of an already-registered element
+  // (a sheet's rows, a chip's label) are skipped by a cheap rectangle test
+  // before any style lookup.
+  function collectElementScan() {
+    var pr = phone.getBoundingClientRect();
+    var m = mapFrame();
+    var rects = [];
+    var all = webview.getElementsByTagName('*');
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el === mapHolder || el.contains(mapHolder)) continue; // layout containers of the map
+      var b = rel(el.getBoundingClientRect(), pr);
+      var box = { l: Math.max(b.l, m.l), t: Math.max(b.t, m.t), r: Math.min(b.r, m.r), b: Math.min(b.b, m.b) };
+      if (box.r <= box.l || box.b <= box.t) continue;            // not over the map, or display:none
+      if (rects.some(function (r) { return contains(r, box); })) continue; // already covered
+      var cs = getComputedStyle(el);
+      if (cs.pointerEvents === 'none' || cs.visibility !== 'visible') continue;
+      if (isPassThrough(el, cs)) continue;
+      box = clipToAncestors(el, box, pr, true);
+      if (box) rects = addRect(rects, box);
+    }
+    return mergeToLimit(rects, PROPOSED_LIMIT);
+  }
+
+  function collect(mode) {
+    return mode === 'current' ? collectCurrent() : mode === 'grid' ? collectProposed() : collectElementScan();
+  }
+
+  // ---------- update loop ----------
+  var frame = null;
+  function schedule() { if (frame === null) frame = requestAnimationFrame(function () { frame = null; update(); }); }
+  function update() {
+    var t0 = performance.now();
+    state.frozen = false; state.merged = 0;
+    state.regions = collect(state.mode);
+    state.scanMs = performance.now() - t0;
+    draw(); stats();
+  }
+  new MutationObserver(schedule).observe(webview, { subtree: true, childList: true, attributes: true });
+  webview.addEventListener('scroll', schedule, true);
+  window.addEventListener('resize', function () { sizeCanvas(); schedule(); });
+
+  function draw() {
+    if (!$('#optShow').checked) { svg.innerHTML = ''; return; }
+    var m = mapFrame();
+    var out = '<rect x="' + (m.l + 1) + '" y="' + (m.t + 1) + '" width="' + (m.r - m.l - 2) + '" height="' + (m.b - m.t - 2) +
+      '" fill="none" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="6 4"/>';
+    state.regions.forEach(function (r) {
+      out += state.frozen
+        ? '<rect x="0" y="0" width="100%" height="100%" fill="rgba(220,38,38,.18)"/>'
+        : '<rect x="' + r.l + '" y="' + r.t + '" width="' + (r.r - r.l) + '" height="' + (r.b - r.t) +
+          '" rx="3" fill="rgba(37,99,235,.18)" stroke="#2563eb" stroke-width="1"/>';
+    });
+    svg.innerHTML = out;
+  }
+  function stats() {
+    $('#sCount').textContent = state.frozen ? state.overflowCount : state.regions.length;
+    $('#sLimit').textContent = state.mode === 'current' ? LIMITS[state.platform] : PROPOSED_LIMIT;
+    $('#sMs').textContent = state.scanMs.toFixed(1);
+    var banner = $('#banner');
+    if (state.frozen) {
+      banner.className = 'banner bad';
+      banner.textContent = state.overflowCount + ' regions > ' + LIMITS[state.platform] +
+        ' limit: the whole screen is routed to the WebView. Map gestures are disabled.';
+    } else banner.className = 'banner';
+  }
+
+  // ---------- log & ripples ----------
+  function log(cls, msg) {
+    var d = document.createElement('div');
+    d.className = cls;
+    d.textContent = new Date().toLocaleTimeString([], { hour12: false }) + '  ' + msg;
+    var l = $('#log'); l.prepend(d);
+    while (l.children.length > 60) l.lastChild.remove();
+  }
+  function ripple(x, y, color) {
+    var r = document.createElement('div');
+    r.className = 'ripple'; r.style.left = x + 'px'; r.style.top = y + 'px'; r.style.background = color;
+    phone.appendChild(r); setTimeout(function () { r.remove(); }, 550);
+  }
+  function describe(clientX, clientY) {
+    var el = document.elementFromPoint(clientX, clientY);
+    var named = el && el.closest('[data-name],[data-label]');
+    if (named) return named.dataset.name || named.dataset.label;
+    if (el === mapHolder || (el && el.contains(mapHolder))) return 'empty map';
+    return el ? (el.className || el.tagName.toLowerCase()) : '?';
+  }
+
+  // ---------- simulated native map ----------
+  var ctx = canvas.getContext('2d');
+  var cam = { x: 1000, y: 1000, s: 1.1 };
+  var pins = [
+    { id: 'Find #12', x: 860, y: 900, c: '#8b1a1a' }, { id: 'Find #7', x: 1030, y: 870, c: '#0f4d3a' },
+    { id: 'Find #3', x: 1270, y: 860, c: '#8b1a1a' }, { id: 'Waypoint A', x: 920, y: 1110, c: '#8b1a1a' },
+    { id: 'Waypoint B', x: 1150, y: 1140, c: '#8b1a1a' }
+  ];
+  function sizeCanvas() {
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * dpr; canvas.height = canvas.clientHeight * dpr;
+    render();
+  }
+  function w2s(x, y) { return [(x - cam.x) * cam.s + canvas.clientWidth / 2, (y - cam.y) * cam.s + canvas.clientHeight / 2]; }
+  function render() {
+    var dpr = window.devicePixelRatio || 1, cw = canvas.clientWidth, ch = canvas.clientHeight;
+    ctx.setTransform(dpr * cam.s, 0, 0, dpr * cam.s, dpr * (cw / 2 - cam.x * cam.s), dpr * (ch / 2 - cam.y * cam.s));
+    ctx.fillStyle = '#ebe5cd'; ctx.fillRect(-3000, -3000, 8000, 8000);
+    ctx.fillStyle = '#a7d98f';
+    [[[1150, 1250], [1600, 1080], [1800, 1600], [1200, 1700]], [[1300, 500], [1700, 450], [1750, 800], [1400, 780]]]
+      .forEach(function (p) { ctx.beginPath(); p.forEach(function (q, i) { i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }); ctx.fill(); });
+    ctx.strokeStyle = 'rgba(140,110,60,.35)'; ctx.lineWidth = 1 / cam.s;
+    [[980, 980], [1250, 1200], [800, 1300]].forEach(function (h) {
+      for (var i = 1; i < 10; i++) { ctx.beginPath(); ctx.ellipse(h[0], h[1], i * 28, i * 20, 0.4, 0, Math.PI * 2); ctx.stroke(); }
+    });
+    ctx.strokeStyle = '#74b6e8'; ctx.lineWidth = 46; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(500, 650); ctx.bezierCurveTo(800, 700, 760, 900, 700, 1050);
+    ctx.bezierCurveTo(640, 1250, 760, 1500, 650, 1800); ctx.stroke();
+    ctx.strokeStyle = '#e9a23b'; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.moveTo(1330, 600); ctx.bezierCurveTo(1300, 900, 1360, 1100, 1310, 1500); ctx.stroke();
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    pins.forEach(function (p) {
+      var s = w2s(p.x, p.y);
+      ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(s[0], s[1] - 18, 10, Math.PI * 0.85, Math.PI * 2.15);
+      ctx.lineTo(s[0], s[1]); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(s[0], s[1] - 18, 3.5, 0, Math.PI * 2); ctx.fill();
+    });
+  }
+
+  function mapTap(px, py) {
+    var m = mapFrame(), cx = px - m.l, cy = py - m.t;
+    if (menu.classList.contains('open')) {
+      if ($('#optCloseMenu').checked) { menu.classList.remove('open'); log('t-map', '   mapTapped callback → app closed the ⋯ menu'); return; }
+      log('t-bad', '   ⋯ menu stays open: the page never saw this tap');
+    }
+    for (var i = 0; i < pins.length; i++) {
+      var s = w2s(pins[i].x, pins[i].y);
+      if (Math.hypot(cx - s[0], cy - (s[1] - 18)) <= 20) { log('t-map', '   marker tapped: ' + pins[i].id); return; }
+    }
+    pins.push({ id: 'Waypoint ' + pins.length, x: (cx - canvas.clientWidth / 2) / cam.s + cam.x, y: (cy - canvas.clientHeight / 2) / cam.s + cam.y, c: '#2563eb' });
+    render();
+    log('t-map', '   map tap → waypoint dropped');
+  }
+
+  // ---------- simulated native router ----------
+  var gesture = null, suppressClickUntil = 0;
+  function route(clientX, clientY) {
+    var pr = phone.getBoundingClientRect(), x = clientX - pr.left, y = clientY - pr.top;
+    if (!inside(mapFrame(), x, y)) return { target: 'page', why: 'outside map frame', x: x, y: y };
+    if (state.regions.some(function (r) { return inside(r, x, y); }))
+      return { target: 'page', why: state.frozen ? 'FROZEN fallback (limit exceeded)' : 'inside page region', x: x, y: y };
+    return { target: 'map', why: 'no page region here', x: x, y: y };
+  }
+  phone.addEventListener('pointerdown', function (e) {
+    var r = route(e.clientX, e.clientY), what = describe(e.clientX, e.clientY);
+    if (r.target === 'map') {
+      e.stopPropagation(); e.preventDefault();
+      phone.setPointerCapture(e.pointerId);
+      gesture = { id: e.pointerId, sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, t0: Date.now(), moved: false, x: r.x, y: r.y };
+      ripple(r.x, r.y, 'rgba(22,163,74,.5)');
+      var wrong = what !== 'empty map';
+      log(wrong ? 't-bad' : 't-map', '→ MAP   on "' + what + '"' + (wrong ? '  ✗ page element lost the touch' : ''));
+    } else {
+      ripple(r.x, r.y, 'rgba(37,99,235,.5)');
+      var lost = what === 'empty map';
+      log(lost ? 't-bad' : 't-page', '→ PAGE  on "' + what + '" (' + r.why + ')' + (lost ? '  ✗ map gesture lost' : ''));
+    }
+  }, true);
+  phone.addEventListener('pointermove', function (e) {
+    if (!gesture || e.pointerId !== gesture.id) return;
+    e.stopPropagation();
+    if (Math.hypot(e.clientX - gesture.sx, e.clientY - gesture.sy) > 6) gesture.moved = true;
+    cam.x -= (e.clientX - gesture.lx) / cam.s; cam.y -= (e.clientY - gesture.ly) / cam.s;
+    gesture.lx = e.clientX; gesture.ly = e.clientY;
+    render();
+  }, true);
+  function endGesture(e) {
+    if (!gesture || e.pointerId !== gesture.id) return;
+    e.stopPropagation();
+    if (!gesture.moved && Date.now() - gesture.t0 < 600 && e.type === 'pointerup') mapTap(gesture.x, gesture.y);
+    else if (gesture.moved) log('t-map', '   map panned');
+    gesture = null;
+    suppressClickUntil = performance.now() + 400;
+  }
+  phone.addEventListener('pointerup', endGesture, true);
+  phone.addEventListener('pointercancel', endGesture, true);
+  phone.addEventListener('click', function (e) {
+    if (performance.now() < suppressClickUntil) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
+  var wheelLogged = 0;
+  phone.addEventListener('wheel', function (e) {
+    if (route(e.clientX, e.clientY).target !== 'map') return;
+    e.preventDefault(); e.stopPropagation();
+    cam.s = Math.min(4, Math.max(0.4, cam.s * Math.exp(-e.deltaY * 0.0015)));
+    render();
+    if (performance.now() - wheelLogged > 800) { log('t-map', '→ MAP   wheel zoom'); wheelLogged = performance.now(); }
+  }, { capture: true, passive: false });
+
+  // ---------- page behaviour ----------
+  webview.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-name]');
+    if (!el) return;
+    log('t-page', '   page click ✓ ' + el.dataset.name);
+    var action = el.dataset.action;
+    if (action === 'more') menu.classList.toggle('open');
+    else if (action === 'menu-item') menu.classList.remove('open');
+    else if (action === 'chip') {
+      document.querySelectorAll('.chip').forEach(function (c) { c.classList.toggle('on', c === el); });
+    }
+  });
+  // Mouse drag-to-scroll (touch devices scroll natively).
+  document.querySelectorAll('[data-drag-scroll]').forEach(function (el) {
+    var axis = el.dataset.dragScroll, s = null, suppress = false;
+    el.addEventListener('pointerdown', function (e) {
+      if (e.pointerType !== 'mouse') return;
+      s = { x: e.clientX, y: e.clientY, l: el.scrollLeft, t: el.scrollTop, id: e.pointerId, moved: false };
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (!s) return;
+      var d = axis === 'x' ? e.clientX - s.x : e.clientY - s.y;
+      if (!s.moved && Math.abs(d) > 5) { s.moved = true; el.setPointerCapture(s.id); log('t-page', '   page scroll ✓ ' + el.dataset.label); }
+      if (s.moved) { if (axis === 'x') el.scrollLeft = s.l - d; else el.scrollTop = s.t - d; }
+    });
+    el.addEventListener('pointerup', function () { if (s && s.moved) { suppress = true; setTimeout(function () { suppress = false; }, 50); } s = null; });
+    el.addEventListener('click', function (e) { if (suppress) { e.stopPropagation(); e.preventDefault(); } }, true);
+  });
+  // Bottom-sheet drag.
+  (function () {
+    var grab = $('#grab'), d = null;
+    grab.addEventListener('pointerdown', function (e) { d = { y: e.clientY, h: sheet.offsetHeight }; grab.setPointerCapture(e.pointerId); });
+    grab.addEventListener('pointermove', function (e) {
+      if (!d) return;
+      sheet.style.height = Math.min(500, Math.max(96, d.h - (e.clientY - d.y))) + 'px';
+    });
+    grab.addEventListener('pointerup', function () { if (d) log('t-page', '   page drag ✓ bottom sheet → ' + sheet.offsetHeight + 'px'); d = null; });
+  })();
+
+  // ---------- controls ----------
+  document.querySelectorAll('input[name=mode]').forEach(function (i) {
+    i.addEventListener('change', function () { state.mode = i.value; log('', '── strategy: ' + i.parentElement.textContent); update(); });
+  });
+  document.querySelectorAll('input[name=platform]').forEach(function (i) {
+    i.addEventListener('change', function () { state.platform = i.value; update(); });
+  });
+  $('#optSemantic').addEventListener('change', function (e) {
+    document.querySelectorAll('[data-name]').forEach(function (el) {
+      if (e.target.checked) el.setAttribute('role', 'button'); else el.removeAttribute('role');
+    });
+  });
+  $('#optShow').addEventListener('change', draw);
+
+  $('#bench').addEventListener('click', function () {
+    var runs = 50, parts = [];
+    [['current', 'Current'], ['grid', 'Grid'], ['scan', 'Scan']].forEach(function (m) {
+      collect(m[0]); // warm-up
+      var t0 = performance.now(), n = 0;
+      for (var i = 0; i < runs; i++) n = collect(m[0]).length;
+      parts.push(m[1] + ' ' + ((performance.now() - t0) / runs).toFixed(2) + ' ms (' + n + ')');
+    });
+    update(); // restore state for the selected strategy
+    $('#benchOut').textContent = parts.join(' · ');
+    log('', '── benchmark avg per scan (regions): ' + parts.join(' · '));
+  });
+
+  sizeCanvas();
+  update();
+  log('', 'Ready. Strategy: Element scan.');
+})();
+</script>
+</body>
+</html>

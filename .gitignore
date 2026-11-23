@@ -1,0 +1,13 @@
+*.code-workspace
+.vscode/
+.idea/
+.DS_Store
+node_modules/
+platforms/
+.env
+.env.*
+*.apk
+*.aab
+*.ipa
+*.keystore
+*.jks

@@ -1,0 +1,206 @@
+"""Execute the actual base/parity location callbacks with a minimal camera host."""
+from pathlib import Path
+import subprocess
+import tempfile
+
+base = Path('src/ios/MapboxPlugin.swift').read_text()
+parity = Path('src/ios/MapboxPluginParity.swift').read_text()
+
+def method(source, signature):
+    start = source.index(signature)
+    opening = source.index('{', start)
+    depth = 1
+    end = opening + 1
+    while depth:
+        depth += (source[end] == '{') - (source[end] == '}')
+        end += 1
+    return source[start:end]
+
+callback = 'func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation])'
+helpers = '\n'.join(method(base, signature) for signature in [
+    'func resumeCameraFollowing()',
+    'func resetRecenterAnimation()',
+    'func runRecenterAnimation(',
+    'func isTrackingLocationManager(',
+    'func pauseCameraFollowForGesture('
+])
+# Verify both foreground and behind-WebView gesture paths use the tested handler.
+for name in ['panGestureRecognizer', 'pinchGestureRecognizer']:
+    assert name + '.addTarget(self, action: #selector(self.pauseCameraFollowForGesture(_:)))' in base
+for name in ['handleMapOverlayPan', 'handleMapOverlayPinch']:
+    assert 'pauseCameraFollowForGesture(recognizer)' in method(base, 'func ' + name)
+assert 'resumeCameraFollowing()' in method(base, 'private func startUserTracking(')
+assert 'isCameraFollowingUser = false' in method(base, 'private func stopUserTracking(')
+assert 'self.resumeCameraFollowing()' in method(parity, 'func moveToCurrentLocation(command:')
+assert 'if self.isCameraFollowingUser' in method(parity, 'private func handleMoveToCurrentLocation(')
+recenter = method(parity, 'private func handleMoveToCurrentLocation(')
+assert 'self.runRecenterAnimation(to: CameraOptions(center: coordinate, zoom: zoom.map { CGFloat($0) }))' in recenter
+assert 'self.smoothedTrackingCoordinate = coordinate' in recenter
+assert '.setCamera(' not in recenter
+assert 'resetRecenterAnimation()' in method(base, 'func closeInternal()')
+assert 'guard !self.isRecenterAnimating else { return }' in method(
+    base, 'func locationManager(_ manager: CLLocationManager, didUpdateHeading')
+
+host = '''
+import Foundation
+import CoreLocation
+struct CameraOptions {
+    var center: CLLocationCoordinate2D
+    var zoom: CGFloat? = nil
+}
+class Camera {
+    var moves = 0
+    var cancellations = 0
+    var flights: [CameraOptions] = []
+    var completions: [(Bool) -> Void] = []
+    func fly(to: CameraOptions, duration: Double, completion: @escaping (Bool) -> Void) {
+        precondition(duration == 1.5, "Match Android's 1500 ms recenter flight")
+        moves += 1
+        flights.append(to)
+        completions.append(completion)
+    }
+    func setCamera(to: CameraOptions) { moves += 1 }
+    func ease(to: CameraOptions, duration: Double) { moves += 1 }
+    func cancelAnimations() { cancellations += 1 }
+}
+class MapView {
+    let camera = Camera()
+    var mapboxMap: Camera { camera }
+}
+class UIGestureRecognizer {
+    enum State { case possible, began, changed, ended, cancelled }
+    var state: State = .possible
+}
+enum MapboxSecurity { static let maxPoints = 20000 }
+class Base {
+    var isRecenterAnimating = false
+    var recenterAnimationGeneration: UInt64 = 0
+    var isCameraFollowingUser = false
+    var isUserTrackingEnabled = true
+    var headingLocationManager: CLLocationManager? = CLLocationManager()
+    var mapView: MapView? = MapView()
+    var lastUserTrackingUpdate: Double = 0
+    var isPathTrackingActive = true
+    var isPathTrackingPaused = false
+    var pathPoints: [CLLocationCoordinate2D] = []
+    var currentSegment: [CLLocationCoordinate2D] = []
+    var queue: [() -> Void] = []
+    var results = 0
+    func runForSession(_ work: @escaping () -> Void) { queue.append(work) }
+    func drain() { let work = queue; queue.removeAll(); work.forEach { $0() } }
+    func updatePathAnnotation() {}
+    func stopUserTracking() { isUserTrackingEnabled = false; isCameraFollowingUser = false }
+    func sendSuccess(_ payload: [String: Any], callbackId: String) { results += 1 }
+'''
+subclass = '''
+}
+class Parity: Base {
+    var moveLocationManager: CLLocationManager?
+    var accuracyLocationManager: CLLocationManager?
+    var lastTrackingLocationUpdate: Double = 0
+    let trackingCameraInterval = 0.4
+    let locationSmoothingFactor = 0.35
+    let trackingCameraAnimationDuration = 0.25
+    var smoothedTrackingCoordinate: CLLocationCoordinate2D?
+    var parityPathTrackingActive = true
+    var accuracyUpdates = 0
+    func handleMoveToCurrentLocation(_ location: CLLocation, manager: CLLocationManager) {}
+    func sendLocationAccuracyUpdate(_ location: CLLocation) { accuracyUpdates += 1 }
+'''
+checks = '''
+}
+let plugin = Parity()
+let manager = plugin.headingLocationManager!
+let gesture = UIGestureRecognizer()
+func update() {
+    plugin.lastTrackingLocationUpdate = 0
+    plugin.lastUserTrackingUpdate = 0
+    plugin.locationManager(manager, didUpdateLocations: [CLLocation(latitude: 10, longitude: 20)])
+}
+plugin.resumeCameraFollowing()
+update(); plugin.drain()
+precondition(plugin.mapView!.camera.moves > 0)
+precondition(plugin.pathPoints.count == 1)
+
+// A gesture can start after a fix has queued both base and parity camera work.
+update()
+gesture.state = .began
+plugin.pauseCameraFollowForGesture(gesture)
+let beforePause = plugin.mapView!.camera.moves
+plugin.drain()
+precondition(plugin.mapView!.camera.moves == beforePause, "Queued updates must respect manual pan")
+precondition(plugin.pathPoints.count == 2, "Queued path point is still recorded")
+precondition(plugin.mapView!.camera.cancellations == 1)
+precondition(plugin.isUserTrackingEnabled)
+
+update(); plugin.drain()
+precondition(plugin.mapView!.camera.moves == beforePause)
+precondition(plugin.pathPoints.count == 3, "Recording continues during free exploration")
+precondition(plugin.accuracyUpdates == 3, "Accuracy updates continue during free exploration")
+gesture.state = .ended
+plugin.pauseCameraFollowForGesture(gesture)
+precondition(!plugin.isCameraFollowingUser, "Lifting the finger does not resume following")
+
+plugin.resumeCameraFollowing()
+update(); plugin.drain()
+precondition(plugin.mapView!.camera.moves > beforePause, "Explicit follow resumes")
+
+// Location/path/accuracy updates continue during the flight without moving its camera.
+let camera = plugin.mapView!.camera
+plugin.runRecenterAnimation(to: CameraOptions(center: CLLocationCoordinate2D(latitude: 30, longitude: 40), zoom: 15))
+precondition(plugin.isRecenterAnimating)
+let beforeFlightUpdates = camera.moves
+let recordedBeforeFlight = plugin.pathPoints.count
+let accuracyBeforeFlight = plugin.accuracyUpdates
+update(); plugin.drain()
+precondition(camera.moves == beforeFlightUpdates, "Follow callbacks must not interrupt recenter")
+precondition(plugin.pathPoints.count == recordedBeforeFlight + 1)
+precondition(plugin.accuracyUpdates == accuracyBeforeFlight + 1)
+precondition(camera.flights.last!.zoom == 15)
+
+// A late completion from a superseded flight cannot release the newer flight's guard.
+let oldFlight = camera.completions.last!
+plugin.runRecenterAnimation(to: CameraOptions(center: CLLocationCoordinate2D(latitude: 31, longitude: 41)))
+precondition(camera.flights.last!.zoom == nil, "Omitted zoom must be preserved")
+oldFlight(false)
+precondition(plugin.isRecenterAnimating)
+camera.completions.last!(true)
+precondition(!plugin.isRecenterAnimating)
+let afterFlight = camera.moves
+update(); plugin.drain()
+precondition(camera.moves > afterFlight, "Follow resumes after flight completion")
+
+plugin.runRecenterAnimation(to: CameraOptions(center: CLLocationCoordinate2D(latitude: 32, longitude: 42)))
+gesture.state = .began
+plugin.pauseCameraFollowForGesture(gesture)
+precondition(!plugin.isRecenterAnimating && !plugin.isCameraFollowingUser)
+plugin.resumeCameraFollowing()
+
+// Close resets animation ownership; stale completion cannot affect a reopened map.
+let beforeClose = camera.completions.last!
+plugin.resetRecenterAnimation()
+plugin.mapView = MapView()
+plugin.runRecenterAnimation(to: CameraOptions(center: CLLocationCoordinate2D(latitude: 33, longitude: 43)))
+beforeClose(false)
+precondition(plugin.isRecenterAnimating)
+plugin.mapView!.camera.completions.last!(false)
+precondition(!plugin.isRecenterAnimating, "Cancellation must release the current guard")
+
+update(); plugin.stopUserTracking()
+let beforeStop = plugin.mapView!.camera.moves
+let pointCount = plugin.pathPoints.count
+plugin.drain()
+precondition(plugin.mapView!.camera.moves == beforeStop)
+precondition(plugin.pathPoints.count == pointCount, "Stopped tracking ignores queued points")
+
+print("iOS camera pause/resume, queued updates, recording and accuracy checks passed")
+'''
+with tempfile.TemporaryDirectory() as temp:
+    directory = Path(temp)
+    swift = directory / 'main.swift'
+    swift.write_text(host + helpers + '\n' + method(base, callback) + subclass +
+                     'override ' + method(parity, callback) + checks)
+    binary = directory / 'follow-tests'
+    subprocess.run(['swiftc', str(swift), '-o', str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
+
