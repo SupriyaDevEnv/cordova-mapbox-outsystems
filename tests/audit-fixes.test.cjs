@@ -38,6 +38,14 @@ test('non-finite numeric strings never reach UIKit or the map camera', () => {
   assert.match(android, /Math\.min\(options\.optLong\("duration", 2000L\), MAX_ANIMATION_MS\)/);
   const resize = between(android, 'private void resizeMap(', 'private void setTouchableRects(');
   assert.match(resize, /clamp\(options\.optInt\("width", 1\), 1, screenWidth\)/);
+  assert.match(resize, /webViewOffsetInParent\(parent\)/);
+  const offline = between(android, 'private void openOfflineMapView(', 'private String getAccessToken()');
+  assert.match(offline, /addBehindWebView\(rootView\)/);
+  assert.doesNotMatch(offline, /decor\.addView\(rootView\)/);
+  const iosOffline = between(ios, 'private func openOfflineMapView(', '@objc(setCamera:)');
+  assert.match(iosOffline, /options\["behindWebView"\] as\? Bool \?\? true/);
+  assert.match(iosOffline, /self\.webView\.convert\(mapFrameInWebView, to: superview\)/);
+  assert.match(iosParity, /func resizeMap\(command: CDVInvokedUrlCommand\)[\s\S]*super\.setViewport\(command: command\)/);
 });
 
 test('Android marker images check every redirect hop and cap decoded size', () => {
