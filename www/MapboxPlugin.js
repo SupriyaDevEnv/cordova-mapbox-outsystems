@@ -166,6 +166,13 @@ function call(action, args) {
           args = [applyOfflineDetail(args[0])].concat(args.slice(1));
         }
       }
+      if ((action === 'downloadOfflineRegion' || action === 'downloadOfflineRegionForRect')
+          && args && args[0] && args[0].estimatedMB != null) {
+        var estimatedMB = Number(args[0].estimatedMB);
+        if (!isFinite(estimatedMB) || estimatedMB < 0) {
+          throw new Error('estimatedMB must be a non-negative finite number.');
+        }
+      }
       var json = JSON.stringify(args || []);
       if (utf8Length(json) > 4 * 1024 * 1024) throw new Error('Map input exceeds the 4 MiB limit.');
       var options = (args || [])[0] || {};

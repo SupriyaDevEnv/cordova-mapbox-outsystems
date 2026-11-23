@@ -57,6 +57,19 @@ test('detail sets maxZoom for downloads and estimates without changing the calle
   assert.ok(Object.isFrozen(api.offlineDetailMaxZoom));
 });
 
+test('download forwards the selected estimate and rejects invalid values', async () => {
+  const { api, calls } = bridge();
+  const options = { detail: 'medium', estimatedMB: 18.4, regionId: 'trail-1' };
+  await api.downloadOfflineRegionForRect(options);
+  assert.equal(calls[0].args[0].maxZoom, 15);
+  assert.equal(calls[0].args[0].estimatedMB, 18.4);
+  assert.deepEqual(options, { detail: 'medium', estimatedMB: 18.4, regionId: 'trail-1' });
+
+  await assert.rejects(api.downloadOfflineRegionForRect({ estimatedMB: -1 }), /estimatedMB must be/);
+  await assert.rejects(api.downloadOfflineRegion({ estimatedMB: 'not a size' }), /estimatedMB must be/);
+  assert.equal(calls.length, 1);
+});
+
 test('invalid detail or zoom is rejected before native', async () => {
   const { api, calls } = bridge();
   await assert.rejects(api.downloadOfflineRegion({ detail: 'ultra' }), /detail must be/);
@@ -159,6 +172,17 @@ test('storage, region ids and byte progress return the same fields on both platf
     assert.match(android, new RegExp('"' + key + '"'), 'Android missing ' + key);
     assert.match(ios, new RegExp('"' + key + '"'), 'iOS missing ' + key);
   }
-  assert.equal((android.match(/progress\.getCompletedResourceSize\(\)\)/g) || []).length, 2);
+  assert.equal((android.match(/progress\.getCompletedResourceSize\(\)/g) || []).length, 2);
   assert.equal((ios.match(/completedBytes: Int64\(progress\.completedResourceSize\)/g) || []).length, 2);
+});
+
+test('tile progress carries the selected estimate beside downloaded MB on both platforms', () => {
+  const aDownload = between(android, 'private void downloadOfflineRegion(JSONObject options', 'private void startOfflineDownload(');
+  const iDownload = between(ios, '@objc(downloadOfflineRegion:)', 'private func startOfflineDownload(');
+  assert.equal((aDownload.match(/optDouble\("estimatedMB", Double\.NaN\)/g) || []).length, 2);
+  assert.equal((iDownload.match(/estimatedMB: estimatedMB/g) || []).length, 2);
+  assert.match(android, /payload\.put\("estimatedMB", estimatedMB\)/);
+  assert.match(ios, /payload\["estimatedMB"\] = estimatedMB/);
+  assert.match(android, /"tiles", progress\.getCompletedResourceCount\(\), progress\.getRequiredResourceCount\(\), progress\.getCompletedResourceSize\(\), estimatedMB/);
+  assert.match(ios, /phase: "tiles"[\s\S]*?estimatedMB: estimatedMB/);
 });

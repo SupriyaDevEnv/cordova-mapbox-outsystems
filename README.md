@@ -99,7 +99,21 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - **Cancel:** `cancelOfflineDownload()` stops the current download without closing the map and resolves with `{ cancelled }` (false when nothing was downloading). The download's own promise rejects with a cancellation error (`error.code === 'MAPBOX_OPERATION_CANCELLED'`). Tiles already fetched stay in Mapbox's storage under that `regionId`; download it again to finish it, or delete it.
 - **Stored regions:** `getOfflineRegionIds()` resolves with `{ regionIds: [...], regions: [{ regionId, sizeBytes, complete }] }` for the maps actually on the device. Use it to remove database rows for maps that are gone; `complete: false` marks a download that stopped part-way.
 - **Showing a stored region:** `showOfflineRegion({ regionId })` applies camera bounds from the saved region's rectangular extent and saved zoom range. The map camera center cannot be panned outside those bounds; this does not disable network tile requests or enforce an irregular polygon boundary.
-- **Progress:** `onOfflineDownloadProgress` events also include `completedBytes` and `completedMB` during the `style` and `tiles` phases, alongside `completed`, `required` and `percent`.
+- **Progress:** Pass the selected size estimate as `estimatedMB` to `downloadOfflineRegionForRect` (or `downloadOfflineRegion`). The `tiles-start` and `tiles` progress events include that value beside `completedMB`/`completedBytes`, so the UI can show estimated MB and downloaded MB. `percent` is based on Mapbox resource counts and is phase-specific, not an exact byte percentage; style-pack progress is separate and is not included in the tile estimate. The download Promise resolves when the tile region finishes and rejects on failure or cancellation.
+
+  ```javascript
+  MapboxPlugin.onOfflineDownloadProgress(function (progress) {
+    if (progress.phase === 'tiles-start' || progress.phase === 'tiles') {
+      showProgress(progress.completedMB || 0, progress.estimatedMB);
+    }
+  });
+
+  MapboxPlugin.downloadOfflineRegionForRect({
+    ...rect,
+    detail: 'medium',
+    estimatedMB: estimates.mediumEstimatedMB
+  }).then(notifyDownloadComplete);
+  ```
 - **Opening a downloaded map:** `showOfflineRegion({ regionId: 'trail-42' })` opens that region from the device. It reads the region's saved outline, centres the map on it, zooms so the whole region fits on screen (kept within the zooms that were downloaded) and loads the style it was downloaded with. It rejects with `Offline region '<id>' is not downloaded on this device.` when the region is missing. Pass `latitude` and `longitude` or `zoom` to override the centre or zoom. `styleUrl` is used only for regions downloaded before this change, which have no saved style; re-download those to save it. The map is not locked to the region, so users can still pan outside it. Without `regionId`, `showOfflineRegion` works as before (`latitude`, `longitude`, `zoom` and `styleUrl`). As with any style load, add your boundaries, paths and layer settings again after it resolves.
 - Style URLs and underlying SDK error details are no longer included in plugin diagnostic logs.
 

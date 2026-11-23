@@ -73,7 +73,7 @@ test('area downloads replace centre and radius on both platforms', () => {
 
 test('the area that was downloaded is the one reported back', () => {
   // The circle is built once and passed on, so the result polygon matches the tile region.
-  assert.match(android, /clampedMinZoom, clampedMaxZoom, styleUrl, downloadGeometry, wifiOnly, callback\)/);
+  assert.match(android, /clampedMinZoom, clampedMaxZoom, styleUrl, downloadGeometry, wifiOnly, estimatedMB, callback\)/);
   assert.match(ios, /geometry: regionGeometry,/);
   assert.match(android, /\.geometry\(area\)/);
   assert.match(ios, /geometry: area,\r?\n\s*descriptors:/);
