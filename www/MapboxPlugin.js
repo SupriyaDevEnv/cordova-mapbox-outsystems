@@ -428,7 +428,7 @@ var api = {
     if (!options || typeof options.regionId !== 'string' || !options.regionId.trim()) {
       return Promise.reject(new Error('regionId is required.'));
     }
-    return startMap('initializeOffline', options);
+    return startMap('initializeOffline', Object.assign({}, options, { behindWebView: true }));
   },
 
   ping: function () {

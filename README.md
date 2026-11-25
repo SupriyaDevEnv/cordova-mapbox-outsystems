@@ -301,7 +301,7 @@ Promise.resolve(window.__mapboxScreenClose)
     return window.MapboxPlugin.initializeOffline({
       regionId: $parameters.RegionId,   // the id used with downloadOfflineRegion
       inline: true,
-      behindWebView: false,
+      behindWebView: true,
       x: Math.round(20 * dpr),
       y: Math.round(100 * dpr),
       width: Math.round(350 * dpr),
@@ -315,7 +315,8 @@ Promise.resolve(window.__mapboxScreenClose)
   });
 ```
 
-- Takes the same layout options as `initialize` (`inline`, `behindWebView`, `x`, `y`, `width`, `height`, `minZoom`, `maxZoom`, `autoTouchRouting`), plus `regionId` (required). `latitude`, `longitude` and `zoom` are optional overrides, as for `showOfflineRegion`.
+- Takes the same layout options as `initialize` (`inline`, `x`, `y`, `width`, `height`, `minZoom`, `maxZoom`, `autoTouchRouting`), plus `regionId` (required). It is always rendered behind the WebView. `latitude`, `longitude` and `zoom` are optional overrides, as for `showOfflineRegion`.
+- On Android, call `resizeMap({ x, y, width, height })` to resize or reposition the offline map while it is open.
 - The map opens with the style saved when the region was downloaded, centred on the region and fitted to the screen. The camera centre stays inside the region and within the downloaded zoom levels.
 - While this map is open, Mapbox network access is switched off so only downloaded data is shown. Areas just outside the region therefore stay blank. `close()` and `initialize()` switch network access back on. Offline downloads fail while the offline map is open: close it first.
 - Rejects with `Offline region '<id>' is not downloaded on this device.` when the region is missing, without showing a map.

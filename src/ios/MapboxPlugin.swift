@@ -393,7 +393,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         let initOptions = MapInitOptions(cameraOptions: camera, styleURI: nil)
 
         let isInline = options["inline"] as? Bool ?? false
-        let behindWebView = options["behindWebView"] as? Bool ?? false
+        let behindWebView = options["behindWebView"] as? Bool ?? true
         let mapView = MapView(
             frame: isInline ? self.frameFromOptions(options) : self.webView.bounds,
             mapInitOptions: initOptions

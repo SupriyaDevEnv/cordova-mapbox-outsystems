@@ -92,7 +92,9 @@ test('initializeOffline requires a regionId and calls the native action', async 
   const call = calls.find((c) => c.action === 'initializeOffline');
   assert.ok(call);
   assert.strictEqual(call.args[0].regionId, 'trail-42');
+  assert.strictEqual(call.args[0].behindWebView, true);
   assert.strictEqual(call.args[0].token, undefined);
+  assert.strictEqual(options.behindWebView, undefined);
   assert.strictEqual(options.token, 'pk.x.y');
   assert.ok(!calls.some((c) => c.action === 'initialize'));
 });

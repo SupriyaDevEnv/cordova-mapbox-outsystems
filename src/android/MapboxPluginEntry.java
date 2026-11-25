@@ -196,6 +196,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     }
 
     private FrameLayout rootView;
+    private boolean mapBehindWebView = false;
     private final List<TouchRect> touchableRects = new ArrayList<>();
     private boolean currentGestureTargetsWebView = false;
     private SensorManager sensorManager;
@@ -619,6 +620,7 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
                 sessionCallbacks.add(callback);
 
                 boolean behindWebView = options.optBoolean("behindWebView", false);
+                mapBehindWebView = behindWebView;
 
                 rootView = new FrameLayout(cordova.getActivity());
                 rootView.setBackgroundColor(behindWebView ? Color.TRANSPARENT : Color.WHITE);
@@ -811,10 +813,10 @@ if (gestures != null) {
             offlineRegionCameraBoundsActive = false;
             sessionCallbacks.add(callback);
 
-            boolean behindWebView = options.optBoolean("behindWebView", false);
+            mapBehindWebView = true;
 
             rootView = new FrameLayout(cordova.getActivity());
-            rootView.setBackgroundColor(behindWebView ? Color.TRANSPARENT : Color.WHITE);
+            rootView.setBackgroundColor(Color.TRANSPARENT);
             rootView.setLayoutParams(layoutParamsFromOptions(options));
 
             // No starting style: the online default map is never requested.
@@ -926,12 +928,7 @@ gestures.addOnMoveListener(moveGestureListener);
                 rootView.addView(closeButton);
             }
 
-            if (behindWebView) {
-                addBehindWebView(rootView);
-            } else {
-                ViewGroup decor = (ViewGroup) cordova.getActivity().getWindow().getDecorView();
-                decor.addView(rootView);
-            }
+            addBehindWebView(rootView);
 
             // Only downloaded data from now on; closeInternal() reconnects.
             OfflineSwitch.getInstance().setMapboxStackConnected(false);
@@ -1001,14 +998,12 @@ gestures.addOnMoveListener(moveGestureListener);
             int width = clamp(options.optInt("width", 1), 1, screenWidth);
             int height = clamp(options.optInt("height", 1), 1, screenHeight);
 
-            int[] webViewLocation = new int[2];
-            webView.getView().getLocationInWindow(webViewLocation);
-
-            int webViewTop = webViewLocation[1];
-            int webViewLeft = webViewLocation[0];
-
-            int nativeX = x + webViewLeft;
-            int nativeY = y + webViewTop;
+            ViewGroup parent = mapHostParent();
+            int[] webViewOffset = parent == null
+                ? new int[] {0, 0}
+                : webViewOffsetInParent(parent);
+            int nativeX = x + webViewOffset[0];
+            int nativeY = y + webViewOffset[1];
 
             FrameLayout.LayoutParams params;
             ViewGroup.LayoutParams currentParams = rootView.getLayoutParams();
@@ -5577,6 +5572,7 @@ private boolean addMarkerInternal(
 
         mapView = null;
         rootView = null;
+        mapBehindWebView = false;
         pointAnnotationManager = null;
         boundaryAnnotationManager = null;
         boundaryAnnotationOptions.clear();
@@ -5780,11 +5776,41 @@ private boolean addMarkerInternal(
         int y = clamp((int) options.optDouble("y", 0.0), 0, screenHeight - 1);
         int width = clamp((int) options.optDouble("width", 1.0), 1, screenWidth - x);
         int height = clamp((int) options.optDouble("height", 1.0), 1, screenHeight - y);
+        if (mapBehindWebView) {
+            ViewGroup parent = mapHostParent();
+            if (parent != null) {
+                int[] offset = webViewOffsetInParent(parent);
+                x += offset[0];
+                y += offset[1];
+            }
+        }
 
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height);
         params.leftMargin = x;
         params.topMargin = y;
         return params;
+    }
+
+    private ViewGroup mapHostParent() {
+        if (rootView != null && rootView.getParent() instanceof ViewGroup) {
+            return (ViewGroup) rootView.getParent();
+        }
+        if (touchRouter != null && touchRouter.getParent() instanceof ViewGroup) {
+            return (ViewGroup) touchRouter.getParent();
+        }
+        android.view.ViewParent parent = webView.getView().getParent();
+        return parent instanceof ViewGroup ? (ViewGroup) parent : null;
+    }
+
+    private int[] webViewOffsetInParent(ViewGroup parent) {
+        int[] webViewLocation = new int[2];
+        int[] parentLocation = new int[2];
+        webView.getView().getLocationInWindow(webViewLocation);
+        parent.getLocationInWindow(parentLocation);
+        return new int[] {
+            webViewLocation[0] - parentLocation[0],
+            webViewLocation[1] - parentLocation[1]
+        };
     }
 
     private int clamp(int value, int min, int max) {
