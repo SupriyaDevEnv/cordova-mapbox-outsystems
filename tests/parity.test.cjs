@@ -298,6 +298,8 @@ test('setJsonGroupVisibility reads style JSON on both platforms', () => {
   assert.match(androidBody, /result\.put\("updatedLayers", updated\)/);
   assert.match(androidBody, /result\.put\("visibilityReadback", visibilityReadback\)/);
   assert.match(androidBody, /"actualVisibility", actualVisibility/);
+  assert.match(androidBody, /rawVisibility == JSONObject\.NULL/);
+  assert.match(androidBody, /usesDefaultVisibility[\s\S]*?"visible"/);
   assert.match(androidBody, /"matchesRequested"/);
   assert.match(iosBody, /Data\(map\.styleJSON\.utf8\)/);
   assert.match(iosBody, /"method": "STYLE_JSON"/);
@@ -305,6 +307,8 @@ test('setJsonGroupVisibility reads style JSON on both platforms', () => {
   assert.match(iosBody, /"updatedLayers": updated/);
   assert.match(iosBody, /"visibilityReadback": visibilityReadback/);
   assert.match(iosBody, /"actualVisibility": actualVisibility/);
+  assert.match(iosBody, /rawVisibility is NSNull/);
+  assert.match(iosBody, /actualVisibility = "visible"/);
   assert.match(iosBody, /"matchesRequested": actualVisibility == requestedVisibility/);
 });
 

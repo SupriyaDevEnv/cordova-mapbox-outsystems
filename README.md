@@ -650,7 +650,7 @@ These actions work on the layers of the current map style, on both Android and i
 | `getLayersByGroup(options)` | `groupId` (required) | `{ groupId, totalLayers, layers: [{ id, name, type }] }` |
 | `setLayerGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | Success: `{ groupId, visible, updatedCount, updatedLayers, failedCount, failedLayers }`. If no layers update, the error is JSON text with `matchedLayers`, `updatedCount`, and `failedLayers`. |
 | `setRuntimeGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | `{ method: "RUNTIME", groupId, visible, updatedCount, updatedLayers, failedLayers }`; reads group metadata from runtime layers. |
-| `setJsonGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | `{ method: "STYLE_JSON", groupId, visible, matchedCount, matchedLayers, updatedCount, updatedLayers, failedLayers, visibilityReadback }`; reads the applied visibility value for each updated layer. |
+| `setJsonGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | `{ method: "STYLE_JSON", groupId, visible, matchedCount, matchedLayers, updatedCount, updatedLayers, failedLayers, visibilityReadback }`; each read-back includes expected/actual visibility, `matchesRequested`, and `visibilityIsDefault` (`true` when the style uses Mapbox's default visible state). |
 
 ```javascript
 await MapboxPlugin.setLayerGroupVisibility({ groupId: $parameters.GroupId, visible: false });

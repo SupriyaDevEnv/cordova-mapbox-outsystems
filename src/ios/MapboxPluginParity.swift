@@ -308,12 +308,19 @@ class MapboxPluginParity: MapboxPlugin {
                             for: layerId,
                             property: "visibility"
                         )
-                        let actualVisibility = rawVisibility as? String
-                            ?? String(describing: rawVisibility)
+                        let usesDefaultVisibility = rawVisibility is NSNull
+                        let actualVisibility: String
+                        if usesDefaultVisibility {
+                            actualVisibility = "visible"
+                        } else {
+                            actualVisibility = rawVisibility as? String
+                                ?? String(describing: rawVisibility)
+                        }
                         visibilityReadback.append([
                             "layerId": layerId,
                             "expectedVisibility": requestedVisibility,
                             "actualVisibility": actualVisibility,
+                            "visibilityIsDefault": usesDefaultVisibility,
                             "matchesRequested": actualVisibility == requestedVisibility
                         ])
                     } catch {

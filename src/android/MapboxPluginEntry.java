@@ -4840,9 +4840,19 @@ private boolean addMarkerInternal(
                                 .getStyleLayerProperty(layerId, "visibility")
                                 .getValue()
                                 .toJson();
-                            Object actualVisibility =
+                            Object rawVisibility =
                                 new JSONArray("[" + actualJson + "]").get(0);
+                            boolean usesDefaultVisibility =
+                                rawVisibility == null ||
+                                rawVisibility == JSONObject.NULL;
+                            Object actualVisibility = usesDefaultVisibility
+                                ? "visible"
+                                : rawVisibility;
                             verification.put("actualVisibility", actualVisibility);
+                            verification.put(
+                                "visibilityIsDefault",
+                                usesDefaultVisibility
+                            );
                             verification.put(
                                 "matchesRequested",
                                 requestedVisibility.equals(actualVisibility)
