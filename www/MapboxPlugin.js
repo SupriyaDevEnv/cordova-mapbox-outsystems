@@ -693,6 +693,10 @@ var api = {
     return call('getLayersByGroup', [options || {}]);
   },
 
+  diagnoseRuntimeLayers: function () {
+    return call('diagnoseRuntimeLayers', []);
+  },
+
   clearBoundaries: function () {
     return call('clearBoundaries', []);
   },

@@ -514,6 +514,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             case "getLayersByGroup":
                 getLayersByGroup(options, callbackContext);
                 return true;
+            case "diagnoseRuntimeLayers":
+                diagnoseRuntimeLayers(callbackContext);
+                return true;
             case "clearBoundaries":
                 clearBoundaries(callbackContext);
                 return true;
@@ -4634,6 +4637,64 @@ private boolean addMarkerInternal(
                 callback.success(response);
             } catch (Exception e) {
                 callback.error("Failed to retrieve group layers.");
+            }
+        });
+    }
+
+    private void diagnoseRuntimeLayers(CallbackContext callback) {
+        runForSession(() -> {
+            try {
+                Style style = loadedStyle(callback);
+                if (style == null) return;
+
+                JSONObject result = new JSONObject();
+                result.put("styleURI", style.getStyleURI());
+
+                JSONArray runtimeLayers = new JSONArray();
+                for (StyleObjectInfo layer : style.getStyleLayers()) {
+                    runtimeLayers.put(layer.getId());
+                }
+                result.put("runtimeLayerCount", runtimeLayers.length());
+                result.put("runtimeLayers", runtimeLayers);
+
+                JSONObject styleJson = new JSONObject(style.getStyleJSON());
+                JSONArray jsonLayers = styleJson.optJSONArray("layers");
+                JSONArray parsedLayers = new JSONArray();
+                if (jsonLayers != null) {
+                    for (int i = 0; i < jsonLayers.length(); i++) {
+                        JSONObject layer = jsonLayers.optJSONObject(i);
+                        if (layer == null) continue;
+
+                        JSONObject item = new JSONObject();
+                        item.put("id", layer.optString("id"));
+                        item.put("type", layer.optString("type"));
+                        item.put("metadata", layer.optJSONObject("metadata"));
+                        parsedLayers.put(item);
+                    }
+                }
+                result.put(
+                    "styleJsonLayerCount",
+                    jsonLayers == null ? 0 : jsonLayers.length()
+                );
+                result.put("styleJsonLayers", parsedLayers);
+
+                JSONArray imports = new JSONArray();
+                for (StyleObjectInfo imported : style.getStyleImports()) {
+                    JSONObject item = new JSONObject();
+                    item.put("id", imported.getId());
+                    item.put("type", imported.getType());
+                    imports.put(item);
+                }
+                result.put("imports", imports);
+
+                callback.success(result);
+            } catch (Exception e) {
+                android.util.Log.e(
+                    "MapboxPlugin",
+                    "Runtime diagnosis failed",
+                    e
+                );
+                callback.error(e.getMessage());
             }
         });
     }

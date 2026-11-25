@@ -222,6 +222,48 @@ class MapboxPluginParity: MapboxPlugin {
     // Groups are the Mapbox Studio folders stored in each layer's
     // metadata["mapbox:group"], matching the Android implementation.
 
+    @objc(diagnoseRuntimeLayers:)
+    func diagnoseRuntimeLayers(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+            do {
+                var styleURI: Any = NSNull()
+                if let uri = map.styleURI?.rawValue {
+                    styleURI = uri
+                }
+
+                let runtimeLayers = map.allLayerIdentifiers.map { $0.id }
+                let styleRoot = try JSONSerialization.jsonObject(
+                    with: Data(map.styleJSON.utf8)
+                ) as? [String: Any]
+                let styleLayers = styleRoot?["layers"] as? [[String: Any]] ?? []
+                let parsedLayers: [[String: Any]] = styleLayers.map { layer in
+                    [
+                        "id": layer["id"] as? String ?? "",
+                        "type": layer["type"] as? String ?? "",
+                        "metadata": layer["metadata"] ?? NSNull()
+                    ]
+                }
+                let imports: [[String: String]] = map.styleImports.map {
+                    ["id": $0.id, "type": $0.type]
+                }
+
+                self.sendSuccess([
+                    "styleURI": styleURI,
+                    "runtimeLayerCount": runtimeLayers.count,
+                    "runtimeLayers": runtimeLayers,
+                    "styleJsonLayerCount": styleLayers.count,
+                    "styleJsonLayers": parsedLayers,
+                    "imports": imports
+                ], command)
+            } catch {
+                self.sendError(error.localizedDescription, command)
+            }
+        }
+    }
+
     @objc(getLayersByGroup:)
     func getLayersByGroup(command: CDVInvokedUrlCommand) {
         rememberCommand(command)

@@ -213,7 +213,7 @@ test('every Android action has an iOS implementation, and the reverse', () => {
 
 test('iOS reads layer groups from mapbox:group metadata like Android', () => {
   const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
-  for (const name of ['getLayersByGroup', 'setLayerGroupVisibility']) {
+  for (const name of ['getLayersByGroup', 'setLayerGroupVisibility', 'diagnoseRuntimeLayers']) {
     assert.ok(parity.includes('@objc(' + name + ':)'), name + ' is missing on iOS');
   }
   assert.match(parity, /\["mapbox:group"\]/);
@@ -232,6 +232,28 @@ test('iOS reads layer groups from mapbox:group metadata like Android', () => {
   assert.match(parity, /Layer: %\@ \| Metadata: %\@/);
   // isStyleLoaded broke the iOS build on Nov 13; keep it out.
   assert.doesNotMatch(parity.replace(/\/\/.*$/gm, ''), /isStyleLoaded/);
+});
+
+test('diagnoseRuntimeLayers is exposed on both platforms', () => {
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const javascript = fs.readFileSync('www/MapboxPlugin.js', 'utf8');
+  const androidBody = javaMethod('diagnoseRuntimeLayers', 'clearBoundaries');
+  const iosBody = parity.split('func diagnoseRuntimeLayers(command:')[1]
+    .split('@objc(getLayersByGroup:')[0];
+
+  assert.match(android, /case "diagnoseRuntimeLayers":/);
+  assert.match(javascript, /diagnoseRuntimeLayers: function \(\)/);
+  for (const key of [
+    'styleURI',
+    'runtimeLayerCount',
+    'runtimeLayers',
+    'styleJsonLayerCount',
+    'styleJsonLayers',
+    'imports'
+  ]) {
+    assert.match(androidBody, new RegExp('result\\.put\\(\\s*"' + key + '"'));
+    assert.ok(iosBody.includes('"' + key + '"'), key + ' is missing from iOS response');
+  }
 });
 
 test('removed layer inspection actions are not exposed', () => {
