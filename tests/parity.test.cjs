@@ -239,9 +239,10 @@ test('removed layer inspection actions are not exposed', () => {
 
 test('Android updates style layers by metadata group and reports per-layer failures', () => {
   const body = javaMethod('setLayerGroupVisibility', 'getLayersByGroup');
-  assert.match(body, /style\.getStyleJSON\(\)/);
-  assert.match(body, /styleJson\.optJSONArray\("layers"\)/);
-  assert.match(android, /metadata\.optString\("mapbox:group", ""\)/);
+  assert.match(body, /for \(LayerMetadata layer : layersWithMetadata\(style\)\)/);
+  assert.doesNotMatch(body, /style\.getStyleJSON\(\)/);
+  assert.doesNotMatch(body, /styleJson\.optJSONArray\("layers"\)/);
+  assert.match(android, /String json = style\.getStyleLayerProperty\(layer\.getId\(\), "metadata"\)/);
   assert.match(body, /style\.styleLayerExists\(layerId\)/);
   assert.match(body, /style\.setStyleLayerProperty\([\s\S]*?"visibility"/);
   assert.match(body, /result\.put\("updatedCount", updatedLayers\.length\(\)\)/);
@@ -256,6 +257,8 @@ test('iOS reports partial and total failures when updating a layer group', () =>
   const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
   const body = parity.split('func setLayerGroupVisibility(command:')[1]
     .split('private func requiredGroupId(')[0];
+  assert.match(body, /let runtimeLayerIdentifiers = map\.allLayerIdentifiers/);
+  assert.match(body, /runtimeLayerIdentifiers\.map \{ \$0\.id \}/);
   assert.match(body, /trimmingCharacters\(in: \.whitespacesAndNewlines\)/);
   assert.match(body, /failedLayers\.append/);
   assert.match(body, /"failedCount": failedLayers\.count/);

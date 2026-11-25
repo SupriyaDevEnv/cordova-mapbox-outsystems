@@ -229,7 +229,8 @@ class MapboxPluginParity: MapboxPlugin {
             guard let groupId = self.requiredGroupId(command) else { return }
             guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
                                                 notLoaded: "Style is not loaded.") else { return }
-            let layers: [[String: Any]] = map.allLayerIdentifiers
+            let runtimeLayers = map.allLayerIdentifiers
+            let layers: [[String: Any]] = runtimeLayers
                 .filter { self.layerGroup(map, $0.id) == groupId }
                 .map { ["id": $0.id, "name": $0.id, "type": $0.type.rawValue] }
             self.sendSuccess([
@@ -250,7 +251,8 @@ class MapboxPluginParity: MapboxPlugin {
             guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
                                                 notLoaded: "Style is not loaded.") else { return }
 
-            let layerIds = map.allLayerIdentifiers.map { $0.id }.filter {
+            let runtimeLayerIdentifiers = map.allLayerIdentifiers
+            let layerIds = runtimeLayerIdentifiers.map { $0.id }.filter {
                 (self.layerGroup(map, $0) ?? "")
                     .trimmingCharacters(in: .whitespacesAndNewlines) == groupId
             }

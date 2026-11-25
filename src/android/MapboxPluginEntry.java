@@ -4524,19 +4524,6 @@ private boolean addMarkerInternal(
                 Style style = loadedStyle(callback);
                 if (style == null) return;
 
-                String styleJsonString = style.getStyleJSON();
-                if (styleJsonString == null || styleJsonString.isEmpty()) {
-                    callback.error("Unable to retrieve style JSON.");
-                    return;
-                }
-
-                JSONObject styleJson = new JSONObject(styleJsonString);
-                JSONArray layers = styleJson.optJSONArray("layers");
-                if (layers == null) {
-                    callback.error("No layers found in style JSON.");
-                    return;
-                }
-
                 Value visibility = Value.valueOf(
                     visible ? "visible" : "none"
                 );
@@ -4544,22 +4531,10 @@ private boolean addMarkerInternal(
                 JSONArray failedLayers = new JSONArray();
                 int matchedLayerCount = 0;
 
-                for (int i = 0; i < layers.length(); i++) {
-                    JSONObject layer = layers.optJSONObject(i);
-                    if (layer == null) continue;
-
-                    JSONObject metadata = layer.optJSONObject("metadata");
-                    if (metadata == null) continue;
-
-                    String layerGroup = metadata.optString(
-                        "mapbox:group",
-                        ""
-                    ).trim();
-                    if (!groupId.equals(layerGroup)) continue;
-
+                for (LayerMetadata layer : layersWithMetadata(style)) {
+                    if (!groupId.equals(layer.group().trim())) continue;
                     matchedLayerCount++;
-                    String layerId = layer.optString("id", "").trim();
-                    if (layerId.isEmpty()) continue;
+                    String layerId = layer.id;
 
                     try {
                         if (!style.styleLayerExists(layerId)) {
