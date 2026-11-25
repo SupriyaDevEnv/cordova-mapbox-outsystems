@@ -230,12 +230,18 @@ class MapboxPluginParity: MapboxPlugin {
             guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
                                                 notLoaded: "Style is not loaded.") else { return }
             let runtimeLayers = map.allLayerIdentifiers
-            let layers: [[String: Any]] = runtimeLayers
-                .filter { self.layerGroup(map, $0.id) == groupId }
-                .map { ["id": $0.id, "name": $0.id, "type": $0.type.rawValue] }
+            let metadataLayers = self.layersWithMetadata(map)
+            let layers: [[String: Any]] = metadataLayers
+                .filter {
+                    ($0.metadata["mapbox:group"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines) == groupId
+                }
+                .map { ["id": $0.id, "name": $0.id, "type": $0.type] }
             self.sendSuccess([
                 "groupId": groupId,
                 "totalLayers": layers.count,
+                "runtimeLayerCount": runtimeLayers.count,
+                "metadataLayerCount": metadataLayers.count,
                 "layers": layers
             ], command)
         }
@@ -251,11 +257,12 @@ class MapboxPluginParity: MapboxPlugin {
             guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
                                                 notLoaded: "Style is not loaded.") else { return }
 
-            let runtimeLayerIdentifiers = map.allLayerIdentifiers
-            let layerIds = runtimeLayerIdentifiers.map { $0.id }.filter {
-                (self.layerGroup(map, $0) ?? "")
+            let runtimeLayers = map.allLayerIdentifiers
+            let metadataLayers = self.layersWithMetadata(map)
+            let layerIds = metadataLayers.filter {
+                ($0.metadata["mapbox:group"] as? String ?? "")
                     .trimmingCharacters(in: .whitespacesAndNewlines) == groupId
-            }
+            }.map { $0.id }
             var updatedLayers: [String] = []
             var failedLayers: [[String: String]] = []
             for layerId in layerIds {
@@ -272,15 +279,20 @@ class MapboxPluginParity: MapboxPlugin {
                 updatedLayers.append(layerId)
             }
 
+            let result: [String: Any] = [
+                "groupId": groupId,
+                "visible": visible,
+                "runtimeLayerCount": runtimeLayers.count,
+                "metadataLayerCount": metadataLayers.count,
+                "updatedCount": updatedLayers.count,
+                "updatedLayers": updatedLayers,
+                "failedCount": failedLayers.count,
+                "failedLayers": failedLayers
+            ]
+
             if updatedLayers.isEmpty {
-                let errorResult: [String: Any] = [
-                    "groupId": groupId,
-                    "matchedLayers": layerIds.count,
-                    "updatedCount": 0,
-                    "failedLayers": failedLayers
-                ]
                 do {
-                    let data = try JSONSerialization.data(withJSONObject: errorResult)
+                    let data = try JSONSerialization.data(withJSONObject: result)
                     guard let message = String(data: data, encoding: .utf8) else {
                         self.sendError("Failed to encode group visibility error.", command)
                         return
@@ -295,14 +307,7 @@ class MapboxPluginParity: MapboxPlugin {
                 return
             }
 
-            self.sendSuccess([
-                "groupId": groupId,
-                "visible": visible,
-                "updatedCount": updatedLayers.count,
-                "updatedLayers": updatedLayers,
-                "failedCount": failedLayers.count,
-                "failedLayers": failedLayers
-            ], command)
+            self.sendSuccess(result, command)
         }
     }
 
@@ -333,11 +338,27 @@ class MapboxPluginParity: MapboxPlugin {
 
     private func layerMetadata(_ map: MapboxMap, _ layerId: String) -> [String: Any]? {
         // try? keeps this compiling whether or not the SDK marks layerProperty as throwing.
-        (try? map.layerProperty(for: layerId, property: "metadata"))?.value as? [String: Any]
+        guard let property = try? map.layerProperty(for: layerId, property: "metadata") else {
+            NSLog("MapboxPlugin: Metadata read failed for: %@", layerId)
+            return nil
+        }
+        NSLog(
+            "MapboxPlugin: Layer: %@ | Metadata: %@",
+            layerId,
+            String(describing: property.value)
+        )
+        return property.value as? [String: Any]
     }
 
-    private func layerGroup(_ map: MapboxMap, _ layerId: String) -> String? {
-        layerMetadata(map, layerId)?["mapbox:group"] as? String
+    private func layersWithMetadata(
+        _ map: MapboxMap
+    ) -> [(id: String, type: String, metadata: [String: Any])] {
+        var result: [(id: String, type: String, metadata: [String: Any])] = []
+        for layer in map.allLayerIdentifiers {
+            guard let metadata = layerMetadata(map, layer.id) else { continue }
+            result.append((id: layer.id, type: layer.type.rawValue, metadata: metadata))
+        }
+        return result
     }
 
     override func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {

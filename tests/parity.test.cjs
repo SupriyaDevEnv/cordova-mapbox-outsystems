@@ -223,6 +223,13 @@ test('iOS reads layer groups from mapbox:group metadata like Android', () => {
   assert.match(parity, /"failedCount": failedLayers\.count/);
   assert.match(parity, /"failedLayers": failedLayers/);
   assert.match(parity, /"totalLayers": layers\.count/);
+  const getLayers = parity.split('func getLayersByGroup(command:')[1]
+    .split('@objc(setLayerGroupVisibility:')[0];
+  assert.match(getLayers, /"runtimeLayerCount": runtimeLayers\.count/);
+  assert.match(getLayers, /"metadataLayerCount": metadataLayers\.count/);
+  assert.match(parity, /private func layersWithMetadata\(/);
+  assert.match(parity, /Metadata read failed for:/);
+  assert.match(parity, /Layer: %\@ \| Metadata: %\@/);
   // isStyleLoaded broke the iOS build on Nov 13; keep it out.
   assert.doesNotMatch(parity.replace(/\/\/.*$/gm, ''), /isStyleLoaded/);
 });
@@ -239,31 +246,47 @@ test('removed layer inspection actions are not exposed', () => {
 
 test('Android updates style layers by metadata group and reports per-layer failures', () => {
   const body = javaMethod('setLayerGroupVisibility', 'getLayersByGroup');
-  assert.match(body, /for \(LayerMetadata layer : layersWithMetadata\(style\)\)/);
+  assert.match(body, /List<LayerMetadata> layers = layersWithMetadata\(style\)/);
+  assert.match(body, /for \(LayerMetadata layer : layers\)/);
   assert.doesNotMatch(body, /style\.getStyleJSON\(\)/);
   assert.doesNotMatch(body, /styleJson\.optJSONArray\("layers"\)/);
-  assert.match(android, /String json = style\.getStyleLayerProperty\(layer\.getId\(\), "metadata"\)/);
-  assert.match(body, /style\.styleLayerExists\(layerId\)/);
+  assert.match(android, /String json = style\s+\.getStyleLayerProperty\(layer\.getId\(\), "metadata"\)/);
+  assert.match(android, /"Layer: " \+ layer\.getId\(\) \+ " \| Metadata: " \+ json/);
+  assert.match(android, /"Metadata read failed for: " \+ layer\.getId\(\)/);
   assert.match(body, /style\.setStyleLayerProperty\([\s\S]*?"visibility"/);
+  assert.match(body, /result\.put\("runtimeLayerCount", style\.getStyleLayers\(\)\.size\(\)\)/);
+  assert.match(body, /result\.put\("metadataLayerCount", layers\.size\(\)\)/);
   assert.match(body, /result\.put\("updatedCount", updatedLayers\.length\(\)\)/);
   assert.match(body, /result\.put\("updatedLayers", updatedLayers\)/);
   assert.match(body, /result\.put\("failedCount", failedLayers\.length\(\)\)/);
   assert.match(body, /result\.put\("failedLayers", failedLayers\)/);
-  assert.match(body, /errorResult\.put\("matchedLayers", matchedLayerCount\)/);
+  assert.match(body, /if \(updatedLayers\.length\(\) == 0\)[\s\S]*?callback\.error\(result\.toString\(\)\)/);
   assert.match(body, /callback\.success\(result\)/);
+});
+
+test('Android getLayersByGroup reports runtime and metadata layer counts', () => {
+  const body = javaMethod('getLayersByGroup', 'clearBoundaries');
+  assert.match(body, /List<LayerMetadata> layers = layersWithMetadata\(style\)/);
+  assert.match(body, /groupId\.equals\(layer\.group\(\)\.trim\(\)\)/);
+  assert.match(body, /response\.put\("totalLayers", resultLayers\.length\(\)\)/);
+  assert.match(body, /response\.put\("runtimeLayerCount", style\.getStyleLayers\(\)\.size\(\)\)/);
+  assert.match(body, /response\.put\("metadataLayerCount", layers\.size\(\)\)/);
+  assert.match(body, /response\.put\("layers", resultLayers\)/);
 });
 
 test('iOS reports partial and total failures when updating a layer group', () => {
   const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
   const body = parity.split('func setLayerGroupVisibility(command:')[1]
     .split('private func requiredGroupId(')[0];
-  assert.match(body, /let runtimeLayerIdentifiers = map\.allLayerIdentifiers/);
-  assert.match(body, /runtimeLayerIdentifiers\.map \{ \$0\.id \}/);
+  assert.match(body, /let runtimeLayers = map\.allLayerIdentifiers/);
+  assert.match(body, /let metadataLayers = self\.layersWithMetadata\(map\)/);
+  assert.match(body, /"runtimeLayerCount": runtimeLayers\.count/);
+  assert.match(body, /"metadataLayerCount": metadataLayers\.count/);
   assert.match(body, /trimmingCharacters\(in: \.whitespacesAndNewlines\)/);
   assert.match(body, /failedLayers\.append/);
   assert.match(body, /"failedCount": failedLayers\.count/);
   assert.match(body, /"failedLayers": failedLayers/);
-  assert.match(body, /"matchedLayers": layerIds\.count/);
+  assert.match(body, /if updatedLayers\.isEmpty/);
   assert.match(body, /self\.sendError\(message, command\)/);
 });
 

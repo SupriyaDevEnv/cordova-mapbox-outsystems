@@ -4477,15 +4477,40 @@ private boolean addMarkerInternal(
      */
     private List<LayerMetadata> layersWithMetadata(Style style) {
         List<LayerMetadata> result = new ArrayList<>();
+
         for (StyleObjectInfo layer : style.getStyleLayers()) {
             try {
-                String json = style.getStyleLayerProperty(layer.getId(), "metadata").getValue().toJson();
-                if (json == null || !json.trim().startsWith("{")) continue;
-                result.add(new LayerMetadata(layer.getId(), layer.getType(), new JSONObject(json)));
-            } catch (Exception ignored) {
-                // A layer without readable metadata belongs to no group.
+                String json = style
+                    .getStyleLayerProperty(layer.getId(), "metadata")
+                    .getValue()
+                    .toJson();
+
+                android.util.Log.d(
+                    "MapboxPlugin",
+                    "Layer: " + layer.getId() + " | Metadata: " + json
+                );
+
+                if (json == null || !json.trim().startsWith("{")) {
+                    continue;
+                }
+
+                result.add(
+                    new LayerMetadata(
+                        layer.getId(),
+                        layer.getType(),
+                        new JSONObject(json)
+                    )
+                );
+
+            } catch (Exception e) {
+                android.util.Log.e(
+                    "MapboxPlugin",
+                    "Metadata read failed for: " + layer.getId(),
+                    e
+                );
             }
         }
+
         return result;
     }
 
@@ -4519,56 +4544,45 @@ private boolean addMarkerInternal(
                 Style style = loadedStyle(callback);
                 if (style == null) return;
 
-                Value visibility = Value.valueOf(
-                    visible ? "visible" : "none"
-                );
                 JSONArray updatedLayers = new JSONArray();
                 JSONArray failedLayers = new JSONArray();
-                int matchedLayerCount = 0;
+                List<LayerMetadata> layers = layersWithMetadata(style);
 
-                for (LayerMetadata layer : layersWithMetadata(style)) {
-                    if (!groupId.equals(layer.group().trim())) continue;
-                    matchedLayerCount++;
-                    String layerId = layer.id;
+                for (LayerMetadata layer : layers) {
+                    if (!groupId.equals(layer.group().trim())) {
+                        continue;
+                    }
 
                     try {
-                        if (!style.styleLayerExists(layerId)) {
-                            throw new Exception(
-                                "Layer does not exist in runtime style"
-                            );
-                        }
-
                         style.setStyleLayerProperty(
-                            layerId,
+                            layer.id,
                             "visibility",
-                            visibility
+                            Value.valueOf(visible ? "visible" : "none")
                         );
-                        updatedLayers.put(layerId);
-                    } catch (Exception layerError) {
+                        updatedLayers.put(layer.id);
+                    } catch (Exception e) {
                         JSONObject failure = new JSONObject();
-                        failure.put("layerId", layerId);
-                        failure.put("error", layerError.getMessage());
+                        failure.put("layerId", layer.id);
+                        failure.put("error", e.getMessage());
                         failedLayers.put(failure);
                     }
-                }
-
-                if (updatedLayers.length() == 0) {
-                    JSONObject errorResult = new JSONObject();
-                    errorResult.put("groupId", groupId);
-                    errorResult.put("matchedLayers", matchedLayerCount);
-                    errorResult.put("updatedCount", 0);
-                    errorResult.put("failedLayers", failedLayers);
-                    callback.error(errorResult.toString());
-                    return;
                 }
 
                 JSONObject result = new JSONObject();
                 result.put("groupId", groupId);
                 result.put("visible", visible);
+                result.put("runtimeLayerCount", style.getStyleLayers().size());
+                result.put("metadataLayerCount", layers.size());
                 result.put("updatedCount", updatedLayers.length());
                 result.put("updatedLayers", updatedLayers);
                 result.put("failedCount", failedLayers.length());
                 result.put("failedLayers", failedLayers);
+
+                if (updatedLayers.length() == 0) {
+                    callback.error(result.toString());
+                    return;
+                }
+
                 callback.success(result);
             } catch (Exception e) {
                 android.util.Log.e(
@@ -4600,9 +4614,10 @@ private boolean addMarkerInternal(
                 Style style = loadedStyle(callback);
                 if (style == null) return;
 
+                List<LayerMetadata> layers = layersWithMetadata(style);
                 JSONArray resultLayers = new JSONArray();
-                for (LayerMetadata layer : layersWithMetadata(style)) {
-                    if (!groupId.equals(layer.group())) continue;
+                for (LayerMetadata layer : layers) {
+                    if (!groupId.equals(layer.group().trim())) continue;
                     JSONObject layerInfo = new JSONObject();
                     layerInfo.put("id", layer.id);
                     layerInfo.put("name", layer.id);
@@ -4613,6 +4628,8 @@ private boolean addMarkerInternal(
                 JSONObject response = new JSONObject();
                 response.put("groupId", groupId);
                 response.put("totalLayers", resultLayers.length());
+                response.put("runtimeLayerCount", style.getStyleLayers().size());
+                response.put("metadataLayerCount", layers.size());
                 response.put("layers", resultLayers);
                 callback.success(response);
             } catch (Exception e) {
