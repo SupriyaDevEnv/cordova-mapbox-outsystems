@@ -286,6 +286,8 @@ class MapboxPluginParity: MapboxPlugin {
                 var matched: [String] = []
                 var updated: [String] = []
                 var failed: [[String: String]] = []
+                var visibilityReadback: [[String: Any]] = []
+                let requestedVisibility = visible ? "visible" : "none"
 
                 for layer in layers {
                     guard let metadata = layer["metadata"] as? [String: Any] else { continue }
@@ -299,8 +301,21 @@ class MapboxPluginParity: MapboxPlugin {
 
                     do {
                         try map.setLayerProperty(for: layerId, property: "visibility",
-                                                 value: visible ? "visible" : "none")
+                                                 value: requestedVisibility)
                         updated.append(layerId)
+
+                        let rawVisibility = map.layerPropertyValue(
+                            for: layerId,
+                            property: "visibility"
+                        )
+                        let actualVisibility = rawVisibility as? String
+                            ?? String(describing: rawVisibility)
+                        visibilityReadback.append([
+                            "layerId": layerId,
+                            "expectedVisibility": requestedVisibility,
+                            "actualVisibility": actualVisibility,
+                            "matchesRequested": actualVisibility == requestedVisibility
+                        ])
                     } catch {
                         failed.append([
                             "layerId": layerId,
@@ -317,7 +332,8 @@ class MapboxPluginParity: MapboxPlugin {
                     "matchedLayers": matched,
                     "updatedCount": updated.count,
                     "updatedLayers": updated,
-                    "failedLayers": failed
+                    "failedLayers": failed,
+                    "visibilityReadback": visibilityReadback
                 ], command)
             } catch {
                 self.sendError(error.localizedDescription, command)

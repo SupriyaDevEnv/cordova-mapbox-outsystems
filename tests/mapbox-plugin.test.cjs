@@ -51,12 +51,16 @@ test('setRuntimeGroupVisibility forwards its options to native code', async () =
 
 test('setJsonGroupVisibility forwards its options to native code', async () => {
   const { api, calls } = loadPlugin((action, args, ok) => {
-    if (action === 'setJsonGroupVisibility') ok({ method: 'STYLE_JSON' });
+    if (action === 'setJsonGroupVisibility') ok({
+      method: 'STYLE_JSON',
+      visibilityReadback: [{ layerId: 'layer-1', matchesRequested: true }]
+    });
   });
   const options = { groupId: 'ProtectedAreasAndHeritage', visible: true };
   const result = await api.setJsonGroupVisibility(options);
 
   assert.strictEqual(result.method, 'STYLE_JSON');
+  assert.strictEqual(result.visibilityReadback[0].matchesRequested, true);
   const call = calls.find((entry) => entry.action === 'setJsonGroupVisibility');
   assert.ok(call);
   assert.deepStrictEqual(call.args[0], options);

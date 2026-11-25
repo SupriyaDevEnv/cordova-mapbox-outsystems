@@ -296,10 +296,16 @@ test('setJsonGroupVisibility reads style JSON on both platforms', () => {
   assert.match(androidBody, /result\.put\("method", "STYLE_JSON"\)/);
   assert.match(androidBody, /result\.put\("matchedCount", matched\.length\(\)\)/);
   assert.match(androidBody, /result\.put\("updatedLayers", updated\)/);
+  assert.match(androidBody, /result\.put\("visibilityReadback", visibilityReadback\)/);
+  assert.match(androidBody, /"actualVisibility", actualVisibility/);
+  assert.match(androidBody, /"matchesRequested"/);
   assert.match(iosBody, /Data\(map\.styleJSON\.utf8\)/);
   assert.match(iosBody, /"method": "STYLE_JSON"/);
   assert.match(iosBody, /"matchedCount": matched\.count/);
   assert.match(iosBody, /"updatedLayers": updated/);
+  assert.match(iosBody, /"visibilityReadback": visibilityReadback/);
+  assert.match(iosBody, /"actualVisibility": actualVisibility/);
+  assert.match(iosBody, /"matchesRequested": actualVisibility == requestedVisibility/);
 });
 
 test('removed layer inspection actions are not exposed', () => {

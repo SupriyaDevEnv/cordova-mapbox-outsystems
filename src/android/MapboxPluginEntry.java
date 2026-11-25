@@ -4805,6 +4805,9 @@ private boolean addMarkerInternal(
                 JSONArray matched = new JSONArray();
                 JSONArray updated = new JSONArray();
                 JSONArray failed = new JSONArray();
+                JSONArray visibilityReadback = new JSONArray();
+                String requestedVisibility = visible ? "visible" : "none";
+                Value visibility = Value.valueOf(requestedVisibility);
 
                 for (int i = 0; i < layers.length(); i++) {
                     JSONObject layer = layers.optJSONObject(i);
@@ -4825,9 +4828,32 @@ private boolean addMarkerInternal(
                         style.setStyleLayerProperty(
                             layerId,
                             "visibility",
-                            Value.valueOf(visible ? "visible" : "none")
+                            visibility
                         );
                         updated.put(layerId);
+
+                        JSONObject verification = new JSONObject();
+                        verification.put("layerId", layerId);
+                        verification.put("expectedVisibility", requestedVisibility);
+                        try {
+                            String actualJson = style
+                                .getStyleLayerProperty(layerId, "visibility")
+                                .getValue()
+                                .toJson();
+                            Object actualVisibility =
+                                new JSONArray("[" + actualJson + "]").get(0);
+                            verification.put("actualVisibility", actualVisibility);
+                            verification.put(
+                                "matchesRequested",
+                                requestedVisibility.equals(actualVisibility)
+                            );
+                        } catch (Exception readbackError) {
+                            verification.put(
+                                "readbackError",
+                                readbackError.getMessage()
+                            );
+                        }
+                        visibilityReadback.put(verification);
                     } catch (Exception e) {
                         JSONObject error = new JSONObject();
                         error.put("layerId", layerId);
@@ -4845,6 +4871,7 @@ private boolean addMarkerInternal(
                 result.put("updatedCount", updated.length());
                 result.put("updatedLayers", updated);
                 result.put("failedLayers", failed);
+                result.put("visibilityReadback", visibilityReadback);
                 callback.success(result);
             } catch (Exception e) {
                 callback.error(e.getMessage());
