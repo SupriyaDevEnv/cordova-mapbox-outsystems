@@ -213,7 +213,13 @@ test('every Android action has an iOS implementation, and the reverse', () => {
 
 test('iOS reads layer groups from mapbox:group metadata like Android', () => {
   const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
-  for (const name of ['getLayersByGroup', 'setLayerGroupVisibility', 'diagnoseRuntimeLayers']) {
+  for (const name of [
+    'getLayersByGroup',
+    'setLayerGroupVisibility',
+    'setRuntimeGroupVisibility',
+    'setJsonGroupVisibility',
+    'diagnoseRuntimeLayers'
+  ]) {
     assert.ok(parity.includes('@objc(' + name + ':)'), name + ' is missing on iOS');
   }
   assert.match(parity, /\["mapbox:group"\]/);
@@ -254,6 +260,46 @@ test('diagnoseRuntimeLayers is exposed on both platforms', () => {
     assert.match(androidBody, new RegExp('result\\.put\\(\\s*"' + key + '"'));
     assert.ok(iosBody.includes('"' + key + '"'), key + ' is missing from iOS response');
   }
+});
+
+test('setRuntimeGroupVisibility reads runtime metadata on both platforms', () => {
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const javascript = fs.readFileSync('www/MapboxPlugin.js', 'utf8');
+  const androidBody = android.split('private void setRuntimeGroupVisibility(')[1]
+    .split('private void setJsonGroupVisibility(')[0];
+  const iosBody = parity.split('func setRuntimeGroupVisibility(command:')[1]
+    .split('@objc(getLayersByGroup:')[0];
+
+  assert.match(android, /case "setRuntimeGroupVisibility":/);
+  assert.match(javascript, /setRuntimeGroupVisibility: function \(options\)/);
+  assert.match(androidBody, /for \(StyleObjectInfo layer : style\.getStyleLayers\(\)\)/);
+  assert.match(androidBody, /getStyleLayerProperty\(layer\.getId\(\), "metadata"\)/);
+  assert.match(androidBody, /result\.put\("method", "RUNTIME"\)/);
+  assert.match(androidBody, /result\.put\("updatedLayers", updated\)/);
+  assert.match(iosBody, /for layer in map\.allLayerIdentifiers/);
+  assert.match(iosBody, /self\.layerMetadata\(map, layer\.id\)/);
+  assert.match(iosBody, /"method": "RUNTIME"/);
+  assert.match(iosBody, /"updatedLayers": updated/);
+});
+
+test('setJsonGroupVisibility reads style JSON on both platforms', () => {
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const javascript = fs.readFileSync('www/MapboxPlugin.js', 'utf8');
+  const androidBody = android.split('private void setJsonGroupVisibility(')[1]
+    .split('private PolygonAnnotationOptions boundaryOptionsFromJson(')[0];
+  const iosBody = parity.split('func setJsonGroupVisibility(command:')[1]
+    .split('@objc(setRuntimeGroupVisibility:')[0];
+
+  assert.match(android, /case "setJsonGroupVisibility":/);
+  assert.match(javascript, /setJsonGroupVisibility: function \(options\)/);
+  assert.match(androidBody, /new JSONObject\(style\.getStyleJSON\(\)\)/);
+  assert.match(androidBody, /result\.put\("method", "STYLE_JSON"\)/);
+  assert.match(androidBody, /result\.put\("matchedCount", matched\.length\(\)\)/);
+  assert.match(androidBody, /result\.put\("updatedLayers", updated\)/);
+  assert.match(iosBody, /Data\(map\.styleJSON\.utf8\)/);
+  assert.match(iosBody, /"method": "STYLE_JSON"/);
+  assert.match(iosBody, /"matchedCount": matched\.count/);
+  assert.match(iosBody, /"updatedLayers": updated/);
 });
 
 test('removed layer inspection actions are not exposed', () => {

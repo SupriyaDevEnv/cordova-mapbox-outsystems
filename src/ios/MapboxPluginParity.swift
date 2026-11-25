@@ -264,6 +264,109 @@ class MapboxPluginParity: MapboxPlugin {
         }
     }
 
+    @objc(setJsonGroupVisibility:)
+    func setJsonGroupVisibility(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let groupId = self.requiredGroupId(command) else { return }
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            let visible = options["visible"] as? Bool ?? true
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+
+            do {
+                guard let styleRoot = try JSONSerialization.jsonObject(
+                    with: Data(map.styleJSON.utf8)
+                ) as? [String: Any],
+                      let layers = styleRoot["layers"] as? [[String: Any]] else {
+                    self.sendError("No layers found in style JSON", command)
+                    return
+                }
+
+                var matched: [String] = []
+                var updated: [String] = []
+                var failed: [[String: String]] = []
+
+                for layer in layers {
+                    guard let metadata = layer["metadata"] as? [String: Any] else { continue }
+                    let layerGroup = (metadata["mapbox:group"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard groupId == layerGroup else { continue }
+
+                    let layerId = (layer["id"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    matched.append(layerId)
+
+                    do {
+                        try map.setLayerProperty(for: layerId, property: "visibility",
+                                                 value: visible ? "visible" : "none")
+                        updated.append(layerId)
+                    } catch {
+                        failed.append([
+                            "layerId": layerId,
+                            "error": error.localizedDescription
+                        ])
+                    }
+                }
+
+                self.sendSuccess([
+                    "method": "STYLE_JSON",
+                    "groupId": groupId,
+                    "visible": visible,
+                    "matchedCount": matched.count,
+                    "matchedLayers": matched,
+                    "updatedCount": updated.count,
+                    "updatedLayers": updated,
+                    "failedLayers": failed
+                ], command)
+            } catch {
+                self.sendError(error.localizedDescription, command)
+            }
+        }
+    }
+
+    @objc(setRuntimeGroupVisibility:)
+    func setRuntimeGroupVisibility(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let groupId = self.requiredGroupId(command) else { return }
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            let visible = options["visible"] as? Bool ?? true
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+
+            var updated: [String] = []
+            var failed: [[String: String]] = []
+
+            for layer in map.allLayerIdentifiers {
+                guard let metadata = self.layerMetadata(map, layer.id) else { continue }
+                let layerGroup = (metadata["mapbox:group"] as? String ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard groupId == layerGroup else { continue }
+
+                do {
+                    try map.setLayerProperty(for: layer.id, property: "visibility",
+                                             value: visible ? "visible" : "none")
+                    updated.append(layer.id)
+                } catch {
+                    failed.append([
+                        "layerId": layer.id,
+                        "error": error.localizedDescription
+                    ])
+                }
+            }
+
+            self.sendSuccess([
+                "method": "RUNTIME",
+                "groupId": groupId,
+                "visible": visible,
+                "updatedCount": updated.count,
+                "updatedLayers": updated,
+                "failedLayers": failed
+            ], command)
+        }
+    }
+
     @objc(getLayersByGroup:)
     func getLayersByGroup(command: CDVInvokedUrlCommand) {
         rememberCommand(command)

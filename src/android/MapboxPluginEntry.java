@@ -511,6 +511,12 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             case "setLayerGroupVisibility":
                 setLayerGroupVisibility(options, callbackContext);
                 return true;
+            case "setRuntimeGroupVisibility":
+                setRuntimeGroupVisibility(options, callbackContext);
+                return true;
+            case "setJsonGroupVisibility":
+                setJsonGroupVisibility(options, callbackContext);
+                return true;
             case "getLayersByGroup":
                 getLayersByGroup(options, callbackContext);
                 return true;
@@ -4703,6 +4709,146 @@ private boolean addMarkerInternal(
         runForSession(() -> {
             clearBoundariesInternal();
             callback.success();
+        });
+    }
+
+    private void setRuntimeGroupVisibility(
+        JSONObject options,
+        CallbackContext callback
+    ) {
+        runForSession(() -> {
+            try {
+                String groupId = options.optString("groupId", "").trim();
+                boolean visible = options.optBoolean("visible", true);
+
+                if (groupId.isEmpty()) {
+                    callback.error("groupId is required");
+                    return;
+                }
+
+                Style style = loadedStyle(callback);
+                if (style == null) return;
+
+                JSONArray updated = new JSONArray();
+                JSONArray failed = new JSONArray();
+
+                for (StyleObjectInfo layer : style.getStyleLayers()) {
+                    try {
+                        String metadata = style
+                            .getStyleLayerProperty(layer.getId(), "metadata")
+                            .getValue()
+                            .toJson();
+
+                        if (metadata == null || !metadata.trim().startsWith("{")) {
+                            continue;
+                        }
+
+                        JSONObject metadataObject = new JSONObject(metadata);
+                        String layerGroup = metadataObject
+                            .optString("mapbox:group", "")
+                            .trim();
+
+                        if (!groupId.equals(layerGroup)) continue;
+
+                        style.setStyleLayerProperty(
+                            layer.getId(),
+                            "visibility",
+                            Value.valueOf(visible ? "visible" : "none")
+                        );
+                        updated.put(layer.getId());
+                    } catch (Exception e) {
+                        JSONObject error = new JSONObject();
+                        error.put("layerId", layer.getId());
+                        error.put("error", e.getMessage());
+                        failed.put(error);
+                    }
+                }
+
+                JSONObject result = new JSONObject();
+                result.put("method", "RUNTIME");
+                result.put("groupId", groupId);
+                result.put("visible", visible);
+                result.put("updatedCount", updated.length());
+                result.put("updatedLayers", updated);
+                result.put("failedLayers", failed);
+                callback.success(result);
+            } catch (Exception e) {
+                callback.error(e.getMessage());
+            }
+        });
+    }
+
+    private void setJsonGroupVisibility(
+        JSONObject options,
+        CallbackContext callback
+    ) {
+        runForSession(() -> {
+            try {
+                String groupId = options.optString("groupId", "").trim();
+                boolean visible = options.optBoolean("visible", true);
+
+                if (groupId.isEmpty()) {
+                    callback.error("groupId is required");
+                    return;
+                }
+
+                Style style = loadedStyle(callback);
+                if (style == null) return;
+
+                JSONObject styleJson = new JSONObject(style.getStyleJSON());
+                JSONArray layers = styleJson.optJSONArray("layers");
+                if (layers == null) {
+                    callback.error("No layers found in style JSON");
+                    return;
+                }
+
+                JSONArray matched = new JSONArray();
+                JSONArray updated = new JSONArray();
+                JSONArray failed = new JSONArray();
+
+                for (int i = 0; i < layers.length(); i++) {
+                    JSONObject layer = layers.optJSONObject(i);
+                    if (layer == null) continue;
+
+                    JSONObject metadata = layer.optJSONObject("metadata");
+                    if (metadata == null) continue;
+
+                    String layerGroup = metadata
+                        .optString("mapbox:group", "")
+                        .trim();
+                    if (!groupId.equals(layerGroup)) continue;
+
+                    String layerId = layer.optString("id", "").trim();
+                    matched.put(layerId);
+
+                    try {
+                        style.setStyleLayerProperty(
+                            layerId,
+                            "visibility",
+                            Value.valueOf(visible ? "visible" : "none")
+                        );
+                        updated.put(layerId);
+                    } catch (Exception e) {
+                        JSONObject error = new JSONObject();
+                        error.put("layerId", layerId);
+                        error.put("error", e.getMessage());
+                        failed.put(error);
+                    }
+                }
+
+                JSONObject result = new JSONObject();
+                result.put("method", "STYLE_JSON");
+                result.put("groupId", groupId);
+                result.put("visible", visible);
+                result.put("matchedCount", matched.length());
+                result.put("matchedLayers", matched);
+                result.put("updatedCount", updated.length());
+                result.put("updatedLayers", updated);
+                result.put("failedLayers", failed);
+                callback.success(result);
+            } catch (Exception e) {
+                callback.error(e.getMessage());
+            }
         });
     }
 
