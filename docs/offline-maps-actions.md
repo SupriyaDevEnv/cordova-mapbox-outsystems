@@ -17,14 +17,20 @@ for exact options and results.
 | 3 | `estimateOfflineRegionSize` / `estimateOfflineRegionSizeForRect` | Done |
 | 4 | `getAvailableStorage` | Done |
 | 5 | `cancelOfflineDownload` | Done |
-| 6 | `getOfflineRegionIds` (with size and `complete` per region) | Done |
+| 6 | `getOfflineRegionIds` (with size, `complete` and `isolated` per region) | Done |
 | 7 | `detail: 'low' \| 'medium' \| 'high'` → `maxZoom` 13 / 15 / 16 | Done |
 | 8 | Progress with `completedBytes` / `completedMB` (`percent` already existed) | Done |
-| 9 | Lock `showOfflineRegion` to the downloaded region | Not planned for now |
+| 9 | Isolate each region's tile store, style pack and cache; allow world panning with blank offline coverage elsewhere | Done |
 | 10 | Cache custom marker images with a download | Not started |
 
 `downloadOfflineRegionForRect` gets the same richer result, `detail`, byte
 progress and cancel support, and has its own estimate call.
+
+New downloads use per-region storage on both platforms. `initializeOffline`
+opens only an isolated region, disables networking, and permits world-wide
+camera movement while retaining its downloaded zoom range. Existing shared-store
+regions must be downloaded again; `getOfflineRegionIds` marks them with
+`isolated: false`.
 
 ## Screen → plugin call
 
@@ -35,7 +41,8 @@ progress and cancel support, and has its own estimate call.
 - **Downloading:** `onOfflineDownloadProgress` for the progress bar;
   `cancelOfflineDownload` for Cancel.
 - **Downloaded maps / offline landing:** list from the app database, cleaned with
-  `getOfflineRegionIds`.
+  `getOfflineRegionIds`; require a re-download for entries marked
+  `isolated: false`.
 - **Update now:** `downloadOfflineRegion` with the stored `regionId`, `polygon`,
   zooms and `styleUrl`.
 - **Delete:** `deleteOfflineRegion`, then remove the database row.

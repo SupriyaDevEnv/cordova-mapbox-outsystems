@@ -31,10 +31,15 @@ import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.Priority;
 
 import java.text.SimpleDateFormat;
+import java.io.File;
+import java.io.IOException;
+import java.security.MessageDigest;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -63,6 +68,7 @@ import com.mapbox.maps.CoordinateBounds;
 import com.mapbox.maps.GlyphsRasterizationMode;
 import com.mapbox.maps.MapInitOptions;
 import com.mapbox.maps.MapView;
+import com.mapbox.maps.MapboxMapsOptions;
 import com.mapbox.maps.MapboxMap;
 import com.mapbox.maps.OfflineManager;
 import com.mapbox.maps.ScreenCoordinate;
@@ -108,6 +114,8 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 public class MapboxPluginEntry extends CordovaPlugin {
+    private static final String OFFLINE_REGION_ROOT = "mapbox-offline-regions";
+    private static final String OFFLINE_REGION_COMPLETE_MARKER = ".complete";
     private static final int MAX_MARKERS = 10000;
     private static final String MARKER_IMAGE_NOT_ALLOWED =
         "Marker imageUrl must be an HTTPS URL on an allowed host or a base64 image data URI up to 256 KiB.";
@@ -295,6 +303,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
     private CallbackContext offlineDownloadProgressCallback;
     private OfflineManager activeOfflineManager;
     private TileStore activeOfflineTileStore;
+    private TileStore legacyOfflineTileStore;
+    private TileStore activeOfflineRegionStore;
+    private String activeOfflineRegionId;
     private Cancelable activeStylePackDownload;
     private Cancelable activeTileRegionDownload;
     private boolean isOfflineDownloading = false;
@@ -744,6 +755,142 @@ if (gestures != null) {
         });
     }
 
+    private static final class OfflineStoreEntry {
+        final TileStore store;
+        final boolean isolated;
+
+        OfflineStoreEntry(TileStore store, boolean isolated) {
+            this.store = store;
+            this.isolated = isolated;
+        }
+    }
+
+    private static final class OfflineRegionEntry {
+        final TileRegion region;
+        final boolean isolated;
+
+        OfflineRegionEntry(TileRegion region, boolean isolated) {
+            this.region = region;
+            this.isolated = isolated;
+        }
+    }
+
+    private interface OfflineRegionsCallback {
+        void complete(Map<String, OfflineRegionEntry> regions, String error);
+    }
+
+    private File offlineRegionRoot(boolean create) throws IOException {
+        File root = new File(cordova.getActivity().getNoBackupFilesDir(), OFFLINE_REGION_ROOT);
+        if (create && !root.isDirectory() && !root.mkdirs()) {
+            throw new IOException("Unable to create offline region storage.");
+        }
+        return root;
+    }
+
+    private synchronized TileStore legacyOfflineTileStore() {
+        if (legacyOfflineTileStore == null) legacyOfflineTileStore = TileStore.create();
+        return legacyOfflineTileStore;
+    }
+
+    private String offlineRegionKey(String regionId) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                .digest(regionId.getBytes(StandardCharsets.UTF_8));
+            StringBuilder key = new StringBuilder(digest.length * 2);
+            for (byte value : digest) key.append(String.format(Locale.ROOT, "%02x", value & 0xff));
+            return key.toString();
+        } catch (Exception error) {
+            throw new IllegalStateException("Unable to create offline region storage key.", error);
+        }
+    }
+
+    private File offlineRegionDirectory(String regionId, boolean create) throws IOException {
+        File directory = new File(offlineRegionRoot(create), offlineRegionKey(regionId));
+        if (create && !directory.isDirectory() && !directory.mkdirs()) {
+            throw new IOException("Unable to create offline region storage.");
+        }
+        return directory;
+    }
+
+    private TileStore offlineRegionTileStore(String regionId) throws IOException {
+        legacyOfflineTileStore();
+        File tilePath = new File(offlineRegionDirectory(regionId, true), "tiles");
+        if (!tilePath.isDirectory() && !tilePath.mkdirs()) {
+            throw new IOException("Unable to create offline region tile storage.");
+        }
+        return TileStore.create(tilePath.getAbsolutePath());
+    }
+
+    private String offlineRegionDataPath(String regionId) throws IOException {
+        File dataPath = new File(offlineRegionDirectory(regionId, true), "map-data");
+        if (!dataPath.isDirectory() && !dataPath.mkdirs()) {
+            throw new IOException("Unable to create offline region map cache.");
+        }
+        return dataPath.getAbsolutePath();
+    }
+
+    private boolean isOfflineRegionMarkedComplete(String regionId) {
+        try {
+            return new File(offlineRegionDirectory(regionId, false), OFFLINE_REGION_COMPLETE_MARKER).isFile();
+        } catch (IOException error) {
+            return false;
+        }
+    }
+
+    private void setOfflineRegionComplete(String regionId, boolean complete) throws IOException {
+        File marker = new File(offlineRegionDirectory(regionId, true), OFFLINE_REGION_COMPLETE_MARKER);
+        if (complete) {
+            if (!marker.exists() && !marker.createNewFile()) {
+                throw new IOException("Unable to mark the offline region as complete.");
+            }
+        } else if (marker.exists() && !marker.delete()) {
+            throw new IOException("Unable to reset the offline region download state.");
+        }
+    }
+
+    private List<OfflineStoreEntry> offlineStoreEntries() throws IOException {
+        List<OfflineStoreEntry> entries = new ArrayList<>();
+        entries.add(new OfflineStoreEntry(legacyOfflineTileStore(), false));
+        File root = offlineRegionRoot(false);
+        File[] directories = root.listFiles(File::isDirectory);
+        if (directories != null) {
+            for (File directory : directories) {
+                File tilePath = new File(directory, "tiles");
+                if (tilePath.isDirectory()) {
+                    entries.add(new OfflineStoreEntry(
+                        TileStore.create(tilePath.getAbsolutePath()), true));
+                }
+            }
+        }
+        return entries;
+    }
+
+    private void loadOfflineRegions(
+        List<OfflineStoreEntry> stores,
+        int index,
+        Map<String, OfflineRegionEntry> regions,
+        OfflineRegionsCallback callback
+    ) {
+        if (index >= stores.size()) {
+            callback.complete(regions, null);
+            return;
+        }
+        OfflineStoreEntry entry = stores.get(index);
+        entry.store.getAllTileRegions(result -> {
+            if (result.isError()) {
+                callback.complete(null, "Failed to read offline regions.");
+                return;
+            }
+            for (TileRegion region : result.getValue()) {
+                OfflineRegionEntry existing = regions.get(region.getId());
+                if (existing == null || entry.isolated) {
+                    regions.put(region.getId(), new OfflineRegionEntry(region, entry.isolated));
+                }
+            }
+            loadOfflineRegions(stores, index + 1, regions, callback);
+        });
+    }
+
     /**
      * Opens only a region downloaded on this device. The region is checked before any
      * view is shown, no online starting style is loaded, and Mapbox network access is
@@ -778,10 +925,15 @@ if (gestures != null) {
                 return;
             }
 
-            // Check the region is on the device before showing any map.
+            if (!isOfflineRegionMarkedComplete(regionId)) {
+                callback.error("Offline region '" + regionId + "' is not isolated on this device. Download it again.");
+                return;
+            }
+
             final long generation = sessionGeneration;
             try {
-                TileStore.create().getTileRegionGeometry(regionId, result ->
+                final TileStore regionStore = offlineRegionTileStore(regionId);
+                regionStore.getTileRegionGeometry(regionId, result ->
                     cordova.getActivity().runOnUiThread(() -> {
                         if (generation != sessionGeneration) {
                             callback.error("Map closed; operation cancelled.");
@@ -791,7 +943,7 @@ if (gestures != null) {
                             callback.error("Offline region '" + regionId + "' is not downloaded on this device.");
                             return;
                         }
-                        openOfflineMapView(regionId, options, minZoom, maxZoom, token, callback);
+                        openOfflineMapView(regionId, options, minZoom, maxZoom, token, regionStore, callback);
                     }));
             } catch (Throwable error) {
                 callback.error(sanitizeError("Failed to initialize the offline map.", error));
@@ -800,11 +952,14 @@ if (gestures != null) {
     }
 
     private void openOfflineMapView(String regionId, JSONObject options, Double minZoom,
-                                    Double maxZoom, String token, CallbackContext callback) {
+                                    Double maxZoom, String token, TileStore regionStore,
+                                    CallbackContext callback) {
         try {
             MapboxOptions.setAccessToken(token);
 
             closeInternal();
+            activeOfflineRegionStore = regionStore;
+            activeOfflineRegionId = regionId;
             initialCameraMinZoom = minZoom;
             initialCameraMaxZoom = maxZoom;
             offlineRegionCameraBoundsActive = false;
@@ -816,17 +971,26 @@ if (gestures != null) {
             rootView.setBackgroundColor(Color.TRANSPARENT);
             rootView.setLayoutParams(layoutParamsFromOptions(options));
 
-            // No starting style: the online default map is never requested.
-            MapInitOptions defaults = new MapInitOptions(cordova.getActivity());
-            MapInitOptions initOptions = new MapInitOptions(
-                cordova.getActivity(),
-                defaults.getMapOptions(),
-                defaults.getPlugins(),
-                defaults.getCameraOptions(),
-                defaults.getTextureView(),
-                null
-            );
-            mapView = new MapView(cordova.getActivity(), initOptions);
+            // A per-region cache prevents tiles previously viewed elsewhere from leaking in.
+            TileStore previousTileStore = MapboxMapsOptions.getTileStore();
+            String previousDataPath = MapboxMapsOptions.getDataPath();
+            try {
+                MapboxMapsOptions.setTileStore(regionStore);
+                MapboxMapsOptions.setDataPath(offlineRegionDataPath(regionId));
+                MapInitOptions defaults = new MapInitOptions(cordova.getActivity());
+                MapInitOptions initOptions = new MapInitOptions(
+                    cordova.getActivity(),
+                    defaults.getMapOptions(),
+                    defaults.getPlugins(),
+                    defaults.getCameraOptions(),
+                    defaults.getTextureView(),
+                    null
+                );
+                mapView = new MapView(cordova.getActivity(), initOptions);
+            } finally {
+                MapboxMapsOptions.setTileStore(previousTileStore);
+                MapboxMapsOptions.setDataPath(previousDataPath);
+            }
 
             if (minZoom != null || maxZoom != null) {
                 CameraBoundsOptions.Builder bounds = new CameraBoundsOptions.Builder();
@@ -2240,10 +2404,10 @@ gestures.addOnMoveListener(moveGestureListener);
                 double minZoom = options.optDouble("minZoom", 10.0);
                 double maxZoom = options.optDouble("maxZoom", 16.0);
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
-            if (!styleAllowed(styleUrl)) {
-                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
-                return;
-            }
+                if (!styleAllowed(styleUrl)) {
+                    callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
+                    return;
+                }
                 String regionId = options.optString(
                     "regionId",
                     area != null
@@ -2358,27 +2522,29 @@ gestures.addOnMoveListener(moveGestureListener);
         final double clampedMaxZoom = clamp(maxZoom, clampedMinZoom, MAX_OFFLINE_ZOOM);
         isOfflineDownloading = true;
         // Cap the number of stored regions so offline storage cannot grow without limit.
-        // Re-downloading an existing region always works. If the list cannot be read,
-        // the download goes ahead.
-        TileStore.create().getAllTileRegions(regions -> runForDownload(downloadGeneration, downloadToken, () -> {
-            if (downloadGeneration != sessionGeneration) return;
-            List<TileRegion> stored = regions.isValue() ? regions.getValue() : null;
-            if (stored != null && stored.size() >= MAX_OFFLINE_REGIONS) {
-                boolean exists = false;
-                for (TileRegion region : stored) {
-                    if (regionId.equals(region.getId())) { exists = true; break; }
-                }
-                if (!exists) {
-                    isOfflineDownloading = false;
-                    callback.error("Offline region limit reached: delete a region before downloading another (maximum "
-                        + MAX_OFFLINE_REGIONS + ").");
-                    return;
-                }
-            }
-            // Pass the final area (circle already built) so the result reports exactly what was downloaded.
-            beginOfflineDownload(downloadGeneration, downloadToken, regionId, latitude, longitude, clampedRadiusKm,
-                clampedMinZoom, clampedMaxZoom, styleUrl, downloadGeometry, wifiOnly, callback);
-        }));
+        // Re-downloading an existing region always works; fail explicitly if stores cannot be read.
+        try {
+            loadOfflineRegions(offlineStoreEntries(), 0, new LinkedHashMap<>(), (stored, error) ->
+                runForDownload(downloadGeneration, downloadToken, () -> {
+                    if (downloadGeneration != sessionGeneration) return;
+                    if (error != null) {
+                        isOfflineDownloading = false;
+                        callback.error(error);
+                        return;
+                    }
+                    if (stored.size() >= MAX_OFFLINE_REGIONS && !stored.containsKey(regionId)) {
+                        isOfflineDownloading = false;
+                        callback.error("Offline region limit reached: delete a region before downloading another (maximum "
+                            + MAX_OFFLINE_REGIONS + ").");
+                        return;
+                    }
+                    beginOfflineDownload(downloadGeneration, downloadToken, regionId, latitude, longitude, clampedRadiusKm,
+                        clampedMinZoom, clampedMaxZoom, styleUrl, downloadGeometry, wifiOnly, callback);
+                }));
+        } catch (Throwable error) {
+            isOfflineDownloading = false;
+            callback.error(sanitizeError("Failed to read offline regions.", error));
+        }
     }
 
     private void beginOfflineDownload(
@@ -2396,7 +2562,26 @@ gestures.addOnMoveListener(moveGestureListener);
         CallbackContext callback
     ) {
         cancelCurrentDownload();
-        activeOfflineManager = new OfflineManager();
+        final String regionDataPath;
+        try {
+            setOfflineRegionComplete(regionId, false);
+            activeOfflineTileStore = offlineRegionTileStore(regionId);
+            regionDataPath = offlineRegionDataPath(regionId);
+            TileStore previousTileStore = MapboxMapsOptions.getTileStore();
+            String previousDataPath = MapboxMapsOptions.getDataPath();
+            try {
+                MapboxMapsOptions.setTileStore(activeOfflineTileStore);
+                MapboxMapsOptions.setDataPath(regionDataPath);
+                activeOfflineManager = new OfflineManager();
+            } finally {
+                MapboxMapsOptions.setTileStore(previousTileStore);
+                MapboxMapsOptions.setDataPath(previousDataPath);
+            }
+        } catch (Throwable error) {
+            isOfflineDownloading = false;
+            callback.error(sanitizeError("Failed to prepare isolated offline storage.", error));
+            return;
+        }
         sendOfflineProgress("style-start", 0, 100);
 
         StylePackLoadOptions stylePackOptions = new StylePackLoadOptions.Builder()
@@ -2478,7 +2663,6 @@ gestures.addOnMoveListener(moveGestureListener);
                     .networkRestriction(wifiOnly ? NetworkRestriction.DISALLOW_EXPENSIVE : NetworkRestriction.NONE)
                     .build();
 
-                activeOfflineTileStore = TileStore.create();
                 activeTileRegionDownload = activeOfflineTileStore.loadTileRegion(
                     regionId,
                     tileRegionOptions,
@@ -2494,6 +2678,7 @@ gestures.addOnMoveListener(moveGestureListener);
                             if (downloadGeneration != sessionGeneration) return null;
                             isOfflineDownloading = false;
                             try {
+                                setOfflineRegionComplete(regionId, true);
                                 callback.success(offlineDownloadResult(
                                     regionId, latitude, longitude, radiusKm, minZoom, maxZoom,
                                     styleUrl, area, tileRegion.getCompletedResourceSize()
@@ -2612,7 +2797,7 @@ gestures.addOnMoveListener(moveGestureListener);
         result.put("latitude", latitude);
         result.put("longitude", longitude);
         result.put("radiusKm", radiusKm);
-        // Tile data for this region only; the shared style pack is not included.
+        // Tile data only; the region's style pack is not included.
         result.put("sizeBytes", sizeBytes);
 
         double[] box = polygonBounds(area);
@@ -2789,19 +2974,21 @@ gestures.addOnMoveListener(moveGestureListener);
 
     private void getOfflineRegionIds(CallbackContext callback) {
         try {
-            TileStore.create().getAllTileRegions(regions -> {
+            loadOfflineRegions(offlineStoreEntries(), 0, new LinkedHashMap<>(), (regions, error) -> {
                 try {
-                    if (regions.isError()) {
-                        callback.error("Failed to read offline regions.");
+                    if (error != null) {
+                        callback.error(error);
                         return;
                     }
                     JSONArray ids = new JSONArray();
                     JSONArray details = new JSONArray();
-                    for (TileRegion region : regions.getValue()) {
+                    for (OfflineRegionEntry entry : regions.values()) {
+                        TileRegion region = entry.region;
                         ids.put(region.getId());
                         JSONObject detail = new JSONObject();
                         detail.put("regionId", region.getId());
                         detail.put("sizeBytes", region.getCompletedResourceSize());
+                        detail.put("isolated", entry.isolated);
                         // false for a download that stopped part-way.
                         detail.put("complete", region.getRequiredResourceCount() > 0
                             && region.getCompletedResourceCount() >= region.getRequiredResourceCount());
@@ -3013,7 +3200,15 @@ gestures.addOnMoveListener(moveGestureListener);
             return;
         }
         final long generation = sessionGeneration;
-        final TileStore tileStore = TileStore.create();
+        final TileStore tileStore;
+        if (activeOfflineRegionStore != null && regionId.equals(activeOfflineRegionId)) {
+            tileStore = activeOfflineRegionStore;
+        } else if (isOfflineRegionMarkedComplete(regionId)) {
+            callback.error("Open this isolated region with initializeOffline.");
+            return;
+        } else {
+            tileStore = legacyOfflineTileStore();
+        }
         tileStore.getTileRegionGeometry(regionId, geometryResult -> runForGeneration(generation, () -> {
             if (mapView == null) { callback.error("Map is not initialized showOfflineRegion."); return; }
             final double[] box = geometryResult.isValue() ? geometryBounds(geometryResult.getValue()) : null;
@@ -3048,7 +3243,7 @@ gestures.addOnMoveListener(moveGestureListener);
             }
         }
 
-        // Keep the camera within the region's bounds and downloaded zoom range.
+        // Keep the camera within the downloaded zoom range; geography remains world-wide.
         Double savedMin = metadataNumber(metadata, "minZoom");
         Double savedMax = metadataNumber(metadata, "maxZoom");
         double minZoom = Math.max(
@@ -3076,17 +3271,17 @@ gestures.addOnMoveListener(moveGestureListener);
         }
         zoom = clamp(zoom, minZoom, maxZoom);
 
-        CoordinateBounds regionBounds = new CoordinateBounds(
-            Point.fromLngLat(box[0], box[1]),
-            Point.fromLngLat(box[2], box[3])
+        CoordinateBounds worldBounds = new CoordinateBounds(
+            Point.fromLngLat(-180.0, -90.0),
+            Point.fromLngLat(180.0, 90.0)
         );
         CameraBoundsOptions bounds = new CameraBoundsOptions.Builder()
-            .bounds(regionBounds)
+            .bounds(worldBounds)
             .minZoom(minZoom)
             .maxZoom(maxZoom)
             .build();
         if (mapView.getMapboxMap().setBounds(bounds).isError()) {
-            callback.error("Failed to constrain camera to offline region.");
+            callback.error("Failed to set world camera bounds for offline map.");
             return;
         }
         offlineRegionCameraBoundsActive = true;
@@ -3102,13 +3297,13 @@ gestures.addOnMoveListener(moveGestureListener);
     private void deleteOfflineRegion(JSONObject options, CallbackContext callback) {
         runForSession(() -> {
             try {
-                String regionId = options.optString("regionId", "");
+                String regionId = options.optString("regionId", "").trim();
                 String styleUrl = options.optString("styleUrl", Style.MAPBOX_STREETS);
-            if (!styleAllowed(styleUrl)) {
-                callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
-                return;
-            }
-                // Other regions usually share this style pack; only delete it when asked.
+                if (!styleAllowed(styleUrl)) {
+                    callback.error("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.");
+                    return;
+                }
+                // Keep this region's style pack unless explicitly asked to delete it.
                 boolean deleteStylePack = options.optBoolean("deleteStylePack", false);
 
                 if (regionId.trim().isEmpty()) {
@@ -3116,11 +3311,31 @@ gestures.addOnMoveListener(moveGestureListener);
                     return;
                 }
 
-                TileStore tileStore = TileStore.create();
-                tileStore.removeTileRegion(regionId);
+                TileStore legacyStore = legacyOfflineTileStore();
+                TileStore isolatedStore = null;
+                File regionDirectory = offlineRegionDirectory(regionId, false);
+                File tilePath = new File(regionDirectory, "tiles");
+                if (tilePath.isDirectory()) {
+                    isolatedStore = TileStore.create(tilePath.getAbsolutePath());
+                }
+                legacyStore.removeTileRegion(regionId);
+                if (isolatedStore != null) isolatedStore.removeTileRegion(regionId);
+                setOfflineRegionComplete(regionId, false);
 
                 if (deleteStylePack) {
-                    OfflineManager offlineManager = new OfflineManager();
+                    TileStore previousTileStore = MapboxMapsOptions.getTileStore();
+                    String previousDataPath = MapboxMapsOptions.getDataPath();
+                    OfflineManager offlineManager;
+                    try {
+                        if (isolatedStore != null) {
+                            MapboxMapsOptions.setTileStore(isolatedStore);
+                            MapboxMapsOptions.setDataPath(offlineRegionDataPath(regionId));
+                        }
+                        offlineManager = new OfflineManager();
+                    } finally {
+                        MapboxMapsOptions.setTileStore(previousTileStore);
+                        MapboxMapsOptions.setDataPath(previousDataPath);
+                    }
                     offlineManager.removeStylePack(styleUrl);
                 }
 
@@ -5528,6 +5743,8 @@ private boolean addMarkerInternal(
 
         mapView = null;
         rootView = null;
+        activeOfflineRegionStore = null;
+        activeOfflineRegionId = null;
         mapBehindWebView = false;
         pointAnnotationManager = null;
         boundaryAnnotationManager = null;
