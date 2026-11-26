@@ -109,6 +109,7 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `initialize(options)`
 - `initializeOffline(options)`
 - `setMapStyle(options)`
+- `inspectStyleStructure()`
 - `getMapboxVersion(success, error)`
 - `setViewport(options)`
 - `setTouchableRects(rects)`
@@ -158,12 +159,6 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `onWaypointSelected(callback, errorCallback)`
 - `onMarkerClick(callback, errorCallback)`
 - `onMapTap(callback, errorCallback)`
-- `setLayerVisibility(options)`
-- `getLayersByGroup(options)`
-- `setLayerGroupVisibility(options)`
-- `setRuntimeGroupVisibility(options)`
-- `setJsonGroupVisibility(options)`
-- `debugStyleLayers()`
 - `close()`
 
 ## Initialize Map
@@ -642,23 +637,6 @@ window.MapboxPlugin.loadPath({
 })
 ```
 
-## Style Layers
-
-These actions work on the layers of the current map style, on both Android and iOS. A *group* is a Mapbox Studio layer folder, stored in each layer's `metadata["mapbox:group"]`. Call them after the style has loaded; before that they fail with "Style is not loaded".
-
-| Action | Options | Result |
-|---|---|---|
-| `setLayerVisibility(options)` | `layerId` (required), `visible` (default `true`) | Nothing |
-| `getLayersByGroup(options)` | `groupId` (required) | `{ groupId, totalLayers, layers: [{ id, name, type }] }` |
-| `setLayerGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | Success: `{ groupId, visible, updatedCount, updatedLayers, failedCount, failedLayers }`. If no layers update, the error is JSON text with `matchedLayers`, `updatedCount`, and `failedLayers`. |
-| `setRuntimeGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | `{ method: "RUNTIME", groupId, visible, updatedCount, updatedLayers, failedLayers }`; reads group metadata from runtime layers. |
-| `setJsonGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | `{ method: "STYLE_JSON", groupId, visible, matchedCount, matchedLayers, updatedCount, updatedLayers, failedCount, failedLayers, visibilityReadback }`; each read-back includes expected/actual visibility, `matchesRequested`, and `visibilityIsDefault` (`true` when the style uses Mapbox's default visible state). |
-| `debugStyleLayers()` | None | `{ jsonGroupLayers, runtimeLayers }`; compares FossickingContext IDs in style JSON with runtime layer IDs. |
-
-```javascript
-await MapboxPlugin.setLayerGroupVisibility({ groupId: $parameters.GroupId, visible: false });
-```
-
 ## Markers
 
 Reference for the marker functions on `window.MapboxPlugin`: adding, bulk loading, customizing, removing, and listening for taps. Every function except `onMarkerClick` returns a Promise.
@@ -976,6 +954,11 @@ These actions are available on Android and iOS but were not described above.
 ```javascript
 // Replace the style. Resolves when the new style has loaded; add custom layers again afterwards.
 window.MapboxPlugin.setMapStyle({ styleUrl: 'mapbox://styles/mapbox/satellite-streets-v12' });
+
+// Inspect the loaded style's root layers, imports, and complete JSON.
+window.MapboxPlugin.inspectStyleStructure().then(function (result) {
+  console.log(result.rootLayers, result.imports, result.styleJSON);
+});
 
 // Mapbox SDK version as a string, e.g. "11.30.0". Callback style, not a Promise.
 window.MapboxPlugin.getMapboxVersion(function (version) { console.log(version); });

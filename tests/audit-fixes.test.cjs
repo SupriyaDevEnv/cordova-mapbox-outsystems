@@ -82,7 +82,7 @@ test('legacy credential caches are cleared when the plugin loads', () => {
 });
 
 test('iOS recenter skips stale fixes, times out, and settles superseded requests', () => {
-  const start = between(iosParity, 'func moveToCurrentLocation(command:', '@objc(setLayerVisibility:)');
+  const start = between(iosParity, 'func moveToCurrentLocation(command:', 'override func locationManager(');
   assert.match(start, /Location request superseded\./);
   assert.ok(start.indexOf('superseded') < start.indexOf('self.moveLocationZoom ='),
     'Settle the old request before replacing its state');

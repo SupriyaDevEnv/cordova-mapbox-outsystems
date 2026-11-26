@@ -40,7 +40,3 @@ Record for 30 minutes or more (or simulate over 1,000 GPS fixes). The line must 
 ## Offline limits
 
 Download with `wifiOnly: true` on mobile data and confirm no tiles download until Wi-Fi is available. Download 20 regions, then confirm a 21st fails with the limit message and re-downloading an existing region still works.
-
-## Style layers
-
-On both platforms: call `getLayersByGroup` and `setLayerGroupVisibility` with a real Mapbox Studio folder name and confirm its layers hide and show; confirm an unknown group returns an error rather than waiting forever.

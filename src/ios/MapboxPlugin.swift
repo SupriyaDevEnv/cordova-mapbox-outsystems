@@ -3207,6 +3207,54 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
+    @objc(inspectStyleStructure:)
+    func inspectStyleStructure(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let mapView = self.mapView else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            let map = mapView.mapboxMap
+            guard !map.allLayerIdentifiers.isEmpty else {
+                self.sendError("Style is not loaded.", command)
+                return
+            }
+
+            do {
+                let rootLayers = map.allLayerIdentifiers.map {
+                    ["id": $0.id, "type": $0.type.rawValue]
+                }
+                let imports = map.styleImports.map {
+                    ["id": $0.id, "type": $0.type]
+                }
+                guard let styleJSON = try JSONSerialization.jsonObject(
+                    with: Data(map.styleJSON.utf8)
+                ) as? [String: Any] else {
+                    self.sendError(
+                        "Style inspection failed: Style JSON is not an object.",
+                        command
+                    )
+                    return
+                }
+
+                self.sendSuccess([
+                    "rootLayerCount": rootLayers.count,
+                    "rootLayers": rootLayers,
+                    "importCount": imports.count,
+                    "imports": imports,
+                    "styleJSON": styleJSON
+                ], command)
+            } catch {
+                self.sendError(
+                    "Style inspection failed: \(error.localizedDescription)",
+                    command
+                )
+            }
+        }
+    }
+
     private final class StyleRequest {
         let view: MapView
         let command: CDVInvokedUrlCommand

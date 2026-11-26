@@ -36,47 +36,17 @@ test('initialize does not change the caller options and never sends a token', as
   assert.strictEqual(init.args[0].latitude, 1);
 });
 
-test('setRuntimeGroupVisibility forwards its options to native code', async () => {
+test('inspectStyleStructure forwards to native code and returns the style structure', async () => {
   const { api, calls } = loadPlugin((action, args, ok) => {
-    if (action === 'setRuntimeGroupVisibility') ok({ method: 'RUNTIME' });
-  });
-  const options = { groupId: 'ProtectedAreasAndHeritage', visible: false };
-  const result = await api.setRuntimeGroupVisibility(options);
-
-  assert.strictEqual(result.method, 'RUNTIME');
-  const call = calls.find((entry) => entry.action === 'setRuntimeGroupVisibility');
-  assert.ok(call);
-  assert.deepStrictEqual(call.args[0], options);
-});
-
-test('setJsonGroupVisibility forwards its options to native code', async () => {
-  const { api, calls } = loadPlugin((action, args, ok) => {
-    if (action === 'setJsonGroupVisibility') ok({
-      method: 'STYLE_JSON',
-      visibilityReadback: [{ layerId: 'layer-1', matchesRequested: true }]
-    });
-  });
-  const options = { groupId: 'ProtectedAreasAndHeritage', visible: true };
-  const result = await api.setJsonGroupVisibility(options);
-
-  assert.strictEqual(result.method, 'STYLE_JSON');
-  assert.strictEqual(result.visibilityReadback[0].matchesRequested, true);
-  const call = calls.find((entry) => entry.action === 'setJsonGroupVisibility');
-  assert.ok(call);
-  assert.deepStrictEqual(call.args[0], options);
-});
-
-test('debugStyleLayers calls native code and returns both layer lists', async () => {
-  const { api, calls } = loadPlugin((action, args, ok) => {
-    if (action === 'debugStyleLayers') {
-      ok({ jsonGroupLayers: ['json-layer'], runtimeLayers: ['runtime-layer'] });
+    if (action === 'inspectStyleStructure') {
+      ok({ rootLayerCount: 1, rootLayers: [{ id: 'roads', type: 'line' }] });
     }
   });
-  const result = await api.debugStyleLayers();
+  const result = await api.inspectStyleStructure();
 
-  assert.deepStrictEqual(result.jsonGroupLayers, ['json-layer']);
-  assert.deepStrictEqual(result.runtimeLayers, ['runtime-layer']);
-  assert.ok(calls.some((entry) => entry.action === 'debugStyleLayers'));
+  assert.strictEqual(result.rootLayerCount, 1);
+  assert.strictEqual(result.rootLayers[0].id, 'roads');
+  assert.ok(calls.some((entry) => entry.action === 'inspectStyleStructure'));
 });
 
 test('initialize rejects invalid zoom bounds before calling native code', async () => {
