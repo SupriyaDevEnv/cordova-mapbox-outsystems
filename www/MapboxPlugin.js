@@ -689,8 +689,8 @@ var api = {
     return call('setLayerGroupVisibility', [options || {}]);
   },
 
-  setJsonGroupVisibility: function (options) {
-    return call('setJsonGroupVisibility', [options || {}]);
+  ToggleOverlays: function (options) {
+    return call('ToggleOverlays', [options || {}]);
   },
 
   getLayersByGroup: function (options) {

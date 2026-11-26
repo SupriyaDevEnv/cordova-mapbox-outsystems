@@ -3,7 +3,7 @@
 ## Unreleased
 
 - **New:** `inspectStyleStructure()` reports root layers, imported styles and the complete loaded style JSON on Android and iOS.
-- **New:** `setJsonGroupVisibility({ groupId, visible })` updates matching root-level style JSON layers and reloads the style on Android and iOS.
+- **New:** `ToggleOverlays({ groupId, visible })` updates matching root-level style JSON layers and reloads the style on Android and iOS.
 - **New:** `initializeOffline({ regionId, ... })` opens only a downloaded region on Android and iOS: no online starting style, nothing shown when the region is missing, and Mapbox network access switched off until the map closes.
 - **Changed:** `showOfflineRegion({ regionId })` constrains the camera center to the saved region bounds and zoom range on Android and iOS.
 - **Changed:** removed `diagnoseLayerGroup` and `getLayerIds` from the Android and iOS APIs.

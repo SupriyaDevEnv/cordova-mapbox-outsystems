@@ -561,8 +561,8 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             case "inspectStyleStructure":
                 inspectStyleStructure(callbackContext);
                 return true;
-            case "setJsonGroupVisibility":
-                setJsonGroupVisibility(options, callbackContext);
+            case "ToggleOverlays":
+                ToggleOverlays(options, callbackContext);
                 return true;
             default:
                 return false;
@@ -5446,7 +5446,7 @@ private boolean addMarkerInternal(
         });
     }
 
-    private void setJsonGroupVisibility(
+    private void ToggleOverlays(
         JSONObject options,
         CallbackContext callback
     ) {

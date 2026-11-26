@@ -44,12 +44,12 @@ test('initialize rejects invalid zoom bounds before calling native code', async 
   assert.strictEqual(calls.filter((c) => c.action === 'initialize').length, 0);
 });
 
-test('setJsonGroupVisibility forwards options to its native action', async () => {
+test('ToggleOverlays forwards options to its native action', async () => {
   const { api, calls } = loadPlugin((action, args, ok) => ok({ groupId: args[0].groupId }));
   const options = { groupId: 'roads', visible: false };
-  const result = await api.setJsonGroupVisibility(options);
+  const result = await api.ToggleOverlays(options);
 
-  assert.strictEqual(calls[0].action, 'setJsonGroupVisibility');
+  assert.strictEqual(calls[0].action, 'ToggleOverlays');
   assert.strictEqual(calls[0].args[0], options);
   assert.strictEqual(result.groupId, 'roads');
 });

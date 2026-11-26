@@ -304,8 +304,8 @@ class MapboxPluginParity: MapboxPlugin {
         }
     }
 
-    @objc(setJsonGroupVisibility:)
-    func setJsonGroupVisibility(command: CDVInvokedUrlCommand) {
+    @objc(ToggleOverlays:)
+    func ToggleOverlays(command: CDVInvokedUrlCommand) {
         rememberCommand(command)
         runForSession {
             let options = command.argument(at: 0) as? [String: Any] ?? [:]
