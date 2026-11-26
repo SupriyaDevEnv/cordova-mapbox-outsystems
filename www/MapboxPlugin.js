@@ -689,8 +689,24 @@ var api = {
     return call('setLayerGroupVisibility', [options || {}]);
   },
 
+  setRuntimeGroupVisibility: function (options) {
+    return call('setRuntimeGroupVisibility', [options || {}]);
+  },
+
+  setJsonGroupVisibility: function (options) {
+    return call('setJsonGroupVisibility', [options || {}]);
+  },
+
   getLayersByGroup: function (options) {
     return call('getLayersByGroup', [options || {}]);
+  },
+
+  diagnoseRuntimeLayers: function () {
+    return call('diagnoseRuntimeLayers', []);
+  },
+
+  debugStyleLayers: function () {
+    return call('debugStyleLayers', []);
   },
 
   clearBoundaries: function () {
