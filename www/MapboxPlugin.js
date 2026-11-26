@@ -705,6 +705,10 @@ var api = {
     return call('diagnoseRuntimeLayers', []);
   },
 
+  debugStyleLayers: function () {
+    return call('debugStyleLayers', []);
+  },
+
   clearBoundaries: function () {
     return call('clearBoundaries', []);
   },

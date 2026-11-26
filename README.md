@@ -162,6 +162,7 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `setLayerGroupVisibility(options)`
 - `setRuntimeGroupVisibility(options)`
 - `setJsonGroupVisibility(options)`
+- `debugStyleLayers()`
 - `close()`
 
 ## Initialize Map
@@ -651,6 +652,7 @@ These actions work on the layers of the current map style, on both Android and i
 | `setLayerGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | Success: `{ groupId, visible, updatedCount, updatedLayers, failedCount, failedLayers }`. If no layers update, the error is JSON text with `matchedLayers`, `updatedCount`, and `failedLayers`. |
 | `setRuntimeGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | `{ method: "RUNTIME", groupId, visible, updatedCount, updatedLayers, failedLayers }`; reads group metadata from runtime layers. |
 | `setJsonGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | `{ method: "STYLE_JSON", groupId, visible, matchedCount, matchedLayers, updatedCount, updatedLayers, failedCount, failedLayers, visibilityReadback }`; each read-back includes expected/actual visibility, `matchesRequested`, and `visibilityIsDefault` (`true` when the style uses Mapbox's default visible state). |
+| `debugStyleLayers()` | None | `{ jsonGroupLayers, runtimeLayers }`; compares FossickingContext IDs in style JSON with runtime layer IDs. |
 
 ```javascript
 await MapboxPlugin.setLayerGroupVisibility({ groupId: $parameters.GroupId, visible: false });

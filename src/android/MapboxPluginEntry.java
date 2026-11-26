@@ -525,6 +525,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             case "diagnoseRuntimeLayers":
                 diagnoseRuntimeLayers(callbackContext);
                 return true;
+            case "debugStyleLayers":
+                debugStyleLayers(callbackContext);
+                return true;
             case "clearBoundaries":
                 clearBoundaries(callbackContext);
                 return true;
@@ -4702,6 +4705,48 @@ private boolean addMarkerInternal(
                     "Runtime diagnosis failed",
                     e
                 );
+                callback.error(e.getMessage());
+            }
+        });
+    }
+
+    private void debugStyleLayers(CallbackContext callback) {
+        runForSession(() -> {
+            try {
+                Style style = loadedStyle(callback);
+                if (style == null) return;
+
+                JSONObject result = new JSONObject();
+                JSONArray jsonLayers = new JSONArray();
+                JSONArray runtimeLayers = new JSONArray();
+
+                JSONObject styleJson = new JSONObject(style.getStyleJSON());
+                JSONArray layers = styleJson.optJSONArray("layers");
+                if (layers != null) {
+                    for (int i = 0; i < layers.length(); i++) {
+                        JSONObject layer = layers.optJSONObject(i);
+                        if (layer == null) continue;
+
+                        JSONObject metadata = layer.optJSONObject("metadata");
+                        if (metadata == null) continue;
+
+                        String group = metadata
+                            .optString("mapbox:group", "")
+                            .trim();
+                        if ("FossickingContext".equals(group)) {
+                            jsonLayers.put(layer.optString("id"));
+                        }
+                    }
+                }
+
+                for (StyleObjectInfo layer : style.getStyleLayers()) {
+                    runtimeLayers.put(layer.getId());
+                }
+
+                result.put("jsonGroupLayers", jsonLayers);
+                result.put("runtimeLayers", runtimeLayers);
+                callback.success(result);
+            } catch (Exception e) {
                 callback.error(e.getMessage());
             }
         });

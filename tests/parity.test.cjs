@@ -218,7 +218,8 @@ test('iOS reads layer groups from mapbox:group metadata like Android', () => {
     'setLayerGroupVisibility',
     'setRuntimeGroupVisibility',
     'setJsonGroupVisibility',
-    'diagnoseRuntimeLayers'
+    'diagnoseRuntimeLayers',
+    'debugStyleLayers'
   ]) {
     assert.ok(parity.includes('@objc(' + name + ':)'), name + ' is missing on iOS');
   }
@@ -260,6 +261,24 @@ test('diagnoseRuntimeLayers is exposed on both platforms', () => {
     assert.match(androidBody, new RegExp('result\\.put\\(\\s*"' + key + '"'));
     assert.ok(iosBody.includes('"' + key + '"'), key + ' is missing from iOS response');
   }
+});
+
+test('debugStyleLayers reports FossickingContext JSON and runtime IDs', () => {
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const javascript = fs.readFileSync('www/MapboxPlugin.js', 'utf8');
+  const androidBody = android.split('private void debugStyleLayers(')[1]
+    .split('private void clearBoundaries(')[0];
+  const iosBody = parity.split('func debugStyleLayers(command:')[1]
+    .split('@objc(setJsonGroupVisibility:')[0];
+
+  assert.match(android, /case "debugStyleLayers":/);
+  assert.match(javascript, /debugStyleLayers: function \(\)/);
+  assert.match(androidBody, /"FossickingContext"\.equals\(group\)/);
+  assert.match(androidBody, /result\.put\("jsonGroupLayers", jsonLayers\)/);
+  assert.match(androidBody, /result\.put\("runtimeLayers", runtimeLayers\)/);
+  assert.match(iosBody, /group == "FossickingContext"/);
+  assert.match(iosBody, /"jsonGroupLayers": jsonGroupLayers/);
+  assert.match(iosBody, /"runtimeLayers": runtimeLayers/);
 });
 
 test('setRuntimeGroupVisibility reads runtime metadata on both platforms', () => {

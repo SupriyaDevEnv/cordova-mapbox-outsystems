@@ -66,6 +66,19 @@ test('setJsonGroupVisibility forwards its options to native code', async () => {
   assert.deepStrictEqual(call.args[0], options);
 });
 
+test('debugStyleLayers calls native code and returns both layer lists', async () => {
+  const { api, calls } = loadPlugin((action, args, ok) => {
+    if (action === 'debugStyleLayers') {
+      ok({ jsonGroupLayers: ['json-layer'], runtimeLayers: ['runtime-layer'] });
+    }
+  });
+  const result = await api.debugStyleLayers();
+
+  assert.deepStrictEqual(result.jsonGroupLayers, ['json-layer']);
+  assert.deepStrictEqual(result.runtimeLayers, ['runtime-layer']);
+  assert.ok(calls.some((entry) => entry.action === 'debugStyleLayers'));
+});
+
 test('initialize rejects invalid zoom bounds before calling native code', async () => {
   const { api, calls } = loadPlugin();
   await assert.rejects(api.initialize({ minZoom: 'NaN' }), /minZoom/);

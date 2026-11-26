@@ -264,6 +264,35 @@ class MapboxPluginParity: MapboxPlugin {
         }
     }
 
+    @objc(debugStyleLayers:)
+    func debugStyleLayers(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+            do {
+                let styleRoot = try JSONSerialization.jsonObject(
+                    with: Data(map.styleJSON.utf8)
+                ) as? [String: Any]
+                let layers = styleRoot?["layers"] as? [[String: Any]] ?? []
+                let jsonGroupLayers = layers.compactMap { layer -> String? in
+                    guard let metadata = layer["metadata"] as? [String: Any] else { return nil }
+                    let group = (metadata["mapbox:group"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard group == "FossickingContext" else { return nil }
+                    return layer["id"] as? String
+                }
+                let runtimeLayers = map.allLayerIdentifiers.map { $0.id }
+                self.sendSuccess([
+                    "jsonGroupLayers": jsonGroupLayers,
+                    "runtimeLayers": runtimeLayers
+                ], command)
+            } catch {
+                self.sendError(error.localizedDescription, command)
+            }
+        }
+    }
+
     @objc(setJsonGroupVisibility:)
     func setJsonGroupVisibility(command: CDVInvokedUrlCommand) {
         rememberCommand(command)
