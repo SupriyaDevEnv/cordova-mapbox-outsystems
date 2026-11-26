@@ -179,6 +179,168 @@ class MapboxPluginParity: MapboxPlugin {
         }
     }
 
+<<<<<<< HEAD
+=======
+    @objc(setLayerVisibility:)
+    func setLayerVisibility(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            let layerId = (options["layerId"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let visible = options["visible"] as? Bool ?? true
+
+            guard !layerId.isEmpty else {
+                self.sendError("layerId is required", command)
+                return
+            }
+
+            guard let mapView = self.mapView else {
+                self.sendError("Map is not initialized.", command)
+                return
+            }
+
+            let exists = mapView.mapboxMap.allLayerIdentifiers.contains { $0.id == layerId }
+            guard exists else {
+                self.sendError("Layer not found in current style: \(layerId)", command)
+                return
+            }
+
+            do {
+                try mapView.mapboxMap.setLayerProperty(
+                    for: layerId,
+                    property: "visibility",
+                    value: visible ? "visible" : "none"
+                )
+                self.sendSuccess(command)
+            } catch {
+                self.sendError("Failed to change layer visibility.", command)
+            }
+        }
+    }
+
+    // MARK: - Style layer groups (Android parity)
+    //
+    // Groups are the Mapbox Studio folders stored in each layer's
+    // metadata["mapbox:group"], matching the Android implementation.
+
+    @objc(getLayersByGroup:)
+    func getLayersByGroup(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let groupId = self.requiredGroupId(command) else { return }
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+            let layers: [[String: Any]] = map.allLayerIdentifiers
+                .filter { self.layerGroup(map, $0.id) == groupId }
+                .map { ["id": $0.id, "name": $0.id, "type": $0.type.rawValue] }
+            self.sendSuccess([
+                "groupId": groupId,
+                "totalLayers": layers.count,
+                "layers": layers
+            ], command)
+        }
+    }
+
+    @objc(setLayerGroupVisibility:)
+    func setLayerGroupVisibility(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let groupId = self.requiredGroupId(command) else { return }
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            let visible = options["visible"] as? Bool ?? true
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+
+            let layerIds = map.allLayerIdentifiers.map { $0.id }.filter {
+                (self.layerGroup(map, $0) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines) == groupId
+            }
+            var updatedLayers: [String] = []
+            var failedLayers: [[String: String]] = []
+            for layerId in layerIds {
+                do {
+                    try map.setLayerProperty(for: layerId, property: "visibility",
+                                             value: visible ? "visible" : "none")
+                } catch {
+                    failedLayers.append([
+                        "layerId": layerId,
+                        "error": error.localizedDescription
+                    ])
+                    continue
+                }
+                updatedLayers.append(layerId)
+            }
+
+            if updatedLayers.isEmpty {
+                let errorResult: [String: Any] = [
+                    "groupId": groupId,
+                    "matchedLayers": layerIds.count,
+                    "updatedCount": 0,
+                    "failedLayers": failedLayers
+                ]
+                do {
+                    let data = try JSONSerialization.data(withJSONObject: errorResult)
+                    guard let message = String(data: data, encoding: .utf8) else {
+                        self.sendError("Failed to encode group visibility error.", command)
+                        return
+                    }
+                    self.sendError(message, command)
+                } catch {
+                    self.sendError(
+                        "Failed to encode group visibility error: \(error.localizedDescription)",
+                        command
+                    )
+                }
+                return
+            }
+
+            self.sendSuccess([
+                "groupId": groupId,
+                "visible": visible,
+                "updatedCount": updatedLayers.count,
+                "updatedLayers": updatedLayers,
+                "failedCount": failedLayers.count,
+                "failedLayers": failedLayers
+            ], command)
+        }
+    }
+
+    private func requiredGroupId(_ command: CDVInvokedUrlCommand) -> String? {
+        let options = command.argument(at: 0) as? [String: Any] ?? [:]
+        let groupId = (options["groupId"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !groupId.isEmpty else {
+            sendError("groupId is required", command)
+            return nil
+        }
+        return groupId
+    }
+
+    private func loadedStyleMap(_ command: CDVInvokedUrlCommand, notInitialized: String,
+                                notLoaded: String) -> MapboxMap? {
+        guard let mapView = mapView else {
+            sendError(notInitialized, command)
+            return nil
+        }
+        // A style that has not finished loading reports no layers. (isStyleLoaded is
+        // deliberately avoided: it was removed from this file in the Nov 13 iOS build fix.)
+        guard !mapView.mapboxMap.allLayerIdentifiers.isEmpty else {
+            sendError(notLoaded, command)
+            return nil
+        }
+        return mapView.mapboxMap
+    }
+
+    private func layerMetadata(_ map: MapboxMap, _ layerId: String) -> [String: Any]? {
+        // try? keeps this compiling whether or not the SDK marks layerProperty as throwing.
+        (try? map.layerProperty(for: layerId, property: "metadata"))?.value as? [String: Any]
+    }
+
+    private func layerGroup(_ map: MapboxMap, _ layerId: String) -> String? {
+        layerMetadata(map, layerId)?["mapbox:group"] as? String
+    }
+
+>>>>>>> 74e48bfb53316aea9b64fde1f0de5e6504b37e38
     override func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else {
             return

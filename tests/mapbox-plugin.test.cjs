@@ -36,6 +36,7 @@ test('initialize does not change the caller options and never sends a token', as
   assert.strictEqual(init.args[0].latitude, 1);
 });
 
+<<<<<<< HEAD
 test('inspectStyleStructure forwards to native code and returns the style structure', async () => {
   const { api, calls } = loadPlugin((action, args, ok) => {
     if (action === 'inspectStyleStructure') {
@@ -49,6 +50,8 @@ test('inspectStyleStructure forwards to native code and returns the style struct
   assert.ok(calls.some((entry) => entry.action === 'inspectStyleStructure'));
 });
 
+=======
+>>>>>>> 74e48bfb53316aea9b64fde1f0de5e6504b37e38
 test('initialize rejects invalid zoom bounds before calling native code', async () => {
   const { api, calls } = loadPlugin();
   await assert.rejects(api.initialize({ minZoom: 'NaN' }), /minZoom/);
