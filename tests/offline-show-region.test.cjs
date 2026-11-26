@@ -43,7 +43,7 @@ test('downloads save the style and zoom range needed to reopen the region', () =
   assert.match(a, /regionMetadataValue\(regionId, styleUrl, toZoomByte\(minZoom\), toZoomByte\(maxZoom\)\)/);
   const save = between(android, 'private Value regionMetadataValue(', 'private static Object metadataEntry(');
   for (const key of ['regionId', 'styleUrl', 'minZoom', 'maxZoom']) assert.match(save, new RegExp('"' + key + '"'));
-  const i = between(ios, 'private func downloadOfflineTiles(', 'activeTileRegionDownload = tileStore.loadTileRegion(');
+  const i = between(ios, 'private func downloadOfflineTiles(', 'activeTileRegionDownload = TileStore.default.loadTileRegion(');
   assert.match(i, /"styleUrl": styleURI\.rawValue/);
   assert.match(i, /"minZoom": Int\(minZoom\)/);
   assert.match(i, /"maxZoom": Int\(maxZoom\)/);
@@ -51,9 +51,9 @@ test('downloads save the style and zoom range needed to reopen the region', () =
 
 test('showOfflineRegion uses the stored region when regionId is given, on both platforms', () => {
   const aShow = between(android, 'private void showOfflineRegion(', 'private void showDownloadedRegion(');
-  assert.match(aShow, /if \(!regionId\.isEmpty\(\)\) \{[\s\S]*?must be downloaded again to use isolated offline maps\.[\s\S]*?initializeOffline\(options, callback\)/);
+  assert.match(aShow, /if \(!regionId\.isEmpty\(\)\) \{\s*showDownloadedRegion\(regionId, options, callback\);\s*return;/);
   const iShow = between(ios, 'func showOfflineRegion(command:', 'private func showDownloadedRegion(');
-  assert.match(iShow, /if !regionId\.isEmpty \{[\s\S]*?must be downloaded again to use isolated offline maps\.[\s\S]*?self\.initializeOffline\(command: command\)/);
+  assert.match(iShow, /if !regionId\.isEmpty \{\s*self\.showDownloadedRegion\(regionId: regionId, options: options, command: command\)\s*return/);
 
   const a = between(android, 'private void showDownloadedRegion(', 'private void deleteOfflineRegion(');
   const i = between(ios, 'private func showDownloadedRegion(', '@objc(deleteOfflineRegion:)');
@@ -74,10 +74,9 @@ test('showOfflineRegion uses the stored region when regionId is given, on both p
   assert.match(a, /zoom = clamp\(zoom, minZoom, maxZoom\);/);
   assert.match(i, /let styleUrl = savedStyle \?\? options\["styleUrl"\] as\? String/);
   assert.match(i, /zoom = Swift\.max\(minZoom, Swift\.min\(maxZoom, zoom\)\)/);
-  assert.match(a, /if \(offlineMapAllowsWorldPan\) \{\s*boundsBuilder\.bounds\(new CoordinateBounds\([\s\S]*?Point\.fromLngLat\(-180\.0, -90\.0\)[\s\S]*?Point\.fromLngLat\(180\.0, 90\.0\)/);
-  assert.match(a, /else \{\s*boundsBuilder\.bounds\(new CoordinateBounds\([\s\S]*?Point\.fromLngLat\(box\[0\], box\[1\]\)[\s\S]*?Point\.fromLngLat\(box\[2\], box\[3\]\)/);
-  assert.match(a, /\.minZoom\(minZoom\)[\s\S]*?\.maxZoom\(maxZoom\)/);
-  assert.match(i, /bounds: offlineMapAllowsWorldPan \? \.world : regionBounds,[\s\S]*?maxZoom:[\s\S]*?minZoom:/);
+  assert.match(a, /CoordinateBounds regionBounds = new CoordinateBounds\([\s\S]*?Point\.fromLngLat\(box\[0\], box\[1\]\)[\s\S]*?Point\.fromLngLat\(box\[2\], box\[3\]\)/);
+  assert.match(a, /\.bounds\(regionBounds\)[\s\S]*?\.minZoom\(minZoom\)[\s\S]*?\.maxZoom\(maxZoom\)/);
+  assert.match(i, /CameraBoundsOptions\(\s*bounds: regionBounds,[\s\S]*?maxZoom:[\s\S]*?minZoom:/);
   assert.ok(a.indexOf('setBounds(bounds.build())') < a.indexOf('setCamera(new CameraOptions.Builder()'));
   assert.ok(i.indexOf('setCameraBounds(with: CameraBoundsOptions') < i.indexOf('setCamera(to: CameraOptions'));
   assert.match(a, /offlineRegionCameraBoundsActive = true/);
@@ -93,30 +92,6 @@ test('opening a regular location restores the map bounds from initialize', () =>
   assert.match(android, /initialCameraMaxZoom = maxZoom/);
   assert.match(ios, /self\.initialCameraMinZoom = minZoom/);
   assert.match(ios, /self\.initialCameraMaxZoom = maxZoom/);
-});
-
-test('offline maps use a region-specific tile store and allow whole-world panning', () => {
-  for (const source of [android, ios]) {
-    assert.match(source, /offlineRegionTileStore\(regionId\)/);
-    assert.match(source, /offlineMapAllowsWorldPan = true/);
-    assert.match(source, /setMapboxStackConnected\(false\)|isMapboxStackConnected = false/);
-  }
-  assert.match(android, /offlineMapTileStore != null\s*\?\s*offlineMapTileStore : TileStore\.create\(\)/);
-  assert.match(ios, /offlineMapTileStore \?\? TileStore\.default/);
-  assert.match(android, /TileStore\.create\(path\.getAbsolutePath\(\)\)/);
-  assert.match(ios, /TileStore\.shared\(for: try offlineRegionStoreURL\(regionId, create: true\)\)/);
-  assert.match(android, /MapboxMapsOptions\.setTileStore\(tileStore\)/);
-  assert.match(ios, /MapboxMapsOptions\.tileStore = tileStore/);
-  assert.match(android, /detail\.put\("isolated", hasIsolatedOfflineRegionStore\(region\.getId\(\)\)\)/);
-  assert.match(ios, /"isolated": self\.hasIsolatedOfflineRegionStore\(region\.id\)/);
-});
-
-test('offline deletion keeps the selected region store for style-pack cleanup', () => {
-  const a = between(android, 'private void deleteOfflineRegion(', 'private void registerOfflineDownloadProgressCallback(');
-  assert.match(a, /boolean hadIsolatedStore = isolatedStorePath\.isDirectory\(\);[\s\S]*?marker\.delete\(\)[\s\S]*?TileStore store = hadIsolatedStore/);
-
-  const i = between(ios, '@objc(deleteOfflineRegion:)', '@objc(setWaypointSelectionEnabled:)');
-  assert.match(i, /let hasIsolatedStore = FileManager\.default\.fileExists\(atPath: isolatedStoreURL\.path\)[\s\S]*?removeItem\(at: completionMarker\)[\s\S]*?MapboxMapsOptions\.tileStore = tileStore/);
 });
 
 test('both platforms fit the region with the same formula', () => {

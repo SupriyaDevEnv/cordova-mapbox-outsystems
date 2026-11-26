@@ -17,19 +17,14 @@ for exact options and results.
 | 3 | `estimateOfflineRegionSize` / `estimateOfflineRegionSizeForRect` | Done |
 | 4 | `getAvailableStorage` | Done |
 | 5 | `cancelOfflineDownload` | Done |
-| 6 | `getOfflineRegionIds` (with size, `complete` and `isolated` per region) | Done |
+| 6 | `getOfflineRegionIds` (with size and `complete` per region) | Done |
 | 7 | `detail: 'low' \| 'medium' \| 'high'` → `maxZoom` 13 / 15 / 16 | Done |
 | 8 | Progress with `completedBytes` / `completedMB` (`percent` already existed) | Done |
-| 9 | Isolate each region's tiles and let `initializeOffline` pan across the world | Done |
+| 9 | Lock `showOfflineRegion` to the downloaded region | Not planned for now |
 | 10 | Cache custom marker images with a download | Not started |
 
 `downloadOfflineRegionForRect` gets the same richer result, `detail`, byte
 progress and cancel support, and has its own estimate call.
-
-Each downloaded region uses a dedicated TileStore so an offline map can render
-only that region's tiles while the camera pans beyond its outline. Regions
-downloaded by earlier versions remain in the legacy shared store; download
-those regions again before using isolated offline viewing.
 
 ## Screen → plugin call
 
