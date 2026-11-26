@@ -94,7 +94,7 @@ test('iOS recenter skips stale fixes, times out, and settles superseded requests
     /moveLocationTimeoutWork\?\.cancel\(\)/);
 });
 
-test('offline deletes keep shared style packs unless asked', () => {
+test('offline deletes keep region style packs unless asked', () => {
   assert.match(android, /optBoolean\("deleteStylePack", false\)/);
   assert.match(ios, /options\["deleteStylePack"\] as\? Bool \?\? false/);
 });
