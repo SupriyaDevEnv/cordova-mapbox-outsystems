@@ -417,10 +417,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         _ stores: [OfflineStoreEntry],
         index: Int = 0,
         regions: [String: OfflineRegionEntry] = [:],
+        readError: String? = nil,
         completion: @escaping ([String: OfflineRegionEntry]?, String?) -> Void
     ) {
         guard index < stores.count else {
-            completion(regions, nil)
+            completion(regions, readError)
             return
         }
         let entry = stores[index]
@@ -433,9 +434,17 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                         updated[region.id] = OfflineRegionEntry(region: region, isolated: entry.isolated)
                     }
                 }
-                self.loadOfflineRegions(stores, index: index + 1, regions: updated, completion: completion)
-            case .failure:
-                completion(nil, "Failed to read offline regions.")
+                self.loadOfflineRegions(
+                    stores, index: index + 1, regions: updated,
+                    readError: readError, completion: completion
+                )
+            case .failure(let error):
+                let storeError = readError.map { "\($0); \(error.localizedDescription)" }
+                    ?? error.localizedDescription
+                self.loadOfflineRegions(
+                    stores, index: index + 1, regions: regions,
+                    readError: storeError, completion: completion
+                )
             }
         }
     }
@@ -1861,7 +1870,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         let boundedMaxZoom = max(boundedMinZoom, min(maxZoom, maxOfflineZoom))
         isOfflineDownloading = true
         // Cap the number of stored regions so offline storage cannot grow without limit.
-        // Re-downloading an existing region always works; fail explicitly if stores cannot be read.
+        // Enforce the limit using readable stores; a partial listing is logged and checked best-effort.
         let stores: [OfflineStoreEntry]
         do {
             stores = try offlineRegionStores()
@@ -1872,10 +1881,13 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
         loadOfflineRegions(stores) { stored, error in
             self.runForDownload(downloadGeneration, downloadToken) {
-                guard let stored = stored, error == nil else {
+                guard let stored = stored else {
                     self.isOfflineDownloading = false
                     self.sendError(error ?? "Failed to read offline regions.", command)
                     return
+                }
+                if let error = error {
+                    NSLog("MapboxPlugin: Offline-region limit check is partial; continuing with readable stores: \(error)")
                 }
                 if stored.count >= self.maxOfflineRegions && stored[regionId] == nil {
                     self.isOfflineDownloading = false

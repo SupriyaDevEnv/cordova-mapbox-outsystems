@@ -869,16 +869,23 @@ if (gestures != null) {
         List<OfflineStoreEntry> stores,
         int index,
         Map<String, OfflineRegionEntry> regions,
+        String readError,
         OfflineRegionsCallback callback
     ) {
         if (index >= stores.size()) {
-            callback.complete(regions, null);
+            callback.complete(regions, readError);
             return;
         }
         OfflineStoreEntry entry = stores.get(index);
         entry.store.getAllTileRegions(result -> {
             if (result.isError()) {
-                callback.complete(null, "Failed to read offline regions.");
+                String storeError = result.getError() == null
+                    ? "Unknown tile-region error."
+                    : result.getError().getMessage();
+                String nextError = readError == null
+                    ? storeError
+                    : readError + "; " + storeError;
+                loadOfflineRegions(stores, index + 1, regions, nextError, callback);
                 return;
             }
             for (TileRegion region : result.getValue()) {
@@ -887,7 +894,7 @@ if (gestures != null) {
                     regions.put(region.getId(), new OfflineRegionEntry(region, entry.isolated));
                 }
             }
-            loadOfflineRegions(stores, index + 1, regions, callback);
+            loadOfflineRegions(stores, index + 1, regions, readError, callback);
         });
     }
 
@@ -2522,15 +2529,18 @@ gestures.addOnMoveListener(moveGestureListener);
         final double clampedMaxZoom = clamp(maxZoom, clampedMinZoom, MAX_OFFLINE_ZOOM);
         isOfflineDownloading = true;
         // Cap the number of stored regions so offline storage cannot grow without limit.
-        // Re-downloading an existing region always works; fail explicitly if stores cannot be read.
+        // Enforce the limit using readable stores; a partial listing is logged and checked best-effort.
         try {
-            loadOfflineRegions(offlineStoreEntries(), 0, new LinkedHashMap<>(), (stored, error) ->
+            loadOfflineRegions(offlineStoreEntries(), 0, new LinkedHashMap<>(), null, (stored, error) ->
                 runForDownload(downloadGeneration, downloadToken, () -> {
                     if (downloadGeneration != sessionGeneration) return;
-                    if (error != null) {
+                    if (stored == null) {
                         isOfflineDownloading = false;
-                        callback.error(error);
+                        callback.error("Failed to read offline regions.");
                         return;
+                    }
+                    if (error != null) {
+                        Log.w("MapboxPlugin", "Offline-region limit check is partial; continuing with readable stores: " + error);
                     }
                     if (stored.size() >= MAX_OFFLINE_REGIONS && !stored.containsKey(regionId)) {
                         isOfflineDownloading = false;
@@ -2974,7 +2984,7 @@ gestures.addOnMoveListener(moveGestureListener);
 
     private void getOfflineRegionIds(CallbackContext callback) {
         try {
-            loadOfflineRegions(offlineStoreEntries(), 0, new LinkedHashMap<>(), (regions, error) -> {
+            loadOfflineRegions(offlineStoreEntries(), 0, new LinkedHashMap<>(), null, (regions, error) -> {
                 try {
                     if (error != null) {
                         callback.error(error);
