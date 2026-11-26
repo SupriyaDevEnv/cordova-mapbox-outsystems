@@ -4825,6 +4825,25 @@ private boolean addMarkerInternal(
         });
     }
 
+    private String applyVisibility(
+        Style style,
+        String layerId,
+        boolean visible
+    ) {
+        Expected<String, None> result =
+            style.setStyleLayerProperty(
+                layerId,
+                "visibility",
+                Value.valueOf(visible ? "visible" : "none")
+            );
+
+        if (result.isError()) {
+            return result.getError();
+        }
+
+        return null;
+    }
+
     private void setJsonGroupVisibility(
         JSONObject options,
         CallbackContext callback
@@ -4853,8 +4872,6 @@ private boolean addMarkerInternal(
                 JSONArray updatedLayers = new JSONArray();
                 JSONArray failedLayers = new JSONArray();
                 JSONArray visibilityReadback = new JSONArray();
-                String requestedVisibility = visible ? "visible" : "none";
-                Value visibility = Value.valueOf(requestedVisibility);
 
                 for (int i = 0; i < layers.length(); i++) {
                     JSONObject layer = layers.optJSONObject(i);
@@ -4874,66 +4891,52 @@ private boolean addMarkerInternal(
 
                     JSONObject verification = new JSONObject();
                     verification.put("layerId", layerId);
-                    verification.put("expectedVisibility", requestedVisibility);
+                    verification.put(
+                        "expectedVisibility",
+                        visible ? "visible" : "none"
+                    );
 
-                    try {
-                        Expected<String, None> updateResult =
-                            style.setStyleLayerProperty(
-                                layerId,
-                                "visibility",
-                                visibility
-                            );
-                        if (updateResult.isError()) {
-                            throw new Exception(
-                                "SDK update failed: " +
-                                updateResult.getError()
-                            );
-                        }
+                    String error = applyVisibility(style, layerId, visible);
 
-                        String actualJson = style
-                            .getStyleLayerProperty(layerId, "visibility")
-                            .getValue()
-                            .toJson();
-                        Object rawVisibility =
-                            new JSONArray("[" + actualJson + "]").get(0);
-                        boolean usesDefaultVisibility =
-                            rawVisibility == null ||
-                            rawVisibility == JSONObject.NULL;
-                        Object actualVisibility = usesDefaultVisibility
-                            ? "visible"
-                            : rawVisibility;
-                        verification.put(
-                            "actualVisibility",
-                            actualVisibility
-                        );
-                        verification.put(
-                            "visibilityIsDefault",
-                            usesDefaultVisibility
-                        );
-
-                        boolean matches = requestedVisibility.equals(
-                            actualVisibility
-                        );
-                        verification.put("matchesRequested", matches);
-
-                        if (matches) {
-                            updatedLayers.put(layerId);
-                        } else {
+                    if (error != null) {
+                        verification.put("updated", false);
+                        verification.put("error", error);
+                        failedLayers.put(verification);
+                    } else {
+                        try {
+                            String actualJson = style
+                                .getStyleLayerProperty(layerId, "visibility")
+                                .getValue()
+                                .toJson();
+                            Object actualVisibility =
+                                new JSONArray("[" + actualJson + "]").get(0);
                             verification.put(
-                                "error",
-                                "Visibility did not match requested value"
+                                "actualVisibility",
+                                actualVisibility
+                            );
+                            boolean matches = (visible ? "visible" : "none")
+                                .equals(actualVisibility);
+                            verification.put("matchesRequested", matches);
+
+                            if (matches) {
+                                verification.put("updated", true);
+                                updatedLayers.put(verification);
+                            } else {
+                                verification.put("updated", false);
+                                verification.put(
+                                    "error",
+                                    "Visibility readback does not match requested value"
+                                );
+                                failedLayers.put(verification);
+                            }
+                        } catch (Exception e) {
+                            verification.put("updated", false);
+                            verification.put(
+                                "readbackError",
+                                e.getMessage()
                             );
                             failedLayers.put(verification);
                         }
-                    } catch (Exception e) {
-                        verification.put("matchesRequested", false);
-                        verification.put(
-                            "error",
-                            e.getMessage() != null
-                                ? e.getMessage()
-                                : e.getClass().getSimpleName()
-                        );
-                        failedLayers.put(verification);
                     }
 
                     visibilityReadback.put(verification);
