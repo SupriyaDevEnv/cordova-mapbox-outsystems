@@ -1,6 +1,5 @@
 import Foundation
 import CoreFoundation
-import CryptoKit
 import Security
 import CoreLocation
 import UIKit
@@ -116,9 +115,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     private var lastCompassVisible = false
     private var activeStylePackDownload: Cancelable?
     private var activeTileRegionDownload: Cancelable?
-    private var activeOfflineTileStore: TileStore?
-    private var offlineMapTileStore: TileStore?
-    private var offlineMapAllowsWorldPan = false
     private var isOfflineDownloading = false
     // Incremented for each download and on cancel; stale download callbacks are ignored.
     private var offlineDownloadToken: UInt64 = 0
@@ -359,30 +355,19 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             // Check the region is on the device before showing any map.
             let generation = self.sessionGeneration
-            let tileStore: TileStore
-            do {
-                guard self.hasIsolatedOfflineRegionStore(regionId) else {
-                    self.sendError("Offline region '\(regionId)' must be downloaded again to use isolated offline maps.", command)
-                    return
-                }
-                tileStore = try self.offlineRegionTileStore(regionId)
-            } catch {
-                self.sendError(self.sanitizeError(contextMessage: "Failed to initialize the offline map.", error: error), command)
-                return
-            }
-            tileStore.tileRegionGeometry(forId: regionId) { result in
+            TileStore.default.tileRegionGeometry(forId: regionId) { result in
                 DispatchQueue.main.async {
                     guard generation == self.sessionGeneration else {
                         self.sendError("Map closed; operation cancelled.", command)
                         return
                     }
                     guard case .success = result else {
-                        self.sendError("Offline region '\(regionId)' must be downloaded again to use isolated offline maps.", command)
+                        self.sendError("Offline region '\(regionId)' is not downloaded on this device.", command)
                         return
                     }
                     self.openOfflineMapView(regionId: regionId, options: options,
                                             minZoom: minZoom, maxZoom: maxZoom,
-                                            token: token, tileStore: tileStore, command: command)
+                                            token: token, command: command)
                 }
             }
         }
@@ -390,14 +375,11 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
     private func openOfflineMapView(regionId: String, options: [String: Any],
                                     minZoom: CGFloat?, maxZoom: CGFloat?,
-                                    token: String, tileStore: TileStore,
-                                    command: CDVInvokedUrlCommand) {
+                                    token: String, command: CDVInvokedUrlCommand) {
         self.closeInternal()
         self.initialCameraMinZoom = minZoom
         self.initialCameraMaxZoom = maxZoom
         self.offlineRegionCameraBoundsActive = false
-        self.offlineMapAllowsWorldPan = true
-        self.offlineMapTileStore = tileStore
         self.rememberCommand(command)
 
         MapboxOptions.accessToken = token
@@ -412,13 +394,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
         let isInline = options["inline"] as? Bool ?? false
         let behindWebView = options["behindWebView"] as? Bool ?? true
-        let previousTileStore = MapboxMapsOptions.tileStore
-        MapboxMapsOptions.tileStore = tileStore
         let mapView = MapView(
             frame: isInline ? self.frameFromOptions(options) : self.webView.bounds,
             mapInitOptions: initOptions
         )
-        MapboxMapsOptions.tileStore = previousTileStore
 
         if minZoom != nil || maxZoom != nil {
             do {
@@ -1680,109 +1659,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         }
     }
 
-    private func offlineRegionStoreRootURL(create: Bool) throws -> URL {
-        let applicationSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let root = applicationSupport.appendingPathComponent("MapboxOfflineRegions", isDirectory: true)
-        if create {
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        }
-        return root
-    }
-
-    private func offlineRegionStoreURL(_ regionId: String, create: Bool) throws -> URL {
-        let digest = SHA256.hash(data: Data(regionId.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
-        let url = try offlineRegionStoreRootURL(create: create)
-            .appendingPathComponent(digest, isDirectory: true)
-        if create {
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        }
-        return url
-    }
-
-    private func offlineRegionTileStore(_ regionId: String) throws -> TileStore {
-        _ = TileStore.default
-        return TileStore.shared(for: try offlineRegionStoreURL(regionId, create: true))
-    }
-
-    private func hasIsolatedOfflineRegionStore(_ regionId: String) -> Bool {
-        guard let url = try? offlineRegionStoreURL(regionId, create: false) else { return false }
-        return FileManager.default.fileExists(atPath: url.appendingPathComponent("complete").path)
-    }
-
-    private func markOfflineRegionIsolated(_ regionId: String) throws {
-        let marker = try offlineRegionStoreURL(regionId, create: true).appendingPathComponent("complete")
-        guard FileManager.default.createFile(atPath: marker.path, contents: Data()) else {
-            throw NSError(domain: "MapboxPlugin", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Unable to save isolated offline region metadata."
-            ])
-        }
-    }
-
-    private func allOfflineTileStores() throws -> [TileStore] {
-        let defaultStore = TileStore.default
-        let root = try offlineRegionStoreRootURL(create: false)
-        guard FileManager.default.fileExists(atPath: root.path) else { return [defaultStore] }
-        let directories = try FileManager.default.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ).filter { url in
-            (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-        }
-        return directories.map { TileStore.shared(for: $0) } + [defaultStore]
-    }
-
-    private func getAllOfflineRegions(_ completion: @escaping (Result<[TileRegion], Error>) -> Void) {
-        do {
-            readOfflineRegions(
-                from: try allOfflineTileStores(),
-                index: 0,
-                accumulated: [:],
-                completion: completion
-            )
-        } catch {
-            completion(.failure(error))
-        }
-    }
-
-    private func readOfflineRegions(
-        from stores: [TileStore],
-        index: Int,
-        accumulated: [String: TileRegion],
-        completion: @escaping (Result<[TileRegion], Error>) -> Void
-    ) {
-        guard index < stores.count else {
-            completion(.success(Array(accumulated.values)))
-            return
-        }
-        stores[index].allTileRegions { result in
-            DispatchQueue.main.async {
-                switch result {
-                case .success(let regions):
-                    var combined = accumulated
-                    for region in regions where combined[region.id] == nil {
-                        combined[region.id] = region
-                    }
-                    self.readOfflineRegions(
-                        from: stores,
-                        index: index + 1,
-                        accumulated: combined,
-                        completion: completion
-                    )
-                case .failure(let error):
-                    completion(.failure(error))
-                }
-            }
-        }
-    }
-
     private func startOfflineDownload(
         regionId: String,
         latitude: Double,
@@ -1829,18 +1705,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         // Cap the number of stored regions so offline storage cannot grow without limit.
         // Re-downloading an existing region always works. If the list cannot be read,
         // the download goes ahead.
-        getAllOfflineRegions { result in
+        TileStore.default.allTileRegions { result in
             self.runForDownload(downloadGeneration, downloadToken) {
-                let regions: [TileRegion]
-                switch result {
-                case .success(let stored):
-                    regions = stored
-                case .failure(let error):
-                    self.isOfflineDownloading = false
-                    self.sendError(self.sanitizeError(contextMessage: "Failed to read offline regions.", error: error), command)
-                    return
-                }
-                if regions.count >= self.maxOfflineRegions,
+                if case .success(let regions) = result,
+                   regions.count >= self.maxOfflineRegions,
                    !regions.contains(where: { $0.id == regionId }) {
                     self.isOfflineDownloading = false
                     self.sendError("Offline region limit reached: delete a region before downloading another (maximum \(self.maxOfflineRegions)).", command)
@@ -1880,20 +1748,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         command: CDVInvokedUrlCommand
     ) {
         cancelCurrentDownload()
-        let tileStore: TileStore
-        do {
-            tileStore = try offlineRegionTileStore(regionId)
-        } catch {
-            isOfflineDownloading = false
-            activeOfflineTileStore = nil
-            sendError(sanitizeError(contextMessage: "Failed to prepare isolated offline storage.", error: error), command)
-            return
-        }
-        activeOfflineTileStore = tileStore
-        let previousTileStore = MapboxMapsOptions.tileStore
-        MapboxMapsOptions.tileStore = tileStore
         let offlineManager = OfflineManager()
-        MapboxMapsOptions.tileStore = previousTileStore
         sendOfflineProgress(phase: "style-start", completed: 0, required: 100)
 
         guard let stylePackOptions = StylePackLoadOptions(
@@ -1940,7 +1795,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                     )
                 case .failure(let error):
                     self.isOfflineDownloading = false
-                    self.activeOfflineTileStore = nil
                     self.sendError(self.sanitizeError(contextMessage: "Failed to download style pack.", error: error), command)
                 }
             }
@@ -1992,12 +1846,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             return
         }
 
-        guard let tileStore = activeOfflineTileStore else {
-            isOfflineDownloading = false
-            sendError("Isolated offline storage is unavailable.", command)
-            return
-        }
-        activeTileRegionDownload = tileStore.loadTileRegion(
+        activeTileRegionDownload = TileStore.default.loadTileRegion(
             forId: regionId,
             loadOptions: loadOptions
         ) { progress in
@@ -2014,26 +1863,20 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                 self.isOfflineDownloading = false
                 switch result {
                 case .success(let region):
-                    do {
-                        try self.markOfflineRegionIsolated(regionId)
-                        self.sendSuccess(self.offlineDownloadResult(
-                            regionId: regionId,
-                            latitude: latitude,
-                            longitude: longitude,
-                            radiusKm: radiusKm,
-                            minZoom: minZoom,
-                            maxZoom: maxZoom,
-                            styleURI: styleURI,
-                            area: area,
-                            sizeBytes: region.completedResourceSize
-                        ), command)
-                    } catch {
-                        self.sendError(self.sanitizeError(contextMessage: "Failed to save isolated offline region metadata.", error: error), command)
-                    }
+                    self.sendSuccess(self.offlineDownloadResult(
+                        regionId: regionId,
+                        latitude: latitude,
+                        longitude: longitude,
+                        radiusKm: radiusKm,
+                        minZoom: minZoom,
+                        maxZoom: maxZoom,
+                        styleURI: styleURI,
+                        area: area,
+                        sizeBytes: region.completedResourceSize
+                    ), command)
                 case .failure(let error):
                     self.sendError(self.sanitizeError(contextMessage: "Failed to download tile region.", error: error), command)
                 }
-                self.activeOfflineTileStore = nil
             }
         }
     }
@@ -2204,7 +2047,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
     @objc(getOfflineRegionIds:)
     func getOfflineRegionIds(command: CDVInvokedUrlCommand) {
         rememberCommand(command)
-        getAllOfflineRegions { result in
+        TileStore.default.allTileRegions { result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let regions):
@@ -2216,8 +2059,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
                                 "sizeBytes": NSNumber(value: region.completedResourceSize),
                                 // false for a download that stopped part-way.
                                 "complete": region.requiredResourceCount > 0
-                                    && region.completedResourceCount >= region.requiredResourceCount,
-                                "isolated": self.hasIsolatedOfflineRegionStore(region.id)
+                                    && region.completedResourceCount >= region.requiredResourceCount
                             ]
                         }
                     ], command)
@@ -2338,7 +2180,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             "latitude": latitude,
             "longitude": longitude,
             "radiusKm": radiusKm,
-            // Tile data for this region only; its style pack is not included.
+            // Tile data for this region only; the shared style pack is not included.
             "sizeBytes": NSNumber(value: sizeBytes),
             "bounds": [
                 "south": box.south,
@@ -2371,14 +2213,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
 
             let regionId = (options["regionId"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !regionId.isEmpty {
-                guard self.hasIsolatedOfflineRegionStore(regionId) else {
-                    self.sendError("Offline region '\(regionId)' must be downloaded again to use isolated offline maps.", command)
-                    return
-                }
-                if let callbackId = command.callbackId {
-                    self.sessionCallbacks.removeValue(forKey: callbackId)
-                }
-                self.initializeOffline(command: command)
+                self.showDownloadedRegion(regionId: regionId, options: options, command: command)
                 return
             }
 
@@ -2421,15 +2256,14 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             return
         }
         let generation = sessionGeneration
-        let tileStore = offlineMapTileStore ?? TileStore.default
-        tileStore.tileRegionGeometry(forId: regionId) { geometryResult in
+        TileStore.default.tileRegionGeometry(forId: regionId) { geometryResult in
             self.runForGeneration(generation) {
                 guard case .success(let geometry) = geometryResult,
                       let box = self.geometryBounds(geometry) else {
                     self.sendError("Offline region '\(regionId)' is not downloaded on this device.", command)
                     return
                 }
-                tileStore.tileRegionMetadata(forId: regionId) { metadataResult in
+                TileStore.default.tileRegionMetadata(forId: regionId) { metadataResult in
                     self.runForGeneration(generation) {
                         var metadata: [String: Any] = [:]
                         if case .success(let value) = metadataResult, let dictionary = value as? [String: Any] {
@@ -2551,7 +2385,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         )
         do {
             try mapView.mapboxMap.setCameraBounds(with: CameraBoundsOptions(
-                bounds: offlineMapAllowsWorldPan ? .world : regionBounds,
+                bounds: regionBounds,
                 maxZoom: CGFloat(maxZoom),
                 minZoom: CGFloat(minZoom)
             ))
@@ -2579,7 +2413,7 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             self.sendError("Style URL is not allowed. Use a Mapbox style or an approved HTTPS host.", command)
             return
         }
-        // Keep this region's style pack unless explicitly requested.
+        // Other regions usually share this style pack; only delete it when asked.
         let deleteStylePack = options["deleteStylePack"] as? Bool ?? false
 
         guard !regionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -2587,32 +2421,10 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
             return
         }
 
-        let isolatedStoreURL: URL
-        do {
-            isolatedStoreURL = try offlineRegionStoreURL(regionId, create: false)
-        } catch {
-            sendError(sanitizeError(contextMessage: "Failed to delete offline region.", error: error), command)
-            return
-        }
-        let hasIsolatedStore = FileManager.default.fileExists(atPath: isolatedStoreURL.path)
-        let tileStore = hasIsolatedStore ? TileStore.shared(for: isolatedStoreURL) : TileStore.default
         TileStore.default.removeTileRegion(forId: regionId)
-        tileStore.removeTileRegion(forId: regionId)
-        let completionMarker = isolatedStoreURL.appendingPathComponent("complete")
-        if FileManager.default.fileExists(atPath: completionMarker.path) {
-            do {
-                try FileManager.default.removeItem(at: completionMarker)
-            } catch {
-                sendError(sanitizeError(contextMessage: "Failed to remove isolated offline region metadata.", error: error), command)
-                return
-            }
-        }
 
         if deleteStylePack, let styleURI = StyleURI(rawValue: styleUrl) {
-            let previousTileStore = MapboxMapsOptions.tileStore
-            MapboxMapsOptions.tileStore = tileStore
             OfflineManager().removeStylePack(for: styleURI)
-            MapboxMapsOptions.tileStore = previousTileStore
         }
 
         sendSuccess(command)
@@ -3307,7 +3119,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         activeTileRegionDownload?.cancel()
         activeStylePackDownload = nil
         activeTileRegionDownload = nil
-        activeOfflineTileStore = nil
     }
 
     func closeInternal() {
@@ -3434,9 +3245,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         mapTouchOverlay = nil
         mapView?.removeFromSuperview()
         mapView = nil
-        offlineMapTileStore = nil
-        offlineMapAllowsWorldPan = false
-        offlineRegionCameraBoundsActive = false
     }
 
     @objc private func closeFromButton() {
