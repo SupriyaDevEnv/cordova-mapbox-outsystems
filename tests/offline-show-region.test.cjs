@@ -88,6 +88,22 @@ test('region listings expose isolated status and scan both store types', () => {
   assert.match(ios, /stores\.append\(OfflineStoreEntry\(store: TileStore\.default, isolated: false\)\)/);
 });
 
+test('downloads continue with a logged best-effort limit check when a store cannot be read', () => {
+  const aLoad = between(android, 'private void loadOfflineRegions(', 'private void initializeOffline(');
+  const aDownload = between(android, 'private void startOfflineDownload(', 'private void beginOfflineDownload(');
+  const aList = between(android, 'private void getOfflineRegionIds(', 'private Polygon createRectPolygon(');
+  const iLoad = between(ios, 'private func loadOfflineRegions(', '/// Opens only a region downloaded');
+  const iDownload = between(ios, 'private func startOfflineDownload(', 'struct OfflineAreaError');
+  const iList = between(ios, 'func getOfflineRegionIds(command:', 'struct OfflineAreaError');
+
+  assert.match(aLoad, /result\.isError\(\)[\s\S]*?loadOfflineRegions\(stores, index \+ 1/);
+  assert.match(aDownload, /if \(error != null\)\s*\{\s*Log\.w\(/);
+  assert.match(aList, /if \(error != null\)\s*\{\s*callback\.error\(error\)/);
+  assert.match(iLoad, /case \.failure\(let error\):[\s\S]*?self\.loadOfflineRegions\(/);
+  assert.match(iDownload, /if let error = error\s*\{\s*NSLog\(/);
+  assert.match(iList, /sendError\(error \?\? "Failed to read offline regions\."/);
+});
+
 test('showOfflineRegion reads the active isolated store and directs other regions to initializeOffline', () => {
   const a = between(android, 'private void showDownloadedRegion(', 'private void openDownloadedRegion(');
   const i = between(ios, 'private func showDownloadedRegion(', 'private func geometryCoordinates(');
