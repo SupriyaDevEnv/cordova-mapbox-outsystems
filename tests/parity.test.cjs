@@ -211,24 +211,6 @@ test('every Android action has an iOS implementation, and the reverse', () => {
   assert.deepEqual([...iosActions].filter((a) => !androidActions.has(a)), [], 'iOS-only actions');
 });
 
-<<<<<<< HEAD
-test('inspectStyleStructure reports layers, imports, and style JSON on both platforms', () => {
-  const ios = fs.readFileSync('src/ios/MapboxPlugin.swift', 'utf8');
-  const javascript = fs.readFileSync('www/MapboxPlugin.js', 'utf8');
-  const androidBody = android.split('private void inspectStyleStructure(')[1]
-    .split('private void setMapStyle(')[0];
-  const iosBody = ios.split('func inspectStyleStructure(command:')[1]
-    .split('@objc(startPathTracking:)')[0];
-
-  assert.match(android, /case "inspectStyleStructure":\s*inspectStyleStructure\(callbackContext\)/);
-  assert.match(javascript, /inspectStyleStructure: function \(\)\s*\{\s*return call\('inspectStyleStructure', \[\]\)/);
-  for (const key of ['rootLayerCount', 'rootLayers', 'importCount', 'imports', 'styleJSON']) {
-    assert.match(androidBody, new RegExp('result\\.put\\(\\s*"' + key + '"'));
-    assert.ok(iosBody.includes('"' + key + '"'), key + ' is missing from iOS response');
-  }
-});
-
-=======
 test('iOS reads layer groups from mapbox:group metadata like Android', () => {
   const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
   for (const name of ['getLayersByGroup', 'setLayerGroupVisibility']) {
@@ -282,7 +264,6 @@ test('iOS reports partial and total failures when updating a layer group', () =>
   assert.match(body, /self\.sendError\(message, command\)/);
 });
 
->>>>>>> 74e48bfb53316aea9b64fde1f0de5e6504b37e38
 test('path line style is validated the same way on both platforms', () => {
   const androidStart = android.split('private void startPathTracking(')[1].split('private void stopPathTracking(')[0];
   const androidLoad = android.split('private void loadPath(')[1].split('private void clearPaths(')[0];

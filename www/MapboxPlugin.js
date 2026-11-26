@@ -681,8 +681,6 @@ var api = {
     return call('setBoundaryVisibility', [options || {}]);
   },
 
-<<<<<<< HEAD
-=======
   setLayerVisibility: function (options) {
     return call('setLayerVisibility', [options || {}]);
   },
@@ -695,7 +693,6 @@ var api = {
     return call('getLayersByGroup', [options || {}]);
   },
 
->>>>>>> 74e48bfb53316aea9b64fde1f0de5e6504b37e38
   clearBoundaries: function () {
     return call('clearBoundaries', []);
   },
