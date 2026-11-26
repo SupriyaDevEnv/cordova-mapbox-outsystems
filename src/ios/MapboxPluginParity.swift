@@ -179,8 +179,6 @@ class MapboxPluginParity: MapboxPlugin {
         }
     }
 
-<<<<<<< HEAD
-=======
     @objc(setLayerVisibility:)
     func setLayerVisibility(command: CDVInvokedUrlCommand) {
         rememberCommand(command)
@@ -340,7 +338,6 @@ class MapboxPluginParity: MapboxPlugin {
         layerMetadata(map, layerId)?["mapbox:group"] as? String
     }
 
->>>>>>> 74e48bfb53316aea9b64fde1f0de5e6504b37e38
     override func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else {
             return
