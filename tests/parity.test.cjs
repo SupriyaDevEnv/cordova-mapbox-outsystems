@@ -264,6 +264,23 @@ test('iOS reports partial and total failures when updating a layer group', () =>
   assert.match(body, /self\.sendError\(message, command\)/);
 });
 
+test('setJsonGroupVisibility reloads updated root-level style JSON on both platforms', () => {
+  const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const androidBody = android.split('private void setJsonGroupVisibility(')[1]
+    .split('private void setMapStyle(')[0];
+  const iosBody = parity.split('func setJsonGroupVisibility(command:')[1]
+    .split('private func requiredGroupId(')[0];
+
+  assert.match(android, /case "setJsonGroupVisibility":\s*setJsonGroupVisibility\(options, callbackContext\)/);
+  assert.match(androidBody, /metadata[\s\S]*optString\("mapbox:group", ""\)/);
+  assert.match(androidBody, /layout\.put\("visibility", requestedVisibility\)/);
+  assert.match(androidBody, /loadReadyStyle\(styleJson\.toString\(\), null, result, callback\)/);
+  assert.match(parity, /@objc\(setJsonGroupVisibility:\)/);
+  assert.match(iosBody, /metadata\["mapbox:group"\]/);
+  assert.match(iosBody, /layout\["visibility"\] = requestedVisibility/);
+  assert.match(iosBody, /self\.loadReadyStyleJSON\(/);
+});
+
 test('path line style is validated the same way on both platforms', () => {
   const androidStart = android.split('private void startPathTracking(')[1].split('private void stopPathTracking(')[0];
   const androidLoad = android.split('private void loadPath(')[1].split('private void clearPaths(')[0];

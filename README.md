@@ -161,6 +161,7 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `setLayerVisibility(options)`
 - `getLayersByGroup(options)`
 - `setLayerGroupVisibility(options)`
+- `setJsonGroupVisibility(options)`
 - `close()`
 
 ## Initialize Map
@@ -648,9 +649,11 @@ These actions work on the layers of the current map style, on both Android and i
 | `setLayerVisibility(options)` | `layerId` (required), `visible` (default `true`) | Nothing |
 | `getLayersByGroup(options)` | `groupId` (required) | `{ groupId, totalLayers, layers: [{ id, name, type }] }` |
 | `setLayerGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | Success: `{ groupId, visible, updatedCount, updatedLayers, failedCount, failedLayers }`. If no layers update, the error is JSON text with `matchedLayers`, `updatedCount`, and `failedLayers`. |
+| `setJsonGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | Updates matching root-level layers in the style JSON and reloads the style. Returns matched and updated layer IDs; no matches resolve with `matchedCount: 0`. |
 
 ```javascript
 await MapboxPlugin.setLayerGroupVisibility({ groupId: $parameters.GroupId, visible: false });
+await MapboxPlugin.setJsonGroupVisibility({ groupId: $parameters.GroupId, visible: false });
 ```
 
 ## Markers

@@ -550,6 +550,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             case "inspectStyleStructure":
                 inspectStyleStructure(callbackContext);
                 return true;
+            case "setJsonGroupVisibility":
+                setJsonGroupVisibility(options, callbackContext);
+                return true;
             default:
                 return false;
         }
@@ -5228,6 +5231,106 @@ private boolean addMarkerInternal(
         });
     }
 
+    private void setJsonGroupVisibility(
+        JSONObject options,
+        CallbackContext callback
+    ) {
+        runForSession(() -> {
+            try {
+                String groupId = options.optString("groupId", "").trim();
+                boolean visible = options.optBoolean("visible", true);
+
+                if (groupId.isEmpty()) {
+                    callback.error("groupId is required");
+                    return;
+                }
+
+                if (mapView == null) {
+                    callback.error("Map is not initialized.");
+                    return;
+                }
+
+                Style currentStyle = mapView.getMapboxMap().getStyle();
+                if (currentStyle == null) {
+                    callback.error("Style is not loaded.");
+                    return;
+                }
+
+                JSONObject styleJson = new JSONObject(currentStyle.getStyleJSON());
+                JSONArray layers = styleJson.optJSONArray("layers");
+                if (layers == null) {
+                    callback.error("No root-level layers found in style JSON");
+                    return;
+                }
+
+                String requestedVisibility = visible ? "visible" : "none";
+                JSONArray matchedLayers = new JSONArray();
+                JSONArray updatedLayers = new JSONArray();
+
+                for (int i = 0; i < layers.length(); i++) {
+                    JSONObject layer = layers.optJSONObject(i);
+                    if (layer == null) {
+                        continue;
+                    }
+
+                    JSONObject metadata = layer.optJSONObject("metadata");
+                    if (metadata == null) {
+                        continue;
+                    }
+
+                    String layerGroup = metadata
+                        .optString("mapbox:group", "")
+                        .trim();
+                    if (!groupId.equals(layerGroup)) {
+                        continue;
+                    }
+
+                    String layerId = layer.optString("id", "").trim();
+                    if (layerId.isEmpty()) {
+                        continue;
+                    }
+
+                    matchedLayers.put(layerId);
+
+                    JSONObject layout = layer.optJSONObject("layout");
+                    if (layout == null) {
+                        layout = new JSONObject();
+                        layer.put("layout", layout);
+                    }
+                    layout.put("visibility", requestedVisibility);
+                    updatedLayers.put(layerId);
+                }
+
+                if (matchedLayers.length() == 0) {
+                    JSONObject result = new JSONObject();
+                    result.put("groupId", groupId);
+                    result.put("visible", visible);
+                    result.put("matchedCount", 0);
+                    result.put("message", "No layers found for this group");
+                    callback.success(result);
+                    return;
+                }
+
+                JSONObject result = new JSONObject();
+                result.put("method", "ROOT_STYLE_JSON_RELOAD");
+                result.put("groupId", groupId);
+                result.put("visible", visible);
+                result.put("requestedVisibility", requestedVisibility);
+                result.put("matchedCount", matchedLayers.length());
+                result.put("updatedCount", updatedLayers.length());
+                result.put("matchedLayers", matchedLayers);
+                result.put("updatedLayers", updatedLayers);
+                result.put("message", "Group visibility updated successfully");
+
+                loadReadyStyle(styleJson.toString(), null, result, callback);
+            } catch (Exception e) {
+                callback.error(
+                    "Failed to update group visibility: " + e.getMessage()
+                );
+            }
+        });
+    }
+
     private void setMapStyle(JSONObject options, CallbackContext callback) {
         runForSession(() -> {
             if (mapView == null) {
@@ -5257,10 +5360,19 @@ private boolean addMarkerInternal(
         final MapView view;
         final CallbackContext callback;
         final String status;
+        final JSONObject successPayload;
         Cancelable errors;
         Runnable timeout;
-        StyleRequest(MapView view, CallbackContext callback, String status) {
-            this.view = view; this.callback = callback; this.status = status;
+        StyleRequest(
+            MapView view,
+            CallbackContext callback,
+            String status,
+            JSONObject successPayload
+        ) {
+            this.view = view;
+            this.callback = callback;
+            this.status = status;
+            this.successPayload = successPayload;
         }
     }
 
@@ -5278,6 +5390,10 @@ private boolean addMarkerInternal(
         cancelPendingStyle();
         if (request.callback.isFinished()) return;
         if (error != null) { request.callback.error(error); return; }
+        if (request.successPayload != null) {
+            request.callback.success(request.successPayload);
+            return;
+        }
         if (request.status == null) { request.callback.success(); return; }
         try {
             JSONObject result = new JSONObject();
@@ -5289,11 +5405,21 @@ private boolean addMarkerInternal(
     }
 
     private void loadReadyStyle(String uri, String status, CallbackContext callback) {
+        loadReadyStyle(uri, status, null, callback);
+    }
+
+    private void loadReadyStyle(
+        String uri,
+        String status,
+        JSONObject successPayload,
+        CallbackContext callback
+    ) {
         if (pendingStyle != null) {
             callback.error("A style load is already in progress. Await its completion first.");
             return;
         }
-        final StyleRequest request = new StyleRequest(mapView, callback, status);
+        final StyleRequest request =
+            new StyleRequest(mapView, callback, status, successPayload);
         pendingStyle = request;
         request.timeout = () -> finishStyle(request, "Style loading timed out after 30 seconds.");
         styleHandler.postDelayed(request.timeout, 30000L);

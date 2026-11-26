@@ -304,6 +304,102 @@ class MapboxPluginParity: MapboxPlugin {
         }
     }
 
+    @objc(setJsonGroupVisibility:)
+    func setJsonGroupVisibility(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            let groupId = (options["groupId"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let visible = options["visible"] as? Bool ?? true
+
+            guard !groupId.isEmpty else {
+                self.sendError("groupId is required", command)
+                return
+            }
+
+            guard let map = self.loadedStyleMap(
+                command,
+                notInitialized: "Map is not initialized.",
+                notLoaded: "Style is not loaded."
+            ) else { return }
+
+            do {
+                guard var styleRoot = try JSONSerialization.jsonObject(
+                    with: Data(map.styleJSON.utf8)
+                ) as? [String: Any],
+                      var layers = styleRoot["layers"] as? [Any] else {
+                    self.sendError("No root-level layers found in style JSON", command)
+                    return
+                }
+
+                let requestedVisibility = visible ? "visible" : "none"
+                var matchedLayers: [String] = []
+                var updatedLayers: [String] = []
+
+                for index in layers.indices {
+                    guard var layer = layers[index] as? [String: Any],
+                          let metadata = layer["metadata"] as? [String: Any] else {
+                        continue
+                    }
+
+                    let layerGroup = (metadata["mapbox:group"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard layerGroup == groupId else { continue }
+
+                    let layerId = (layer["id"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !layerId.isEmpty else { continue }
+
+                    matchedLayers.append(layerId)
+                    var layout = layer["layout"] as? [String: Any] ?? [:]
+                    layout["visibility"] = requestedVisibility
+                    layer["layout"] = layout
+                    layers[index] = layer
+                    updatedLayers.append(layerId)
+                }
+
+                if matchedLayers.isEmpty {
+                    self.sendSuccess([
+                        "groupId": groupId,
+                        "visible": visible,
+                        "matchedCount": 0,
+                        "message": "No layers found for this group"
+                    ], command)
+                    return
+                }
+
+                styleRoot["layers"] = layers
+                let data = try JSONSerialization.data(withJSONObject: styleRoot)
+                guard let styleJSON = String(data: data, encoding: .utf8) else {
+                    self.sendError("Failed to serialize updated style JSON.", command)
+                    return
+                }
+
+                self.loadReadyStyleJSON(
+                    styleJSON,
+                    successPayload: [
+                        "method": "ROOT_STYLE_JSON_RELOAD",
+                        "groupId": groupId,
+                        "visible": visible,
+                        "requestedVisibility": requestedVisibility,
+                        "matchedCount": matchedLayers.count,
+                        "updatedCount": updatedLayers.count,
+                        "matchedLayers": matchedLayers,
+                        "updatedLayers": updatedLayers,
+                        "message": "Group visibility updated successfully"
+                    ],
+                    command: command
+                )
+            } catch {
+                self.sendError(
+                    "Failed to update group visibility: \(error.localizedDescription)",
+                    command
+                )
+            }
+        }
+    }
+
     private func requiredGroupId(_ command: CDVInvokedUrlCommand) -> String? {
         let options = command.argument(at: 0) as? [String: Any] ?? [:]
         let groupId = (options["groupId"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)

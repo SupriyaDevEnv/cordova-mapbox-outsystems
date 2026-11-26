@@ -3,10 +3,11 @@
 ## Unreleased
 
 - **New:** `inspectStyleStructure()` reports root layers, imported styles and the complete loaded style JSON on Android and iOS.
+- **New:** `setJsonGroupVisibility({ groupId, visible })` updates matching root-level style JSON layers and reloads the style on Android and iOS.
 - **New:** `initializeOffline({ regionId, ... })` opens only a downloaded region on Android and iOS: no online starting style, nothing shown when the region is missing, and Mapbox network access switched off until the map closes.
 - **Changed:** `showOfflineRegion({ regionId })` constrains the camera center to the saved region bounds and zoom range on Android and iOS.
 - **Changed:** removed `diagnoseLayerGroup` and `getLayerIds` from the Android and iOS APIs.
-- **Removed:** style-layer visibility controls, group lookup/toggles, and layer diagnostics (`setLayerVisibility`, `getLayersByGroup`, `setLayerGroupVisibility`, `setRuntimeGroupVisibility`, `setJsonGroupVisibility`, `diagnoseRuntimeLayers`, `debugStyleLayers`) from Android and iOS.
+- **Removed:** style-layer visibility controls, group lookup/toggles, and layer diagnostics (`setLayerVisibility`, `getLayersByGroup`, `setLayerGroupVisibility`, `setRuntimeGroupVisibility`, `diagnoseRuntimeLayers`, `debugStyleLayers`) from Android and iOS.
 - **New:** `downloadOfflineRegion` accepts `bounds` (`{ south, west, north, east }`) or a GeoJSON `polygon` to download a known area, such as a recommended trail, instead of a centre and radius.
 - **New:** `downloadOfflineRegion` and `downloadOfflineRegionForRect` resolve with `sizeBytes`, `bounds`, `polygon` (the exact area downloaded), `minZoom`, `maxZoom`, `styleUrl` and `downloadedAt`, alongside the existing `regionId`, `latitude`, `longitude` and `radiusKm`.
 - **New:** `estimateOfflineRegionSize` and `estimateOfflineRegionSizeForRect` return an approximate tile count and download size, and whether the download would be within the limits.
