@@ -732,6 +732,10 @@ var api = {
     return call('setMapStyle', [options || {}]);
   },
 
+  inspectStyleStructure: function () {
+    return call('inspectStyleStructure', []);
+  },
+
   startPathTracking: function (options) {
     return call('startPathTracking', [options || {}]);
   },

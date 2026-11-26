@@ -108,6 +108,7 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `initialize(options)`
 - `initializeOffline(options)`
 - `setMapStyle(options)`
+- `inspectStyleStructure()`
 - `getMapboxVersion(success, error)`
 - `setViewport(options)`
 - `setTouchableRects(rects)`
@@ -157,9 +158,12 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `onWaypointSelected(callback, errorCallback)`
 - `onMarkerClick(callback, errorCallback)`
 - `onMapTap(callback, errorCallback)`
+<<<<<<< HEAD
+=======
 - `setLayerVisibility(options)`
 - `getLayersByGroup(options)`
 - `setLayerGroupVisibility(options)`
+>>>>>>> 74e48bfb53316aea9b64fde1f0de5e6504b37e38
 - `close()`
 
 ## Initialize Map
@@ -638,6 +642,8 @@ window.MapboxPlugin.loadPath({
 })
 ```
 
+<<<<<<< HEAD
+=======
 ## Style Layers
 
 These actions work on the layers of the current map style, on both Android and iOS. A *group* is a Mapbox Studio layer folder, stored in each layer's `metadata["mapbox:group"]`. Call them after the style has loaded; before that they fail with "Style is not loaded".
@@ -652,6 +658,7 @@ These actions work on the layers of the current map style, on both Android and i
 await MapboxPlugin.setLayerGroupVisibility({ groupId: $parameters.GroupId, visible: false });
 ```
 
+>>>>>>> 74e48bfb53316aea9b64fde1f0de5e6504b37e38
 ## Markers
 
 Reference for the marker functions on `window.MapboxPlugin`: adding, bulk loading, customizing, removing, and listening for taps. Every function except `onMarkerClick` returns a Promise.
@@ -969,6 +976,11 @@ These actions are available on Android and iOS but were not described above.
 ```javascript
 // Replace the style. Resolves when the new style has loaded; add custom layers again afterwards.
 window.MapboxPlugin.setMapStyle({ styleUrl: 'mapbox://styles/mapbox/satellite-streets-v12' });
+
+// Inspect the loaded style's root layers, imports, and complete JSON.
+window.MapboxPlugin.inspectStyleStructure().then(function (result) {
+  console.log(result.rootLayers, result.imports, result.styleJSON);
+});
 
 // Mapbox SDK version as a string, e.g. "11.30.0". Callback style, not a Promise.
 window.MapboxPlugin.getMapboxVersion(function (version) { console.log(version); });
