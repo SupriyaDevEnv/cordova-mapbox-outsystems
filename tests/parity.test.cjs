@@ -295,9 +295,12 @@ test('setJsonGroupVisibility reads style JSON on both platforms', () => {
   assert.match(androidBody, /new JSONObject\(style\.getStyleJSON\(\)\)/);
   assert.match(androidBody, /result\.put\("method", "STYLE_JSON"\)/);
   assert.match(androidBody, /result\.put\("matchedCount", matched\.length\(\)\)/);
-  assert.match(androidBody, /result\.put\("updatedLayers", updated\)/);
+  assert.match(androidBody, /Expected<String, None> updateResult/);
+  assert.match(androidBody, /updateResult\.isError\(\)/);
+  assert.match(androidBody, /result\.put\("updatedLayers", updatedLayers\)/);
+  assert.match(androidBody, /result\.put\("failedCount", failedLayers\.length\(\)\)/);
   assert.match(androidBody, /result\.put\("visibilityReadback", visibilityReadback\)/);
-  assert.match(androidBody, /"actualVisibility", actualVisibility/);
+  assert.match(androidBody, /"actualVisibility",\s*actualVisibility/);
   assert.match(androidBody, /rawVisibility == JSONObject\.NULL/);
   assert.match(androidBody, /usesDefaultVisibility[\s\S]*?"visible"/);
   assert.match(androidBody, /"matchesRequested"/);
@@ -306,10 +309,12 @@ test('setJsonGroupVisibility reads style JSON on both platforms', () => {
   assert.match(iosBody, /"matchedCount": matched\.count/);
   assert.match(iosBody, /"updatedLayers": updated/);
   assert.match(iosBody, /"visibilityReadback": visibilityReadback/);
-  assert.match(iosBody, /"actualVisibility": actualVisibility/);
+  assert.match(iosBody, /"actualVisibility"\] = actualVisibility/);
   assert.match(iosBody, /rawVisibility is NSNull/);
   assert.match(iosBody, /actualVisibility = "visible"/);
-  assert.match(iosBody, /"matchesRequested": actualVisibility == requestedVisibility/);
+  assert.match(iosBody, /let matches = actualVisibility == requestedVisibility/);
+  assert.match(iosBody, /verification\["matchesRequested"\] = matches/);
+  assert.match(iosBody, /"failedCount": failed\.count/);
 });
 
 test('removed layer inspection actions are not exposed', () => {

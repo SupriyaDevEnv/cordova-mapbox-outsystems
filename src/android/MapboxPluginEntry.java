@@ -41,6 +41,8 @@ import java.util.Map;
 import java.util.TimeZone;
 
 
+import com.mapbox.bindgen.Expected;
+import com.mapbox.bindgen.None;
 import com.mapbox.bindgen.Value;
 
 import com.mapbox.common.MapboxOptions;
@@ -4803,8 +4805,8 @@ private boolean addMarkerInternal(
                 }
 
                 JSONArray matched = new JSONArray();
-                JSONArray updated = new JSONArray();
-                JSONArray failed = new JSONArray();
+                JSONArray updatedLayers = new JSONArray();
+                JSONArray failedLayers = new JSONArray();
                 JSONArray visibilityReadback = new JSONArray();
                 String requestedVisibility = visible ? "visible" : "none";
                 Value visibility = Value.valueOf(requestedVisibility);
@@ -4822,54 +4824,74 @@ private boolean addMarkerInternal(
                     if (!groupId.equals(layerGroup)) continue;
 
                     String layerId = layer.optString("id", "").trim();
+                    if (layerId.isEmpty()) continue;
                     matched.put(layerId);
 
-                    try {
-                        style.setStyleLayerProperty(
-                            layerId,
-                            "visibility",
-                            visibility
-                        );
-                        updated.put(layerId);
+                    JSONObject verification = new JSONObject();
+                    verification.put("layerId", layerId);
+                    verification.put("expectedVisibility", requestedVisibility);
 
-                        JSONObject verification = new JSONObject();
-                        verification.put("layerId", layerId);
-                        verification.put("expectedVisibility", requestedVisibility);
-                        try {
-                            String actualJson = style
-                                .getStyleLayerProperty(layerId, "visibility")
-                                .getValue()
-                                .toJson();
-                            Object rawVisibility =
-                                new JSONArray("[" + actualJson + "]").get(0);
-                            boolean usesDefaultVisibility =
-                                rawVisibility == null ||
-                                rawVisibility == JSONObject.NULL;
-                            Object actualVisibility = usesDefaultVisibility
-                                ? "visible"
-                                : rawVisibility;
-                            verification.put("actualVisibility", actualVisibility);
-                            verification.put(
-                                "visibilityIsDefault",
-                                usesDefaultVisibility
+                    try {
+                        Expected<String, None> updateResult =
+                            style.setStyleLayerProperty(
+                                layerId,
+                                "visibility",
+                                visibility
                             );
-                            verification.put(
-                                "matchesRequested",
-                                requestedVisibility.equals(actualVisibility)
-                            );
-                        } catch (Exception readbackError) {
-                            verification.put(
-                                "readbackError",
-                                readbackError.getMessage()
+                        if (updateResult.isError()) {
+                            throw new Exception(
+                                "SDK update failed: " +
+                                updateResult.getError()
                             );
                         }
-                        visibilityReadback.put(verification);
+
+                        String actualJson = style
+                            .getStyleLayerProperty(layerId, "visibility")
+                            .getValue()
+                            .toJson();
+                        Object rawVisibility =
+                            new JSONArray("[" + actualJson + "]").get(0);
+                        boolean usesDefaultVisibility =
+                            rawVisibility == null ||
+                            rawVisibility == JSONObject.NULL;
+                        Object actualVisibility = usesDefaultVisibility
+                            ? "visible"
+                            : rawVisibility;
+                        verification.put(
+                            "actualVisibility",
+                            actualVisibility
+                        );
+                        verification.put(
+                            "visibilityIsDefault",
+                            usesDefaultVisibility
+                        );
+
+                        boolean matches = requestedVisibility.equals(
+                            actualVisibility
+                        );
+                        verification.put("matchesRequested", matches);
+
+                        if (matches) {
+                            updatedLayers.put(layerId);
+                        } else {
+                            verification.put(
+                                "error",
+                                "Visibility did not match requested value"
+                            );
+                            failedLayers.put(verification);
+                        }
                     } catch (Exception e) {
-                        JSONObject error = new JSONObject();
-                        error.put("layerId", layerId);
-                        error.put("error", e.getMessage());
-                        failed.put(error);
+                        verification.put("matchesRequested", false);
+                        verification.put(
+                            "error",
+                            e.getMessage() != null
+                                ? e.getMessage()
+                                : e.getClass().getSimpleName()
+                        );
+                        failedLayers.put(verification);
                     }
+
+                    visibilityReadback.put(verification);
                 }
 
                 JSONObject result = new JSONObject();
@@ -4878,13 +4900,19 @@ private boolean addMarkerInternal(
                 result.put("visible", visible);
                 result.put("matchedCount", matched.length());
                 result.put("matchedLayers", matched);
-                result.put("updatedCount", updated.length());
-                result.put("updatedLayers", updated);
-                result.put("failedLayers", failed);
+                result.put("updatedCount", updatedLayers.length());
+                result.put("updatedLayers", updatedLayers);
+                result.put("failedCount", failedLayers.length());
+                result.put("failedLayers", failedLayers);
                 result.put("visibilityReadback", visibilityReadback);
                 callback.success(result);
             } catch (Exception e) {
-                callback.error(e.getMessage());
+                callback.error(
+                    "Group visibility update failed: " +
+                    (e.getMessage() != null
+                        ? e.getMessage()
+                        : e.getClass().getSimpleName())
+                );
             }
         });
     }

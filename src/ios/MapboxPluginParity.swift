@@ -285,7 +285,7 @@ class MapboxPluginParity: MapboxPlugin {
 
                 var matched: [String] = []
                 var updated: [String] = []
-                var failed: [[String: String]] = []
+                var failed: [[String: Any]] = []
                 var visibilityReadback: [[String: Any]] = []
                 let requestedVisibility = visible ? "visible" : "none"
 
@@ -297,12 +297,16 @@ class MapboxPluginParity: MapboxPlugin {
 
                     let layerId = (layer["id"] as? String ?? "")
                         .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !layerId.isEmpty else { continue }
                     matched.append(layerId)
 
+                    var verification: [String: Any] = [
+                        "layerId": layerId,
+                        "expectedVisibility": requestedVisibility
+                    ]
                     do {
                         try map.setLayerProperty(for: layerId, property: "visibility",
                                                  value: requestedVisibility)
-                        updated.append(layerId)
 
                         let rawVisibility = map.layerPropertyValue(
                             for: layerId,
@@ -316,19 +320,22 @@ class MapboxPluginParity: MapboxPlugin {
                             actualVisibility = rawVisibility as? String
                                 ?? String(describing: rawVisibility)
                         }
-                        visibilityReadback.append([
-                            "layerId": layerId,
-                            "expectedVisibility": requestedVisibility,
-                            "actualVisibility": actualVisibility,
-                            "visibilityIsDefault": usesDefaultVisibility,
-                            "matchesRequested": actualVisibility == requestedVisibility
-                        ])
+                        verification["actualVisibility"] = actualVisibility
+                        verification["visibilityIsDefault"] = usesDefaultVisibility
+                        let matches = actualVisibility == requestedVisibility
+                        verification["matchesRequested"] = matches
+                        if matches {
+                            updated.append(layerId)
+                        } else {
+                            verification["error"] = "Visibility did not match requested value"
+                            failed.append(verification)
+                        }
                     } catch {
-                        failed.append([
-                            "layerId": layerId,
-                            "error": error.localizedDescription
-                        ])
+                        verification["matchesRequested"] = false
+                        verification["error"] = error.localizedDescription
+                        failed.append(verification)
                     }
+                    visibilityReadback.append(verification)
                 }
 
                 self.sendSuccess([
@@ -339,6 +346,7 @@ class MapboxPluginParity: MapboxPlugin {
                     "matchedLayers": matched,
                     "updatedCount": updated.count,
                     "updatedLayers": updated,
+                    "failedCount": failed.count,
                     "failedLayers": failed,
                     "visibilityReadback": visibilityReadback
                 ], command)
