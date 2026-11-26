@@ -43,44 +43,60 @@ test('downloads save the style and zoom range needed to reopen the region', () =
   assert.match(a, /regionMetadataValue\(regionId, styleUrl, toZoomByte\(minZoom\), toZoomByte\(maxZoom\)\)/);
   const save = between(android, 'private Value regionMetadataValue(', 'private static Object metadataEntry(');
   for (const key of ['regionId', 'styleUrl', 'minZoom', 'maxZoom']) assert.match(save, new RegExp('"' + key + '"'));
-  const i = between(ios, 'private func downloadOfflineTiles(', 'activeTileRegionDownload = TileStore.default.loadTileRegion(');
+  const i = between(ios, 'private func downloadOfflineTiles(', '// Like runForGeneration');
   assert.match(i, /"styleUrl": styleURI\.rawValue/);
   assert.match(i, /"minZoom": Int\(minZoom\)/);
   assert.match(i, /"maxZoom": Int\(maxZoom\)/);
 });
 
-test('showOfflineRegion uses the stored region when regionId is given, on both platforms', () => {
-  const aShow = between(android, 'private void showOfflineRegion(', 'private void showDownloadedRegion(');
-  assert.match(aShow, /if \(!regionId\.isEmpty\(\)\) \{\s*showDownloadedRegion\(regionId, options, callback\);\s*return;/);
-  const iShow = between(ios, 'func showOfflineRegion(command:', 'private func showDownloadedRegion(');
-  assert.match(iShow, /if !regionId\.isEmpty \{\s*self\.showDownloadedRegion\(regionId: regionId, options: options, command: command\)\s*return/);
-
-  const a = between(android, 'private void showDownloadedRegion(', 'private void deleteOfflineRegion(');
-  const i = between(ios, 'private func showDownloadedRegion(', '@objc(deleteOfflineRegion:)');
-  assert.match(a, /getTileRegionGeometry\(regionId/);
-  assert.match(a, /getTileRegionMetadata\(regionId/);
-  assert.match(i, /tileRegionGeometry\(forId: regionId\)/);
-  assert.match(i, /tileRegionMetadata\(forId: regionId\)/);
-  for (const source of [a, i]) {
-    assert.match(source, /is not downloaded on this device\./);
-    assert.match(source, /A style load is already in progress/);
-    // The saved style wins; the option is only a fallback for older downloads.
-    assert.match(source, /"styleUrl"/);
-    assert.match(source, /fitZoom\(/);
-    assert.match(source, /loadReadyStyle\(/);
+test('initializeOffline selects the isolated region store and cache on both platforms', () => {
+  const aInit = between(android, 'private void initializeOffline(', 'private String getAccessToken()');
+  const iInit = between(ios, 'func initializeOffline(command:', 'private func openOfflineMapView(');
+  const aOpen = between(android, 'private void openOfflineMapView(', 'private String getAccessToken()');
+  const iOpen = between(ios, 'private func openOfflineMapView(', '@objc(setCamera:)');
+  for (const source of [aInit, iInit]) {
+    assert.match(source, /isOfflineRegionMarkedComplete/);
+    assert.match(source, /offlineRegionTileStore/);
+    assert.match(source, /getTileRegionGeometry|tileRegionGeometry/);
   }
-  // Saved zooms bound the camera; the region's own style is preferred.
-  assert.match(a, /String styleUrl = metadataString\(metadata, "styleUrl"\);\s*if \(styleUrl == null\) styleUrl = options\.optString\("styleUrl"/);
-  assert.match(a, /zoom = clamp\(zoom, minZoom, maxZoom\);/);
-  assert.match(i, /let styleUrl = savedStyle \?\? options\["styleUrl"\] as\? String/);
-  assert.match(i, /zoom = Swift\.max\(minZoom, Swift\.min\(maxZoom, zoom\)\)/);
-  assert.match(a, /CoordinateBounds regionBounds = new CoordinateBounds\([\s\S]*?Point\.fromLngLat\(box\[0\], box\[1\]\)[\s\S]*?Point\.fromLngLat\(box\[2\], box\[3\]\)/);
-  assert.match(a, /\.bounds\(regionBounds\)[\s\S]*?\.minZoom\(minZoom\)[\s\S]*?\.maxZoom\(maxZoom\)/);
-  assert.match(i, /CameraBoundsOptions\(\s*bounds: regionBounds,[\s\S]*?maxZoom:[\s\S]*?minZoom:/);
-  assert.ok(a.indexOf('setBounds(bounds.build())') < a.indexOf('setCamera(new CameraOptions.Builder()'));
-  assert.ok(i.indexOf('setCameraBounds(with: CameraBoundsOptions') < i.indexOf('setCamera(to: CameraOptions'));
-  assert.match(a, /offlineRegionCameraBoundsActive = true/);
-  assert.match(i, /offlineRegionCameraBoundsActive = true/);
+  assert.match(aOpen, /MapboxMapsOptions\.setTileStore\(regionStore\)/);
+  assert.match(aOpen, /MapboxMapsOptions\.setDataPath\(offlineRegionDataPath\(regionId\)\)/);
+  assert.match(iOpen, /MapboxMapsOptions\.tileStore = regionStore/);
+  assert.match(iOpen, /MapboxMapsOptions\.dataPath = try offlineRegionDataPath\(regionId\)/);
+  assert.match(aOpen, /setMapboxStackConnected\(false\)/);
+  assert.match(iOpen, /isMapboxStackConnected = false/);
+});
+
+test('offline camera remains world-wide while respecting saved zoom limits', () => {
+  const a = between(android, 'private void openDownloadedRegion(', 'private void deleteOfflineRegion(');
+  const i = between(ios, 'private func openDownloadedRegion(', '@objc(deleteOfflineRegion:)');
+  assert.match(a, /CoordinateBounds worldBounds = new CoordinateBounds/);
+  assert.match(a, /\.bounds\(worldBounds\)[\s\S]*?\.minZoom\(minZoom\)[\s\S]*?\.maxZoom\(maxZoom\)/);
+  assert.match(i, /bounds: CoordinateBounds\.world,[\s\S]*?maxZoom:[\s\S]*?minZoom:/);
+  assert.doesNotMatch(a, /bounds\(regionBounds\)/);
+  assert.doesNotMatch(i, /bounds: regionBounds/);
+});
+
+test('region listings expose isolated status and scan both store types', () => {
+  const aList = between(android, 'private void getOfflineRegionIds(', 'private Polygon createRectPolygon(');
+  const iList = between(ios, 'func getOfflineRegionIds(command:', 'struct OfflineAreaError');
+  for (const source of [aList, iList]) {
+    assert.match(source, /"isolated"/);
+    assert.match(source, /loadOfflineRegions/);
+  }
+  assert.match(android, /entries\.add\(new OfflineStoreEntry\(legacyOfflineTileStore\(\), false\)\)/);
+  assert.match(ios, /stores\.append\(OfflineStoreEntry\(store: TileStore\.default, isolated: false\)\)/);
+});
+
+test('showOfflineRegion reads the active isolated store and directs other regions to initializeOffline', () => {
+  const a = between(android, 'private void showDownloadedRegion(', 'private void openDownloadedRegion(');
+  const i = between(ios, 'private func showDownloadedRegion(', 'private func geometryCoordinates(');
+  for (const source of [a, i]) {
+    assert.match(source, /activeOfflineRegionStore/);
+    assert.match(source, /Open this isolated region with initializeOffline/);
+    assert.match(source, /getTileRegionGeometry|tileRegionGeometry/);
+    assert.match(source, /getTileRegionMetadata|tileRegionMetadata/);
+  }
 });
 
 test('opening a regular location restores the map bounds from initialize', () => {
