@@ -222,6 +222,211 @@ class MapboxPluginParity: MapboxPlugin {
     // Groups are the Mapbox Studio folders stored in each layer's
     // metadata["mapbox:group"], matching the Android implementation.
 
+    @objc(diagnoseRuntimeLayers:)
+    func diagnoseRuntimeLayers(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+            do {
+                var styleURI: Any = NSNull()
+                if let uri = map.styleURI?.rawValue {
+                    styleURI = uri
+                }
+
+                let runtimeLayers = map.allLayerIdentifiers.map { $0.id }
+                let styleRoot = try JSONSerialization.jsonObject(
+                    with: Data(map.styleJSON.utf8)
+                ) as? [String: Any]
+                let styleLayers = styleRoot?["layers"] as? [[String: Any]] ?? []
+                let parsedLayers: [[String: Any]] = styleLayers.map { layer in
+                    [
+                        "id": layer["id"] as? String ?? "",
+                        "type": layer["type"] as? String ?? "",
+                        "metadata": layer["metadata"] ?? NSNull()
+                    ]
+                }
+                let imports: [[String: String]] = map.styleImports.map {
+                    ["id": $0.id, "type": $0.type]
+                }
+
+                self.sendSuccess([
+                    "styleURI": styleURI,
+                    "runtimeLayerCount": runtimeLayers.count,
+                    "runtimeLayers": runtimeLayers,
+                    "styleJsonLayerCount": styleLayers.count,
+                    "styleJsonLayers": parsedLayers,
+                    "imports": imports
+                ], command)
+            } catch {
+                self.sendError(error.localizedDescription, command)
+            }
+        }
+    }
+
+    @objc(debugStyleLayers:)
+    func debugStyleLayers(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+            do {
+                let styleRoot = try JSONSerialization.jsonObject(
+                    with: Data(map.styleJSON.utf8)
+                ) as? [String: Any]
+                let layers = styleRoot?["layers"] as? [[String: Any]] ?? []
+                let jsonGroupLayers = layers.compactMap { layer -> String? in
+                    guard let metadata = layer["metadata"] as? [String: Any] else { return nil }
+                    let group = (metadata["mapbox:group"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard group == "FossickingContext" else { return nil }
+                    return layer["id"] as? String
+                }
+                let runtimeLayers = map.allLayerIdentifiers.map { $0.id }
+                self.sendSuccess([
+                    "jsonGroupLayers": jsonGroupLayers,
+                    "runtimeLayers": runtimeLayers
+                ], command)
+            } catch {
+                self.sendError(error.localizedDescription, command)
+            }
+        }
+    }
+
+    @objc(setJsonGroupVisibility:)
+    func setJsonGroupVisibility(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let groupId = self.requiredGroupId(command) else { return }
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            let visible = options["visible"] as? Bool ?? true
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+
+            do {
+                guard let styleRoot = try JSONSerialization.jsonObject(
+                    with: Data(map.styleJSON.utf8)
+                ) as? [String: Any],
+                      let layers = styleRoot["layers"] as? [[String: Any]] else {
+                    self.sendError("No layers found in style JSON", command)
+                    return
+                }
+
+                var matched: [String] = []
+                var updated: [String] = []
+                var failed: [[String: Any]] = []
+                var visibilityReadback: [[String: Any]] = []
+                let requestedVisibility = visible ? "visible" : "none"
+
+                for layer in layers {
+                    guard let metadata = layer["metadata"] as? [String: Any] else { continue }
+                    let layerGroup = (metadata["mapbox:group"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard groupId == layerGroup else { continue }
+
+                    let layerId = (layer["id"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !layerId.isEmpty else { continue }
+                    matched.append(layerId)
+
+                    var verification: [String: Any] = [
+                        "layerId": layerId,
+                        "expectedVisibility": requestedVisibility
+                    ]
+                    do {
+                        try map.setLayerProperty(for: layerId, property: "visibility",
+                                                 value: requestedVisibility)
+
+                        let rawVisibility = map.layerPropertyValue(
+                            for: layerId,
+                            property: "visibility"
+                        )
+                        let usesDefaultVisibility = rawVisibility is NSNull
+                        let actualVisibility: String
+                        if usesDefaultVisibility {
+                            actualVisibility = "visible"
+                        } else {
+                            actualVisibility = rawVisibility as? String
+                                ?? String(describing: rawVisibility)
+                        }
+                        verification["actualVisibility"] = actualVisibility
+                        verification["visibilityIsDefault"] = usesDefaultVisibility
+                        let matches = actualVisibility == requestedVisibility
+                        verification["matchesRequested"] = matches
+                        if matches {
+                            updated.append(layerId)
+                        } else {
+                            verification["error"] = "Visibility did not match requested value"
+                            failed.append(verification)
+                        }
+                    } catch {
+                        verification["matchesRequested"] = false
+                        verification["error"] = error.localizedDescription
+                        failed.append(verification)
+                    }
+                    visibilityReadback.append(verification)
+                }
+
+                self.sendSuccess([
+                    "method": "STYLE_JSON",
+                    "groupId": groupId,
+                    "visible": visible,
+                    "matchedCount": matched.count,
+                    "matchedLayers": matched,
+                    "updatedCount": updated.count,
+                    "updatedLayers": updated,
+                    "failedCount": failed.count,
+                    "failedLayers": failed,
+                    "visibilityReadback": visibilityReadback
+                ], command)
+            } catch {
+                self.sendError(error.localizedDescription, command)
+            }
+        }
+    }
+
+    @objc(setRuntimeGroupVisibility:)
+    func setRuntimeGroupVisibility(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            guard let groupId = self.requiredGroupId(command) else { return }
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            let visible = options["visible"] as? Bool ?? true
+            guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                                notLoaded: "Style is not loaded.") else { return }
+
+            var updated: [String] = []
+            var failed: [[String: String]] = []
+
+            for layer in map.allLayerIdentifiers {
+                guard let metadata = self.layerMetadata(map, layer.id) else { continue }
+                let layerGroup = (metadata["mapbox:group"] as? String ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard groupId == layerGroup else { continue }
+
+                do {
+                    try map.setLayerProperty(for: layer.id, property: "visibility",
+                                             value: visible ? "visible" : "none")
+                    updated.append(layer.id)
+                } catch {
+                    failed.append([
+                        "layerId": layer.id,
+                        "error": error.localizedDescription
+                    ])
+                }
+            }
+
+            self.sendSuccess([
+                "method": "RUNTIME",
+                "groupId": groupId,
+                "visible": visible,
+                "updatedCount": updated.count,
+                "updatedLayers": updated,
+                "failedLayers": failed
+            ], command)
+        }
+    }
+
     @objc(getLayersByGroup:)
     func getLayersByGroup(command: CDVInvokedUrlCommand) {
         rememberCommand(command)
@@ -229,12 +434,19 @@ class MapboxPluginParity: MapboxPlugin {
             guard let groupId = self.requiredGroupId(command) else { return }
             guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
                                                 notLoaded: "Style is not loaded.") else { return }
-            let layers: [[String: Any]] = map.allLayerIdentifiers
-                .filter { self.layerGroup(map, $0.id) == groupId }
-                .map { ["id": $0.id, "name": $0.id, "type": $0.type.rawValue] }
+            let runtimeLayers = map.allLayerIdentifiers
+            let metadataLayers = self.layersWithMetadata(map)
+            let layers: [[String: Any]] = metadataLayers
+                .filter {
+                    ($0.metadata["mapbox:group"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines) == groupId
+                }
+                .map { ["id": $0.id, "name": $0.id, "type": $0.type] }
             self.sendSuccess([
                 "groupId": groupId,
                 "totalLayers": layers.count,
+                "runtimeLayerCount": runtimeLayers.count,
+                "metadataLayerCount": metadataLayers.count,
                 "layers": layers
             ], command)
         }
@@ -250,10 +462,12 @@ class MapboxPluginParity: MapboxPlugin {
             guard let map = self.loadedStyleMap(command, notInitialized: "Map is not initialized.",
                                                 notLoaded: "Style is not loaded.") else { return }
 
-            let layerIds = map.allLayerIdentifiers.map { $0.id }.filter {
-                (self.layerGroup(map, $0) ?? "")
+            let runtimeLayers = map.allLayerIdentifiers
+            let metadataLayers = self.layersWithMetadata(map)
+            let layerIds = metadataLayers.filter {
+                ($0.metadata["mapbox:group"] as? String ?? "")
                     .trimmingCharacters(in: .whitespacesAndNewlines) == groupId
-            }
+            }.map { $0.id }
             var updatedLayers: [String] = []
             var failedLayers: [[String: String]] = []
             for layerId in layerIds {
@@ -270,15 +484,20 @@ class MapboxPluginParity: MapboxPlugin {
                 updatedLayers.append(layerId)
             }
 
+            let result: [String: Any] = [
+                "groupId": groupId,
+                "visible": visible,
+                "runtimeLayerCount": runtimeLayers.count,
+                "metadataLayerCount": metadataLayers.count,
+                "updatedCount": updatedLayers.count,
+                "updatedLayers": updatedLayers,
+                "failedCount": failedLayers.count,
+                "failedLayers": failedLayers
+            ]
+
             if updatedLayers.isEmpty {
-                let errorResult: [String: Any] = [
-                    "groupId": groupId,
-                    "matchedLayers": layerIds.count,
-                    "updatedCount": 0,
-                    "failedLayers": failedLayers
-                ]
                 do {
-                    let data = try JSONSerialization.data(withJSONObject: errorResult)
+                    let data = try JSONSerialization.data(withJSONObject: result)
                     guard let message = String(data: data, encoding: .utf8) else {
                         self.sendError("Failed to encode group visibility error.", command)
                         return
@@ -293,14 +512,7 @@ class MapboxPluginParity: MapboxPlugin {
                 return
             }
 
-            self.sendSuccess([
-                "groupId": groupId,
-                "visible": visible,
-                "updatedCount": updatedLayers.count,
-                "updatedLayers": updatedLayers,
-                "failedCount": failedLayers.count,
-                "failedLayers": failedLayers
-            ], command)
+            self.sendSuccess(result, command)
         }
     }
 
@@ -331,11 +543,27 @@ class MapboxPluginParity: MapboxPlugin {
 
     private func layerMetadata(_ map: MapboxMap, _ layerId: String) -> [String: Any]? {
         // try? keeps this compiling whether or not the SDK marks layerProperty as throwing.
-        (try? map.layerProperty(for: layerId, property: "metadata"))?.value as? [String: Any]
+        guard let property = try? map.layerProperty(for: layerId, property: "metadata") else {
+            NSLog("MapboxPlugin: Metadata read failed for: %@", layerId)
+            return nil
+        }
+        NSLog(
+            "MapboxPlugin: Layer: %@ | Metadata: %@",
+            layerId,
+            String(describing: property.value)
+        )
+        return property.value as? [String: Any]
     }
 
-    private func layerGroup(_ map: MapboxMap, _ layerId: String) -> String? {
-        layerMetadata(map, layerId)?["mapbox:group"] as? String
+    private func layersWithMetadata(
+        _ map: MapboxMap
+    ) -> [(id: String, type: String, metadata: [String: Any])] {
+        var result: [(id: String, type: String, metadata: [String: Any])] = []
+        for layer in map.allLayerIdentifiers {
+            guard let metadata = layerMetadata(map, layer.id) else { continue }
+            result.append((id: layer.id, type: layer.type.rawValue, metadata: metadata))
+        }
+        return result
     }
 
     override func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {

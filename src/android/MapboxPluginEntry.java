@@ -49,6 +49,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 
+import com.mapbox.bindgen.Expected;
+import com.mapbox.bindgen.None;
 import com.mapbox.bindgen.Value;
 
 import com.mapbox.common.MapboxOptions;
@@ -526,8 +528,20 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             case "setLayerGroupVisibility":
                 setLayerGroupVisibility(options, callbackContext);
                 return true;
+            case "setRuntimeGroupVisibility":
+                setRuntimeGroupVisibility(options, callbackContext);
+                return true;
+            case "setJsonGroupVisibility":
+                setJsonGroupVisibility(options, callbackContext);
+                return true;
             case "getLayersByGroup":
                 getLayersByGroup(options, callbackContext);
+                return true;
+            case "diagnoseRuntimeLayers":
+                diagnoseRuntimeLayers(callbackContext);
+                return true;
+            case "debugStyleLayers":
+                debugStyleLayers(callbackContext);
                 return true;
             case "clearBoundaries":
                 clearBoundaries(callbackContext);
@@ -4642,15 +4656,40 @@ private boolean addMarkerInternal(
      */
     private List<LayerMetadata> layersWithMetadata(Style style) {
         List<LayerMetadata> result = new ArrayList<>();
+
         for (StyleObjectInfo layer : style.getStyleLayers()) {
             try {
-                String json = style.getStyleLayerProperty(layer.getId(), "metadata").getValue().toJson();
-                if (json == null || !json.trim().startsWith("{")) continue;
-                result.add(new LayerMetadata(layer.getId(), layer.getType(), new JSONObject(json)));
-            } catch (Exception ignored) {
-                // A layer without readable metadata belongs to no group.
+                String json = style
+                    .getStyleLayerProperty(layer.getId(), "metadata")
+                    .getValue()
+                    .toJson();
+
+                android.util.Log.d(
+                    "MapboxPlugin",
+                    "Layer: " + layer.getId() + " | Metadata: " + json
+                );
+
+                if (json == null || !json.trim().startsWith("{")) {
+                    continue;
+                }
+
+                result.add(
+                    new LayerMetadata(
+                        layer.getId(),
+                        layer.getType(),
+                        new JSONObject(json)
+                    )
+                );
+
+            } catch (Exception e) {
+                android.util.Log.e(
+                    "MapboxPlugin",
+                    "Metadata read failed for: " + layer.getId(),
+                    e
+                );
             }
         }
+
         return result;
     }
 
@@ -4684,81 +4723,45 @@ private boolean addMarkerInternal(
                 Style style = loadedStyle(callback);
                 if (style == null) return;
 
-                String styleJsonString = style.getStyleJSON();
-                if (styleJsonString == null || styleJsonString.isEmpty()) {
-                    callback.error("Unable to retrieve style JSON.");
-                    return;
-                }
-
-                JSONObject styleJson = new JSONObject(styleJsonString);
-                JSONArray layers = styleJson.optJSONArray("layers");
-                if (layers == null) {
-                    callback.error("No layers found in style JSON.");
-                    return;
-                }
-
-                Value visibility = Value.valueOf(
-                    visible ? "visible" : "none"
-                );
                 JSONArray updatedLayers = new JSONArray();
                 JSONArray failedLayers = new JSONArray();
-                int matchedLayerCount = 0;
+                List<LayerMetadata> layers = layersWithMetadata(style);
 
-                for (int i = 0; i < layers.length(); i++) {
-                    JSONObject layer = layers.optJSONObject(i);
-                    if (layer == null) continue;
-
-                    JSONObject metadata = layer.optJSONObject("metadata");
-                    if (metadata == null) continue;
-
-                    String layerGroup = metadata.optString(
-                        "mapbox:group",
-                        ""
-                    ).trim();
-                    if (!groupId.equals(layerGroup)) continue;
-
-                    matchedLayerCount++;
-                    String layerId = layer.optString("id", "").trim();
-                    if (layerId.isEmpty()) continue;
+                for (LayerMetadata layer : layers) {
+                    if (!groupId.equals(layer.group().trim())) {
+                        continue;
+                    }
 
                     try {
-                        if (!style.styleLayerExists(layerId)) {
-                            throw new Exception(
-                                "Layer does not exist in runtime style"
-                            );
-                        }
-
                         style.setStyleLayerProperty(
-                            layerId,
+                            layer.id,
                             "visibility",
-                            visibility
+                            Value.valueOf(visible ? "visible" : "none")
                         );
-                        updatedLayers.put(layerId);
-                    } catch (Exception layerError) {
+                        updatedLayers.put(layer.id);
+                    } catch (Exception e) {
                         JSONObject failure = new JSONObject();
-                        failure.put("layerId", layerId);
-                        failure.put("error", layerError.getMessage());
+                        failure.put("layerId", layer.id);
+                        failure.put("error", e.getMessage());
                         failedLayers.put(failure);
                     }
-                }
-
-                if (updatedLayers.length() == 0) {
-                    JSONObject errorResult = new JSONObject();
-                    errorResult.put("groupId", groupId);
-                    errorResult.put("matchedLayers", matchedLayerCount);
-                    errorResult.put("updatedCount", 0);
-                    errorResult.put("failedLayers", failedLayers);
-                    callback.error(errorResult.toString());
-                    return;
                 }
 
                 JSONObject result = new JSONObject();
                 result.put("groupId", groupId);
                 result.put("visible", visible);
+                result.put("runtimeLayerCount", style.getStyleLayers().size());
+                result.put("metadataLayerCount", layers.size());
                 result.put("updatedCount", updatedLayers.length());
                 result.put("updatedLayers", updatedLayers);
                 result.put("failedCount", failedLayers.length());
                 result.put("failedLayers", failedLayers);
+
+                if (updatedLayers.length() == 0) {
+                    callback.error(result.toString());
+                    return;
+                }
+
                 callback.success(result);
             } catch (Exception e) {
                 android.util.Log.e(
@@ -4790,9 +4793,10 @@ private boolean addMarkerInternal(
                 Style style = loadedStyle(callback);
                 if (style == null) return;
 
+                List<LayerMetadata> layers = layersWithMetadata(style);
                 JSONArray resultLayers = new JSONArray();
-                for (LayerMetadata layer : layersWithMetadata(style)) {
-                    if (!groupId.equals(layer.group())) continue;
+                for (LayerMetadata layer : layers) {
+                    if (!groupId.equals(layer.group().trim())) continue;
                     JSONObject layerInfo = new JSONObject();
                     layerInfo.put("id", layer.id);
                     layerInfo.put("name", layer.id);
@@ -4803,6 +4807,8 @@ private boolean addMarkerInternal(
                 JSONObject response = new JSONObject();
                 response.put("groupId", groupId);
                 response.put("totalLayers", resultLayers.length());
+                response.put("runtimeLayerCount", style.getStyleLayers().size());
+                response.put("metadataLayerCount", layers.size());
                 response.put("layers", resultLayers);
                 callback.success(response);
             } catch (Exception e) {
@@ -4811,10 +4817,316 @@ private boolean addMarkerInternal(
         });
     }
 
+    private void diagnoseRuntimeLayers(CallbackContext callback) {
+        runForSession(() -> {
+            try {
+                Style style = loadedStyle(callback);
+                if (style == null) return;
+
+                JSONObject result = new JSONObject();
+                result.put("styleURI", style.getStyleURI());
+
+                JSONArray runtimeLayers = new JSONArray();
+                for (StyleObjectInfo layer : style.getStyleLayers()) {
+                    runtimeLayers.put(layer.getId());
+                }
+                result.put("runtimeLayerCount", runtimeLayers.length());
+                result.put("runtimeLayers", runtimeLayers);
+
+                JSONObject styleJson = new JSONObject(style.getStyleJSON());
+                JSONArray jsonLayers = styleJson.optJSONArray("layers");
+                JSONArray parsedLayers = new JSONArray();
+                if (jsonLayers != null) {
+                    for (int i = 0; i < jsonLayers.length(); i++) {
+                        JSONObject layer = jsonLayers.optJSONObject(i);
+                        if (layer == null) continue;
+
+                        JSONObject item = new JSONObject();
+                        item.put("id", layer.optString("id"));
+                        item.put("type", layer.optString("type"));
+                        item.put("metadata", layer.optJSONObject("metadata"));
+                        parsedLayers.put(item);
+                    }
+                }
+                result.put(
+                    "styleJsonLayerCount",
+                    jsonLayers == null ? 0 : jsonLayers.length()
+                );
+                result.put("styleJsonLayers", parsedLayers);
+
+                JSONArray imports = new JSONArray();
+                for (StyleObjectInfo imported : style.getStyleImports()) {
+                    JSONObject item = new JSONObject();
+                    item.put("id", imported.getId());
+                    item.put("type", imported.getType());
+                    imports.put(item);
+                }
+                result.put("imports", imports);
+
+                callback.success(result);
+            } catch (Exception e) {
+                android.util.Log.e(
+                    "MapboxPlugin",
+                    "Runtime diagnosis failed",
+                    e
+                );
+                callback.error(e.getMessage());
+            }
+        });
+    }
+
+    private void debugStyleLayers(CallbackContext callback) {
+        runForSession(() -> {
+            try {
+                Style style = loadedStyle(callback);
+                if (style == null) return;
+
+                JSONObject result = new JSONObject();
+                JSONArray jsonLayers = new JSONArray();
+                JSONArray runtimeLayers = new JSONArray();
+
+                JSONObject styleJson = new JSONObject(style.getStyleJSON());
+                JSONArray layers = styleJson.optJSONArray("layers");
+                if (layers != null) {
+                    for (int i = 0; i < layers.length(); i++) {
+                        JSONObject layer = layers.optJSONObject(i);
+                        if (layer == null) continue;
+
+                        JSONObject metadata = layer.optJSONObject("metadata");
+                        if (metadata == null) continue;
+
+                        String group = metadata
+                            .optString("mapbox:group", "")
+                            .trim();
+                        if ("FossickingContext".equals(group)) {
+                            jsonLayers.put(layer.optString("id"));
+                        }
+                    }
+                }
+
+                for (StyleObjectInfo layer : style.getStyleLayers()) {
+                    runtimeLayers.put(layer.getId());
+                }
+
+                result.put("jsonGroupLayers", jsonLayers);
+                result.put("runtimeLayers", runtimeLayers);
+                callback.success(result);
+            } catch (Exception e) {
+                callback.error(e.getMessage());
+            }
+        });
+    }
+
     private void clearBoundaries(CallbackContext callback) {
         runForSession(() -> {
             clearBoundariesInternal();
             callback.success();
+        });
+    }
+
+    private void setRuntimeGroupVisibility(
+        JSONObject options,
+        CallbackContext callback
+    ) {
+        runForSession(() -> {
+            try {
+                String groupId = options.optString("groupId", "").trim();
+                boolean visible = options.optBoolean("visible", true);
+
+                if (groupId.isEmpty()) {
+                    callback.error("groupId is required");
+                    return;
+                }
+
+                Style style = loadedStyle(callback);
+                if (style == null) return;
+
+                JSONArray updated = new JSONArray();
+                JSONArray failed = new JSONArray();
+
+                for (StyleObjectInfo layer : style.getStyleLayers()) {
+                    try {
+                        String metadata = style
+                            .getStyleLayerProperty(layer.getId(), "metadata")
+                            .getValue()
+                            .toJson();
+
+                        if (metadata == null || !metadata.trim().startsWith("{")) {
+                            continue;
+                        }
+
+                        JSONObject metadataObject = new JSONObject(metadata);
+                        String layerGroup = metadataObject
+                            .optString("mapbox:group", "")
+                            .trim();
+
+                        if (!groupId.equals(layerGroup)) continue;
+
+                        style.setStyleLayerProperty(
+                            layer.getId(),
+                            "visibility",
+                            Value.valueOf(visible ? "visible" : "none")
+                        );
+                        updated.put(layer.getId());
+                    } catch (Exception e) {
+                        JSONObject error = new JSONObject();
+                        error.put("layerId", layer.getId());
+                        error.put("error", e.getMessage());
+                        failed.put(error);
+                    }
+                }
+
+                JSONObject result = new JSONObject();
+                result.put("method", "RUNTIME");
+                result.put("groupId", groupId);
+                result.put("visible", visible);
+                result.put("updatedCount", updated.length());
+                result.put("updatedLayers", updated);
+                result.put("failedLayers", failed);
+                callback.success(result);
+            } catch (Exception e) {
+                callback.error(e.getMessage());
+            }
+        });
+    }
+
+    private String applyVisibility(
+        Style style,
+        String layerId,
+        boolean visible
+    ) {
+        Expected<String, None> result =
+            style.setStyleLayerProperty(
+                layerId,
+                "visibility",
+                Value.valueOf(visible ? "visible" : "none")
+            );
+
+        if (result.isError()) {
+            return result.getError();
+        }
+
+        return null;
+    }
+
+    private void setJsonGroupVisibility(
+        JSONObject options,
+        CallbackContext callback
+    ) {
+        runForSession(() -> {
+            try {
+                String groupId = options.optString("groupId", "").trim();
+                boolean visible = options.optBoolean("visible", true);
+
+                if (groupId.isEmpty()) {
+                    callback.error("groupId is required");
+                    return;
+                }
+
+                Style style = loadedStyle(callback);
+                if (style == null) return;
+
+                JSONObject styleJson = new JSONObject(style.getStyleJSON());
+                JSONArray layers = styleJson.optJSONArray("layers");
+                if (layers == null) {
+                    callback.error("No layers found in style JSON");
+                    return;
+                }
+
+                JSONArray matched = new JSONArray();
+                JSONArray updatedLayers = new JSONArray();
+                JSONArray failedLayers = new JSONArray();
+                JSONArray visibilityReadback = new JSONArray();
+
+                for (int i = 0; i < layers.length(); i++) {
+                    JSONObject layer = layers.optJSONObject(i);
+                    if (layer == null) continue;
+
+                    JSONObject metadata = layer.optJSONObject("metadata");
+                    if (metadata == null) continue;
+
+                    String layerGroup = metadata
+                        .optString("mapbox:group", "")
+                        .trim();
+                    if (!groupId.equals(layerGroup)) continue;
+
+                    String layerId = layer.optString("id", "").trim();
+                    if (layerId.isEmpty()) continue;
+                    matched.put(layerId);
+
+                    JSONObject verification = new JSONObject();
+                    verification.put("layerId", layerId);
+                    verification.put(
+                        "expectedVisibility",
+                        visible ? "visible" : "none"
+                    );
+
+                    String error = applyVisibility(style, layerId, visible);
+
+                    if (error != null) {
+                        verification.put("updated", false);
+                        verification.put("error", error);
+                        failedLayers.put(verification);
+                    } else {
+                        try {
+                            String actualJson = style
+                                .getStyleLayerProperty(layerId, "visibility")
+                                .getValue()
+                                .toJson();
+                            Object actualVisibility =
+                                new JSONArray("[" + actualJson + "]").get(0);
+                            verification.put(
+                                "actualVisibility",
+                                actualVisibility
+                            );
+                            boolean matches = (visible ? "visible" : "none")
+                                .equals(actualVisibility);
+                            verification.put("matchesRequested", matches);
+
+                            if (matches) {
+                                verification.put("updated", true);
+                                updatedLayers.put(verification);
+                            } else {
+                                verification.put("updated", false);
+                                verification.put(
+                                    "error",
+                                    "Visibility readback does not match requested value"
+                                );
+                                failedLayers.put(verification);
+                            }
+                        } catch (Exception e) {
+                            verification.put("updated", false);
+                            verification.put(
+                                "readbackError",
+                                e.getMessage()
+                            );
+                            failedLayers.put(verification);
+                        }
+                    }
+
+                    visibilityReadback.put(verification);
+                }
+
+                JSONObject result = new JSONObject();
+                result.put("method", "STYLE_JSON");
+                result.put("groupId", groupId);
+                result.put("visible", visible);
+                result.put("matchedCount", matched.length());
+                result.put("matchedLayers", matched);
+                result.put("updatedCount", updatedLayers.length());
+                result.put("updatedLayers", updatedLayers);
+                result.put("failedCount", failedLayers.length());
+                result.put("failedLayers", failedLayers);
+                result.put("visibilityReadback", visibilityReadback);
+                callback.success(result);
+            } catch (Exception e) {
+                callback.error(
+                    "Group visibility update failed: " +
+                    (e.getMessage() != null
+                        ? e.getMessage()
+                        : e.getClass().getSimpleName())
+                );
+            }
         });
     }
 
