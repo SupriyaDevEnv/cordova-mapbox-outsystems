@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Fixed (Android):** offline downloads failed with "Failed to prepare isolated offline storage". Mapbox Maps 11.30 allows one tile store location per app and throws on `TileStore.create(path)`, so every region is now stored in the shared tile store, keyed by `regionId`. Regions are reported `isolated: true` once their download completes. Regions downloaded into the old per-region folders must be downloaded again.
+- **Changed (Android):** `initializeOffline` no longer limits zoom to the downloaded range; the user can pan and zoom anywhere, and areas without stored tiles show the style background. Tiles already in the shared store (other regions, areas viewed online) can also appear. An explicit `minZoom`/`maxZoom` still applies.
+- **Changed (Android):** plugin errors now log the underlying exception to logcat; the message returned to JavaScript is unchanged.
 - **New:** `inspectStyleStructure()` reports root layers, imported styles and the complete loaded style JSON on Android and iOS.
 - **New:** `ToggleOverlays({ groupId, visible })` updates matching root-level layer visibility properties without reloading the style on Android and iOS.
 - **New:** `initializeOffline({ regionId, ... })` opens only a downloaded region on Android and iOS: no online starting style, nothing shown when the region is missing, and Mapbox network access switched off until the map closes.

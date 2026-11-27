@@ -26,9 +26,11 @@ for exact options and results.
 `downloadOfflineRegionForRect` gets the same richer result, `detail`, byte
 progress and cancel support, and has its own estimate call.
 
-New downloads use per-region storage on both platforms. `initializeOffline`
-opens only an isolated region, disables networking, and permits world-wide
-camera movement while retaining its downloaded zoom range. Existing shared-store
+On Android all regions share one tile store, keyed by `regionId` (Mapbox
+11.30 rejects a second tile store location); iOS keeps per-region storage.
+`initializeOffline` opens a completed region, disables networking, and permits
+free camera movement; on Android the zoom is no longer limited to the
+downloaded range, and tiles already in the shared store can also appear. Existing shared-store
 regions must be downloaded again; `getOfflineRegionIds` marks them with
 `isolated: false`.
 

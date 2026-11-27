@@ -814,13 +814,14 @@ if (gestures != null) {
         return directory;
     }
 
+    /**
+     * Mapbox allows one tile store location per app: TileStore.create(path) for a second
+     * location throws java.lang.Error. Every region therefore lives in the shared tile store,
+     * keyed by its regionId; the region folder still holds its marker and map data.
+     */
     private TileStore offlineRegionTileStore(String regionId) throws IOException {
-        legacyOfflineTileStore();
-        File tilePath = new File(offlineRegionDirectory(regionId, true), "tiles");
-        if (!tilePath.isDirectory() && !tilePath.mkdirs()) {
-            throw new IOException("Unable to create offline region tile storage.");
-        }
-        return TileStore.create(tilePath.getAbsolutePath());
+        offlineRegionDirectory(regionId, true);
+        return legacyOfflineTileStore();
     }
 
     private String offlineRegionDataPath(String regionId) throws IOException {
@@ -852,18 +853,8 @@ if (gestures != null) {
 
     private List<OfflineStoreEntry> offlineStoreEntries() throws IOException {
         List<OfflineStoreEntry> entries = new ArrayList<>();
+        // All regions share one tile store (see offlineRegionTileStore).
         entries.add(new OfflineStoreEntry(legacyOfflineTileStore(), false));
-        File root = offlineRegionRoot(false);
-        File[] directories = root.listFiles(File::isDirectory);
-        if (directories != null) {
-            for (File directory : directories) {
-                File tilePath = new File(directory, "tiles");
-                if (tilePath.isDirectory()) {
-                    entries.add(new OfflineStoreEntry(
-                        TileStore.create(tilePath.getAbsolutePath()), true));
-                }
-            }
-        }
         return entries;
     }
 
@@ -892,8 +883,9 @@ if (gestures != null) {
             }
             for (TileRegion region : result.getValue()) {
                 OfflineRegionEntry existing = regions.get(region.getId());
-                if (existing == null || entry.isolated) {
-                    regions.put(region.getId(), new OfflineRegionEntry(region, entry.isolated));
+                boolean isolated = entry.isolated || isOfflineRegionMarkedComplete(region.getId());
+                if (existing == null || isolated) {
+                    regions.put(region.getId(), new OfflineRegionEntry(region, isolated));
                 }
             }
             loadOfflineRegions(stores, index + 1, regions, readError, callback);
@@ -3256,8 +3248,11 @@ gestures.addOnMoveListener(moveGestureListener);
         }
 
         // Keep the camera within the downloaded zoom range; geography remains world-wide.
-        Double savedMin = metadataNumber(metadata, "minZoom");
-        Double savedMax = metadataNumber(metadata, "maxZoom");
+        // initializeOffline maps are not restricted: the user can move and zoom freely,
+        // and areas without downloaded tiles simply stay empty.
+        boolean offlineSession = activeOfflineRegionStore != null;
+        Double savedMin = offlineSession ? null : metadataNumber(metadata, "minZoom");
+        Double savedMax = offlineSession ? null : metadataNumber(metadata, "maxZoom");
         double minZoom = Math.max(
             savedMin != null ? savedMin : MIN_OFFLINE_ZOOM,
             initialCameraMinZoom != null ? initialCameraMinZoom : MIN_OFFLINE_ZOOM
@@ -3323,15 +3318,10 @@ gestures.addOnMoveListener(moveGestureListener);
                     return;
                 }
 
-                TileStore legacyStore = legacyOfflineTileStore();
-                TileStore isolatedStore = null;
+                TileStore sharedStore = legacyOfflineTileStore();
                 File regionDirectory = offlineRegionDirectory(regionId, false);
-                File tilePath = new File(regionDirectory, "tiles");
-                if (tilePath.isDirectory()) {
-                    isolatedStore = TileStore.create(tilePath.getAbsolutePath());
-                }
-                legacyStore.removeTileRegion(regionId);
-                if (isolatedStore != null) isolatedStore.removeTileRegion(regionId);
+                boolean hasRegionDirectory = regionDirectory.isDirectory();
+                sharedStore.removeTileRegion(regionId);
                 setOfflineRegionComplete(regionId, false);
 
                 if (deleteStylePack) {
@@ -3339,8 +3329,8 @@ gestures.addOnMoveListener(moveGestureListener);
                     String previousDataPath = MapboxMapsOptions.getDataPath();
                     OfflineManager offlineManager;
                     try {
-                        if (isolatedStore != null) {
-                            MapboxMapsOptions.setTileStore(isolatedStore);
+                        if (hasRegionDirectory) {
+                            MapboxMapsOptions.setTileStore(sharedStore);
                             MapboxMapsOptions.setDataPath(offlineRegionDataPath(regionId));
                         }
                         offlineManager = new OfflineManager();
@@ -6000,12 +5990,13 @@ private boolean addMarkerInternal(
     }
 
     private String sanitizeError(String contextMessage, Throwable t) {
-        Log.e("MapboxPlugin", contextMessage);
+        // The caller gets only the generic message; logcat keeps the real cause.
+        Log.e("MapboxPlugin", contextMessage, t);
         return contextMessage;
     }
 
     private String sanitizeError(String contextMessage, Object t) {
-        Log.e("MapboxPlugin", contextMessage);
+        Log.e("MapboxPlugin", contextMessage + " Cause: " + t);
         return contextMessage;
     }
 
