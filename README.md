@@ -642,14 +642,14 @@ window.MapboxPlugin.loadPath({
 
 ## Style Layers
 
-These actions work on the layers of the current map style, on both Android and iOS. A *group* is a Mapbox Studio layer folder, stored in each layer's `metadata["mapbox:group"]`. Call them after the style has loaded; before that they fail with "Style is not loaded".
+These actions work on the layers of the current map style, on both Android and iOS. A *group* is a Mapbox Studio layer folder, stored in each layer's `metadata["mapbox:group"]`. `ToggleOverlays` queues requests in FIFO order while a style reload is in progress; other layer actions require a loaded style.
 
 | Action | Options | Result |
 |---|---|---|
 | `setLayerVisibility(options)` | `layerId` (required), `visible` (default `true`) | Nothing |
 | `getLayersByGroup(options)` | `groupId` (required) | `{ groupId, totalLayers, layers: [{ id, name, type }] }` |
 | `setLayerGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | Success: `{ groupId, visible, updatedCount, updatedLayers, failedCount, failedLayers }`. If no layers update, the error is JSON text with `matchedLayers`, `updatedCount`, and `failedLayers`. |
-| `ToggleOverlays(options)` | `groupId` (required), `visible` (default `true`) | Updates matching root-level layer visibility properties without reloading the style. Returns matched, updated and failed layer details; no matches resolve with `matchedCount: 0`. |
+| `ToggleOverlays(options)` | `groupId` (required), `visible` (default `true`) | Updates matching root-level layers in the style JSON and reloads the style. Requests during a style reload queue and run in order. Returns matched and updated layer IDs; no matches resolve with `matchedCount: 0`. |
 
 ```javascript
 await MapboxPlugin.setLayerGroupVisibility({ groupId: $parameters.GroupId, visible: false });

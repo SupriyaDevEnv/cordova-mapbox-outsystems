@@ -35,6 +35,7 @@ import java.io.File;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
@@ -46,8 +47,6 @@ import java.util.Map;
 import java.util.TimeZone;
 
 
-import com.mapbox.bindgen.Expected;
-import com.mapbox.bindgen.None;
 import com.mapbox.bindgen.Value;
 
 import com.mapbox.common.MapboxOptions;
@@ -5453,119 +5452,138 @@ private boolean addMarkerInternal(
         CallbackContext callback
     ) {
         runForSession(() -> {
-            try {
-                String groupId = options.optString("groupId", "").trim();
-                boolean visible = options.optBoolean("visible", true);
+            String groupId = options.optString("groupId", "").trim();
+            boolean visible = options.optBoolean("visible", true);
+            if (groupId.isEmpty()) {
+                callback.error("groupId is required");
+                return;
+            }
 
-                if (groupId.isEmpty()) {
-                    callback.error("groupId is required");
-                    return;
+            pendingOverlayToggles.addLast(
+                new OverlayToggleRequest(groupId, visible, callback)
+            );
+            processNextOverlayToggle();
+        });
+    }
+
+    private void applyOverlayToggle(OverlayToggleRequest request) {
+        CallbackContext callback = request.callback;
+        String groupId = request.groupId;
+        boolean visible = request.visible;
+        try {
+            if (mapView == null) {
+                callback.error("Map is not initialized.");
+                return;
+            }
+
+            Style currentStyle = mapView.getMapboxMap().getStyle();
+            if (currentStyle == null) {
+                callback.error("Style is not loaded.");
+                return;
+            }
+
+            JSONObject styleJson = new JSONObject(currentStyle.getStyleJSON());
+            JSONArray layers = styleJson.optJSONArray("layers");
+            if (layers == null) {
+                callback.error("No root-level layers found in style JSON");
+                return;
+            }
+
+            String requestedVisibility = visible ? "visible" : "none";
+            JSONArray matchedLayers = new JSONArray();
+            JSONArray updatedLayers = new JSONArray();
+
+            for (int i = 0; i < layers.length(); i++) {
+                JSONObject layer = layers.optJSONObject(i);
+                if (layer == null) {
+                    continue;
                 }
 
-                if (mapView == null) {
-                    callback.error("Map is not initialized.");
-                    return;
+                JSONObject metadata = layer.optJSONObject("metadata");
+                if (metadata == null) {
+                    continue;
                 }
 
-                Style currentStyle = mapView.getMapboxMap().getStyle();
-                if (currentStyle == null) {
-                    callback.error("Style is not loaded.");
-                    return;
+                String layerGroup = metadata
+                    .optString("mapbox:group", "")
+                    .trim();
+                if (!groupId.equals(layerGroup)) {
+                    continue;
                 }
 
-                JSONObject styleJson = new JSONObject(currentStyle.getStyleJSON());
-                JSONArray layers = styleJson.optJSONArray("layers");
-                if (layers == null) {
-                    callback.error("No root-level layers found in style JSON");
-                    return;
+                String layerId = layer.optString("id", "").trim();
+                if (layerId.isEmpty()) {
+                    continue;
                 }
 
-                String requestedVisibility = visible ? "visible" : "none";
-                JSONArray matchedLayers = new JSONArray();
-                JSONArray updatedLayers = new JSONArray();
-                JSONArray failedLayers = new JSONArray();
-
-                for (int i = 0; i < layers.length(); i++) {
-                    JSONObject layer = layers.optJSONObject(i);
-                    if (layer == null) {
-                        continue;
-                    }
-
-                    JSONObject metadata = layer.optJSONObject("metadata");
-                    if (metadata == null) {
-                        continue;
-                    }
-
-                    String layerGroup = metadata
-                        .optString("mapbox:group", "")
-                        .trim();
-                    if (!groupId.equals(layerGroup)) {
-                        continue;
-                    }
-
-                    String layerId = layer.optString("id", "").trim();
-                    if (layerId.isEmpty()) {
-                        continue;
-                    }
-
-                    matchedLayers.put(layerId);
-                    Expected<String, None> updateResult =
-                        currentStyle.setStyleLayerProperty(
-                            layerId,
-                            "visibility",
-                            Value.valueOf(requestedVisibility)
-                        );
-                    if (updateResult.isError()) {
-                        JSONObject failure = new JSONObject();
-                        failure.put("layerId", layerId);
-                        failure.put("error", updateResult.getError());
-                        failedLayers.put(failure);
-                    } else {
-                        updatedLayers.put(layerId);
-                    }
+                matchedLayers.put(layerId);
+                JSONObject layout = layer.optJSONObject("layout");
+                if (layout == null) {
+                    layout = new JSONObject();
+                    layer.put("layout", layout);
                 }
+                layout.put("visibility", requestedVisibility);
+                updatedLayers.put(layerId);
+            }
 
-                if (matchedLayers.length() == 0) {
-                    JSONObject result = new JSONObject();
-                    result.put("groupId", groupId);
-                    result.put("visible", visible);
-                    result.put("matchedCount", 0);
-                    result.put("message", "No layers found for this group");
-                    callback.success(result);
-                    return;
-                }
-
+            if (matchedLayers.length() == 0) {
                 JSONObject result = new JSONObject();
-                result.put("method", "STYLE_LAYER_PROPERTY");
                 result.put("groupId", groupId);
                 result.put("visible", visible);
-                result.put("requestedVisibility", requestedVisibility);
-                result.put("matchedCount", matchedLayers.length());
-                result.put("updatedCount", updatedLayers.length());
-                result.put("matchedLayers", matchedLayers);
-                result.put("updatedLayers", updatedLayers);
-                result.put("failedCount", failedLayers.length());
-                result.put("failedLayers", failedLayers);
-
-                if (updatedLayers.length() == 0) {
-                    result.put("message", "No matching layers could be updated");
-                    callback.error(result.toString());
-                    return;
-                }
-
-                result.put(
-                    "message",
-                    failedLayers.length() == 0
-                        ? "Group visibility updated successfully"
-                        : "Group visibility partially updated"
-                );
+                result.put("matchedCount", 0);
+                result.put("message", "No layers found for this group");
                 callback.success(result);
-            } catch (Exception e) {
-                callback.error(
-                    "Failed to update group visibility: " + e.getMessage()
-                );
+                return;
             }
-        });
+
+            JSONObject result = new JSONObject();
+            result.put("method", "ROOT_STYLE_JSON_RELOAD");
+            result.put("groupId", groupId);
+            result.put("visible", visible);
+            result.put("requestedVisibility", requestedVisibility);
+            result.put("matchedCount", matchedLayers.length());
+            result.put("updatedCount", updatedLayers.length());
+            result.put("matchedLayers", matchedLayers);
+            result.put("updatedLayers", updatedLayers);
+            result.put("message", "Group visibility updated successfully");
+
+            loadReadyStyle(styleJson.toString(), null, result, callback);
+        } catch (Exception e) {
+            callback.error(
+                "Failed to update group visibility: " + e.getMessage()
+            );
+        }
+    }
+
+    private void processNextOverlayToggle() {
+        if (pendingStyle != null || processingOverlayToggles) {
+            return;
+        }
+
+        processingOverlayToggles = true;
+        try {
+            while (pendingStyle == null && !pendingOverlayToggles.isEmpty()) {
+                applyOverlayToggle(pendingOverlayToggles.removeFirst());
+            }
+        } finally {
+            processingOverlayToggles = false;
+        }
+    }
+
+    private static final class OverlayToggleRequest {
+        final String groupId;
+        final boolean visible;
+        final CallbackContext callback;
+
+        OverlayToggleRequest(
+            String groupId,
+            boolean visible,
+            CallbackContext callback
+        ) {
+            this.groupId = groupId;
+            this.visible = visible;
+            this.callback = callback;
+        }
     }
 
     private void setMapStyle(JSONObject options, CallbackContext callback) {
@@ -5592,15 +5610,27 @@ private boolean addMarkerInternal(
     // All style replacements use this gate. Never resolve readiness on a timer.
     private final Handler styleHandler = new Handler(Looper.getMainLooper());
     private StyleRequest pendingStyle;
+    private final ArrayDeque<OverlayToggleRequest> pendingOverlayToggles =
+        new ArrayDeque<>();
+    private boolean processingOverlayToggles;
 
     private static final class StyleRequest {
         final MapView view;
         final CallbackContext callback;
         final String status;
+        final JSONObject successPayload;
         Cancelable errors;
         Runnable timeout;
-        StyleRequest(MapView view, CallbackContext callback, String status) {
-            this.view = view; this.callback = callback; this.status = status;
+        StyleRequest(
+            MapView view,
+            CallbackContext callback,
+            String status,
+            JSONObject successPayload
+        ) {
+            this.view = view;
+            this.callback = callback;
+            this.status = status;
+            this.successPayload = successPayload;
         }
     }
 
@@ -5616,24 +5646,42 @@ private boolean addMarkerInternal(
     private void finishStyle(StyleRequest request, String error) {
         if (pendingStyle != request || mapView != request.view) return;
         cancelPendingStyle();
-        if (request.callback.isFinished()) return;
-        if (error != null) { request.callback.error(error); return; }
-        if (request.status == null) { request.callback.success(); return; }
-        try {
-            JSONObject result = new JSONObject();
-            result.put("status", request.status);
-            request.callback.success(result);
-        } catch (JSONException e) {
-            request.callback.error("Failed to create style completion result.");
+        if (!request.callback.isFinished()) {
+            if (error != null) {
+                request.callback.error(error);
+            } else if (request.successPayload != null) {
+                request.callback.success(request.successPayload);
+            } else if (request.status == null) {
+                request.callback.success();
+            } else {
+                try {
+                    JSONObject result = new JSONObject();
+                    result.put("status", request.status);
+                    request.callback.success(result);
+                } catch (JSONException e) {
+                    request.callback.error("Failed to create style completion result.");
+                }
+            }
         }
+        processNextOverlayToggle();
     }
 
     private void loadReadyStyle(String uri, String status, CallbackContext callback) {
+        loadReadyStyle(uri, status, null, callback);
+    }
+
+    private void loadReadyStyle(
+        String uri,
+        String status,
+        JSONObject successPayload,
+        CallbackContext callback
+    ) {
         if (pendingStyle != null) {
             callback.error("A style load is already in progress. Await its completion first.");
             return;
         }
-        final StyleRequest request = new StyleRequest(mapView, callback, status);
+        final StyleRequest request =
+            new StyleRequest(mapView, callback, status, successPayload);
         pendingStyle = request;
         request.timeout = () -> finishStyle(request, "Style loading timed out after 30 seconds.");
         styleHandler.postDelayed(request.timeout, 30000L);
@@ -5676,6 +5724,7 @@ private boolean addMarkerInternal(
         // Reconnect Mapbox networking switched off by initializeOffline.
         cleanupStep(() -> OfflineSwitch.getInstance().setMapboxStackConnected(true));
         cancelPendingStyle();
+        pendingOverlayToggles.clear();
         if (closeCallback != null) { closeCallback.success(); closeCallback = null; }
         for (CallbackContext pending : sessionCallbacks) {
             if (!pending.isFinished()) {

@@ -264,23 +264,34 @@ test('iOS reports partial and total failures when updating a layer group', () =>
   assert.match(body, /self\.sendError\(message, command\)/);
 });
 
-test('ToggleOverlays updates root-level layer visibility without reloading style', () => {
+test('ToggleOverlays queues requests in order and reloads updated style JSON', () => {
   const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
+  const ios = fs.readFileSync('src/ios/MapboxPlugin.swift', 'utf8');
   const androidBody = android.split('private void ToggleOverlays(')[1]
     .split('private void setMapStyle(')[0];
   const iosBody = parity.split('func ToggleOverlays(command:')[1]
     .split('private func requiredGroupId(')[0];
+  const iosReloadHelper = ios.split('func loadReadyStyleJSON(')[1]
+    .split('private func cancelCurrentDownload()')[0];
 
   assert.match(android, /case "ToggleOverlays":\s*ToggleOverlays\(options, callbackContext\)/);
   assert.match(androidBody, /metadata[\s\S]*optString\("mapbox:group", ""\)/);
-  assert.match(androidBody, /setStyleLayerProperty\([\s\S]*?"visibility"/);
-  assert.match(androidBody, /"failedLayers"/);
-  assert.doesNotMatch(androidBody, /loadReadyStyle|loadStyle\(/);
+  assert.match(androidBody, /layout\.put\("visibility", requestedVisibility\)/);
+  assert.match(androidBody, /loadReadyStyle\(styleJson\.toString\(\), null, result, callback\)/);
+  assert.match(android, /request\.successPayload != null[\s\S]*request\.callback\.success\(request\.successPayload\)/);
+  assert.match(android, /request\.view\.getMapboxMap\(\)\.loadStyle\(uri,/);
+  assert.match(androidBody, /pendingOverlayToggles\.addLast\(/);
+  assert.match(android, /while \(pendingStyle == null && !pendingOverlayToggles\.isEmpty\(\)\)/);
+  assert.match(android, /processNextOverlayToggle\(\);\s*\}/);
   assert.match(parity, /@objc\(ToggleOverlays:\)/);
   assert.match(iosBody, /metadata\["mapbox:group"\]/);
-  assert.match(iosBody, /setLayerProperty\([\s\S]*?property: "visibility"/);
-  assert.match(iosBody, /"failedLayers": failedLayers/);
-  assert.doesNotMatch(iosBody, /loadReadyStyleJSON|loadStyle\(/);
+  assert.match(iosBody, /layout\["visibility"\] = requestedVisibility/);
+  assert.match(iosBody, /loadReadyStyleJSON\(/);
+  assert.match(iosBody, /self\.enqueueOverlayToggle/);
+  assert.match(ios, /queuedOverlayToggles\.removeFirst\(\)/);
+  assert.match(ios, /processNextQueuedOverlayToggle\(\)/);
+  assert.match(iosReloadHelper, /mapView\.mapboxMap\.loadStyle\(styleJSON\)/);
+  assert.match(ios, /successPayload:\s*\[String: Any\]/);
 });
 
 test('path line style is validated the same way on both platforms', () => {

@@ -6,7 +6,7 @@
 - **Changed (Android):** `initializeOffline` no longer limits zoom to the downloaded range; the user can pan and zoom anywhere, and areas without stored tiles show the style background. Tiles already in the shared store (other regions, areas viewed online) can also appear. An explicit `minZoom`/`maxZoom` still applies.
 - **Changed (Android):** plugin errors now log the underlying exception to logcat; the message returned to JavaScript is unchanged.
 - **New:** `inspectStyleStructure()` reports root layers, imported styles and the complete loaded style JSON on Android and iOS.
-- **New:** `ToggleOverlays({ groupId, visible })` updates matching root-level layer visibility properties without reloading the style on Android and iOS.
+- **New:** `ToggleOverlays({ groupId, visible })` updates matching root-level style JSON layers, reloads the style, and queues concurrent toggles in order on Android and iOS.
 - **New:** `initializeOffline({ regionId, ... })` opens only a downloaded region on Android and iOS: no online starting style, nothing shown when the region is missing, and Mapbox network access switched off until the map closes.
 - **Changed:** `showOfflineRegion({ regionId })` constrains the camera center to the saved region bounds and zoom range on Android and iOS.
 - **Changed:** removed `diagnoseLayerGroup` and `getLayerIds` from the Android and iOS APIs.
