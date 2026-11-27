@@ -565,6 +565,9 @@ private static final float MAX_ACCEPTABLE_ACCURACY_METERS = 25.0f;
             case "ToggleOverlays":
                 ToggleOverlays(options, callbackContext);
                 return true;
+            case "ToggleMultipleOverlays":
+                ToggleMultipleOverlays(options, callbackContext);
+                return true;
             default:
                 return false;
         }
@@ -5467,6 +5470,10 @@ private boolean addMarkerInternal(
     }
 
     private void applyOverlayToggle(OverlayToggleRequest request) {
+        if (request.overlays != null) {
+            applyMultipleOverlayToggles(request.overlays, request.callback);
+            return;
+        }
         CallbackContext callback = request.callback;
         String groupId = request.groupId;
         boolean visible = request.visible;
@@ -5574,6 +5581,7 @@ private boolean addMarkerInternal(
         final String groupId;
         final boolean visible;
         final CallbackContext callback;
+        final JSONArray overlays;
 
         OverlayToggleRequest(
             String groupId,
@@ -5583,6 +5591,87 @@ private boolean addMarkerInternal(
             this.groupId = groupId;
             this.visible = visible;
             this.callback = callback;
+            this.overlays = null;
+        }
+
+        OverlayToggleRequest(JSONArray overlays, CallbackContext callback) {
+            this.groupId = null;
+            this.visible = false;
+            this.callback = callback;
+            this.overlays = overlays;
+        }
+    }
+
+    private void ToggleMultipleOverlays(JSONObject options, CallbackContext callback) {
+        runForSession(() -> {
+            JSONArray overlays = options.optJSONArray("overlays");
+            if (overlays == null || overlays.length() == 0) {
+                callback.error("overlays must be a non-empty array.");
+                return;
+            }
+            java.util.HashSet<String> groups = new java.util.HashSet<>();
+            for (int i = 0; i < overlays.length(); i++) {
+                JSONObject item = overlays.optJSONObject(i);
+                Object group = item == null ? null : item.opt("groupId");
+                Object visible = item == null ? null : item.opt("visible");
+                if (!(group instanceof String) || ((String) group).trim().isEmpty()
+                        || !(visible instanceof Boolean)) {
+                    callback.error("Each overlay requires a non-empty groupId and boolean visible.");
+                    return;
+                }
+                if (!groups.add(((String) group).trim())) {
+                    callback.error("Duplicate overlay groupId.");
+                    return;
+                }
+            }
+            pendingOverlayToggles.addLast(new OverlayToggleRequest(overlays, callback));
+            processNextOverlayToggle();
+        });
+    }
+
+    private void applyMultipleOverlayToggles(JSONArray overlays, CallbackContext callback) {
+        try {
+            if (mapView == null) { callback.error("Map is not initialized."); return; }
+            Style style = mapView.getMapboxMap().getStyle();
+            if (style == null) { callback.error("Style is not loaded."); return; }
+            JSONObject json = new JSONObject(style.getStyleJSON());
+            JSONArray layers = json.optJSONArray("layers");
+            if (layers == null) { callback.error("No root-level layers found in style JSON"); return; }
+            JSONArray groups = new JSONArray();
+            int total = 0;
+            for (int i = 0; i < overlays.length(); i++) {
+                JSONObject item = overlays.getJSONObject(i);
+                String groupId = item.getString("groupId").trim();
+                boolean visible = item.getBoolean("visible");
+                JSONArray matched = new JSONArray();
+                for (int j = 0; j < layers.length(); j++) {
+                    JSONObject layer = layers.optJSONObject(j);
+                    JSONObject metadata = layer == null ? null : layer.optJSONObject("metadata");
+                    if (metadata == null || !groupId.equals(metadata.optString("mapbox:group", "").trim())) continue;
+                    String id = layer.optString("id", "").trim();
+                    if (id.isEmpty()) continue;
+                    JSONObject layout = layer.optJSONObject("layout");
+                    if (layout == null) { layout = new JSONObject(); layer.put("layout", layout); }
+                    layout.put("visibility", visible ? "visible" : "none");
+                    matched.put(id);
+                }
+                total += matched.length();
+                JSONObject group = new JSONObject();
+                group.put("groupId", groupId);
+                group.put("visible", visible);
+                group.put("matchedCount", matched.length());
+                group.put("matchedLayers", matched);
+                groups.put(group);
+            }
+            JSONObject result = new JSONObject();
+            result.put("method", "ROOT_STYLE_JSON_RELOAD");
+            result.put("groups", groups);
+            result.put("matchedCount", total);
+            result.put("reloaded", total > 0);
+            if (total == 0) { callback.success(result); return; }
+            loadReadyStyle(json.toString(), null, result, callback);
+        } catch (Exception error) {
+            callback.error("Failed to update group visibility: " + error.getMessage());
         }
     }
 

@@ -693,6 +693,10 @@ var api = {
     return call('ToggleOverlays', [options || {}]);
   },
 
+  ToggleMultipleOverlays: function (options) {
+    return call('ToggleMultipleOverlays', [options || {}]);
+  },
+
   getLayersByGroup: function (options) {
     return call('getLayersByGroup', [options || {}]);
   },

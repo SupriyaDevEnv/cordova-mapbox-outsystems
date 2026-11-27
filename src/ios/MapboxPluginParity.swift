@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import CoreLocation
 import UIKit
 import MapboxMaps
@@ -411,6 +412,82 @@ class MapboxPluginParity: MapboxPlugin {
                 "Failed to update group visibility: \(error.localizedDescription)",
                 command
             )
+        }
+    }
+
+    @objc(ToggleMultipleOverlays:)
+    func ToggleMultipleOverlays(command: CDVInvokedUrlCommand) {
+        rememberCommand(command)
+        runForSession {
+            let options = command.argument(at: 0) as? [String: Any] ?? [:]
+            guard let overlays = options["overlays"] as? [Any], !overlays.isEmpty else {
+                self.sendError("overlays must be a non-empty array.", command); return
+            }
+            var requested: [(String, Bool)] = []
+            var groups = Set<String>()
+            for entry in overlays {
+                guard let item = entry as? [String: Any],
+                      let rawId = item["groupId"] as? String,
+                      let number = item["visible"] as? NSNumber,
+                      CFGetTypeID(number) == CFBooleanGetTypeID() else {
+                    self.sendError("Each overlay requires a non-empty groupId and boolean visible.", command); return
+                }
+                let id = rawId.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !id.isEmpty else {
+                    self.sendError("Each overlay requires a non-empty groupId and boolean visible.", command); return
+                }
+                guard groups.insert(id).inserted else {
+                    self.sendError("Duplicate overlay groupId.", command); return
+                }
+                requested.append((id, number.boolValue))
+            }
+            self.enqueueOverlayToggle { [weak self] in
+                self?.applyMultipleOverlayToggles(requested, command: command)
+            }
+        }
+    }
+
+    private func applyMultipleOverlayToggles(_ requested: [(String, Bool)], command: CDVInvokedUrlCommand) {
+        guard let map = loadedStyleMap(command, notInitialized: "Map is not initialized.",
+                                       notLoaded: "Style is not loaded.") else { return }
+        do {
+            guard var root = try JSONSerialization.jsonObject(with: Data(map.styleJSON.utf8)) as? [String: Any],
+                  var layers = root["layers"] as? [Any] else {
+                sendError("No root-level layers found in style JSON", command); return
+            }
+            var groups: [[String: Any]] = []
+            var total = 0
+            for (groupId, visible) in requested {
+                var matched: [String] = []
+                for index in layers.indices {
+                    guard var layer = layers[index] as? [String: Any],
+                          let metadata = layer["metadata"] as? [String: Any],
+                          let group = metadata["mapbox:group"] as? String,
+                          group.trimmingCharacters(in: .whitespacesAndNewlines) == groupId,
+                          let rawId = layer["id"] as? String else { continue }
+                    let id = rawId.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !id.isEmpty else { continue }
+                    var layout = layer["layout"] as? [String: Any] ?? [:]
+                    layout["visibility"] = visible ? "visible" : "none"
+                    layer["layout"] = layout
+                    layers[index] = layer
+                    matched.append(id)
+                }
+                total += matched.count
+                groups.append(["groupId": groupId, "visible": visible,
+                               "matchedCount": matched.count, "matchedLayers": matched])
+            }
+            let result: [String: Any] = ["method": "ROOT_STYLE_JSON_RELOAD", "groups": groups,
+                                         "matchedCount": total, "reloaded": total > 0]
+            guard total > 0 else { sendSuccess(result, command); return }
+            root["layers"] = layers
+            let data = try JSONSerialization.data(withJSONObject: root)
+            guard let json = String(data: data, encoding: .utf8) else {
+                sendError("Failed to serialize updated style JSON.", command); return
+            }
+            loadReadyStyleJSON(json, successPayload: result, command: command)
+        } catch {
+            sendError("Failed to update group visibility: \(error.localizedDescription)", command)
         }
     }
 

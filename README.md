@@ -162,6 +162,7 @@ Set the consuming iOS application's minimum deployment target explicitly to **14
 - `getLayersByGroup(options)`
 - `setLayerGroupVisibility(options)`
 - `ToggleOverlays(options)`
+- `ToggleMultipleOverlays(options)`
 - `close()`
 
 ## Initialize Map
@@ -650,11 +651,20 @@ These actions work on the layers of the current map style, on both Android and i
 | `getLayersByGroup(options)` | `groupId` (required) | `{ groupId, totalLayers, layers: [{ id, name, type }] }` |
 | `setLayerGroupVisibility(options)` | `groupId` (required), `visible` (default `true`) | Success: `{ groupId, visible, updatedCount, updatedLayers, failedCount, failedLayers }`. If no layers update, the error is JSON text with `matchedLayers`, `updatedCount`, and `failedLayers`. |
 | `ToggleOverlays(options)` | `groupId` (required), `visible` (default `true`) | Updates matching root-level layers in the style JSON and reloads the style. Requests during a style reload queue and run in order. Returns matched and updated layer IDs; no matches resolve with `matchedCount: 0`. |
+| `ToggleMultipleOverlays(options)` | `overlays`: non-empty array of `{ groupId, visible }` | Applies all groups in one style reload. Returns `groups` (each with `groupId`, `visible`, `matchedCount`, `matchedLayers`), total `matchedCount`, and `reloaded`. Unknown groups report zero matches; if none match, no reload occurs. Duplicate group IDs and non-boolean visibility values are rejected. |
 
 ```javascript
 await MapboxPlugin.setLayerGroupVisibility({ groupId: $parameters.GroupId, visible: false });
 await MapboxPlugin.ToggleOverlays({ groupId: $parameters.GroupId, visible: false });
+
+await MapboxPlugin.ToggleMultipleOverlays({ overlays: [
+  { groupId: 'ProtectedAreas&Heritage', visible: true },
+  { groupId: 'FossickingContext', visible: false },
+  { groupId: 'Land&Manager', visible: true }
+] });
 ```
+
+Single and multiple overlay requests share the same FIFO queue. A reload can remove runtime-added layers and annotations; verify and restore application overlays if necessary. A successful result confirms the reload completed, not that the features rendered.
 
 ## Markers
 

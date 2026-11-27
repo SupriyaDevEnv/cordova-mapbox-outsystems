@@ -54,6 +54,22 @@ test('ToggleOverlays forwards options to its native action', async () => {
   assert.strictEqual(result.groupId, 'roads');
 });
 
+test('ToggleMultipleOverlays sends a single batch and returns native results', async () => {
+  const { api, calls } = loadPlugin((action, args, ok) => ok({ groups: args[0].overlays, reloaded: true }));
+  const options = { overlays: [{ groupId: 'roads', visible: true }, { groupId: 'parks', visible: false }] };
+  const result = await api.ToggleMultipleOverlays(options);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].action, 'ToggleMultipleOverlays');
+  assert.deepEqual(result.groups, options.overlays);
+  assert.equal(result.reloaded, true);
+});
+
+test('ToggleMultipleOverlays propagates native failures and cancellation', async () => {
+  const { api } = loadPlugin((action, args, ok, fail) => fail('Map closed; operation cancelled.'));
+  await assert.rejects(api.ToggleMultipleOverlays({ overlays: [{ groupId: 'roads', visible: false }] }),
+    error => error.code === 'MAPBOX_OPERATION_CANCELLED');
+});
+
 test('isCancellationError recognises codes and legacy messages only', () => {
   const { api } = loadPlugin();
   assert.ok(api.isCancellationError({ code: 'MAPBOX_OPERATION_CANCELLED' }));
