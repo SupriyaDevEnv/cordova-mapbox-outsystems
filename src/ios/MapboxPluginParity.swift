@@ -325,10 +325,10 @@ class MapboxPluginParity: MapboxPlugin {
             ) else { return }
 
             do {
-                guard var styleRoot = try JSONSerialization.jsonObject(
+                guard let styleRoot = try JSONSerialization.jsonObject(
                     with: Data(map.styleJSON.utf8)
                 ) as? [String: Any],
-                      var layers = styleRoot["layers"] as? [Any] else {
+                      let layers = styleRoot["layers"] as? [[String: Any]] else {
                     self.sendError("No root-level layers found in style JSON", command)
                     return
                 }
@@ -336,12 +336,10 @@ class MapboxPluginParity: MapboxPlugin {
                 let requestedVisibility = visible ? "visible" : "none"
                 var matchedLayers: [String] = []
                 var updatedLayers: [String] = []
+                var failedLayers: [[String: String]] = []
 
-                for index in layers.indices {
-                    guard var layer = layers[index] as? [String: Any],
-                          let metadata = layer["metadata"] as? [String: Any] else {
-                        continue
-                    }
+                for layer in layers {
+                    guard let metadata = layer["metadata"] as? [String: Any] else { continue }
 
                     let layerGroup = (metadata["mapbox:group"] as? String ?? "")
                         .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -352,11 +350,19 @@ class MapboxPluginParity: MapboxPlugin {
                     guard !layerId.isEmpty else { continue }
 
                     matchedLayers.append(layerId)
-                    var layout = layer["layout"] as? [String: Any] ?? [:]
-                    layout["visibility"] = requestedVisibility
-                    layer["layout"] = layout
-                    layers[index] = layer
-                    updatedLayers.append(layerId)
+                    do {
+                        try map.setLayerProperty(
+                            for: layerId,
+                            property: "visibility",
+                            value: requestedVisibility
+                        )
+                        updatedLayers.append(layerId)
+                    } catch {
+                        failedLayers.append([
+                            "layerId": layerId,
+                            "error": error.localizedDescription
+                        ])
+                    }
                 }
 
                 if matchedLayers.isEmpty {
@@ -369,28 +375,41 @@ class MapboxPluginParity: MapboxPlugin {
                     return
                 }
 
-                styleRoot["layers"] = layers
-                let data = try JSONSerialization.data(withJSONObject: styleRoot)
-                guard let styleJSON = String(data: data, encoding: .utf8) else {
-                    self.sendError("Failed to serialize updated style JSON.", command)
+                var result: [String: Any] = [
+                    "method": "STYLE_LAYER_PROPERTY",
+                    "groupId": groupId,
+                    "visible": visible,
+                    "requestedVisibility": requestedVisibility,
+                    "matchedCount": matchedLayers.count,
+                    "updatedCount": updatedLayers.count,
+                    "matchedLayers": matchedLayers,
+                    "updatedLayers": updatedLayers,
+                    "failedCount": failedLayers.count,
+                    "failedLayers": failedLayers
+                ]
+
+                guard !updatedLayers.isEmpty else {
+                    result["message"] = "No matching layers could be updated"
+                    do {
+                        let data = try JSONSerialization.data(withJSONObject: result)
+                        guard let message = String(data: data, encoding: .utf8) else {
+                            self.sendError("Failed to encode group visibility error.", command)
+                            return
+                        }
+                        self.sendError(message, command)
+                    } catch {
+                        self.sendError(
+                            "Failed to encode group visibility error: \(error.localizedDescription)",
+                            command
+                        )
+                    }
                     return
                 }
 
-                self.loadReadyStyleJSON(
-                    styleJSON,
-                    successPayload: [
-                        "method": "ROOT_STYLE_JSON_RELOAD",
-                        "groupId": groupId,
-                        "visible": visible,
-                        "requestedVisibility": requestedVisibility,
-                        "matchedCount": matchedLayers.count,
-                        "updatedCount": updatedLayers.count,
-                        "matchedLayers": matchedLayers,
-                        "updatedLayers": updatedLayers,
-                        "message": "Group visibility updated successfully"
-                    ],
-                    command: command
-                )
+                result["message"] = failedLayers.isEmpty
+                    ? "Group visibility updated successfully"
+                    : "Group visibility partially updated"
+                self.sendSuccess(result, command)
             } catch {
                 self.sendError(
                     "Failed to update group visibility: \(error.localizedDescription)",

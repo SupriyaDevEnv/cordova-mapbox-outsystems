@@ -46,6 +46,8 @@ import java.util.Map;
 import java.util.TimeZone;
 
 
+import com.mapbox.bindgen.Expected;
+import com.mapbox.bindgen.None;
 import com.mapbox.bindgen.Value;
 
 import com.mapbox.common.MapboxOptions;
@@ -5491,6 +5493,7 @@ private boolean addMarkerInternal(
                 String requestedVisibility = visible ? "visible" : "none";
                 JSONArray matchedLayers = new JSONArray();
                 JSONArray updatedLayers = new JSONArray();
+                JSONArray failedLayers = new JSONArray();
 
                 for (int i = 0; i < layers.length(); i++) {
                     JSONObject layer = layers.optJSONObject(i);
@@ -5516,14 +5519,20 @@ private boolean addMarkerInternal(
                     }
 
                     matchedLayers.put(layerId);
-
-                    JSONObject layout = layer.optJSONObject("layout");
-                    if (layout == null) {
-                        layout = new JSONObject();
-                        layer.put("layout", layout);
+                    Expected<String, None> updateResult =
+                        currentStyle.setStyleLayerProperty(
+                            layerId,
+                            "visibility",
+                            Value.valueOf(requestedVisibility)
+                        );
+                    if (updateResult.isError()) {
+                        JSONObject failure = new JSONObject();
+                        failure.put("layerId", layerId);
+                        failure.put("error", updateResult.getError());
+                        failedLayers.put(failure);
+                    } else {
+                        updatedLayers.put(layerId);
                     }
-                    layout.put("visibility", requestedVisibility);
-                    updatedLayers.put(layerId);
                 }
 
                 if (matchedLayers.length() == 0) {
@@ -5537,7 +5546,7 @@ private boolean addMarkerInternal(
                 }
 
                 JSONObject result = new JSONObject();
-                result.put("method", "ROOT_STYLE_JSON_RELOAD");
+                result.put("method", "STYLE_LAYER_PROPERTY");
                 result.put("groupId", groupId);
                 result.put("visible", visible);
                 result.put("requestedVisibility", requestedVisibility);
@@ -5545,9 +5554,22 @@ private boolean addMarkerInternal(
                 result.put("updatedCount", updatedLayers.length());
                 result.put("matchedLayers", matchedLayers);
                 result.put("updatedLayers", updatedLayers);
-                result.put("message", "Group visibility updated successfully");
+                result.put("failedCount", failedLayers.length());
+                result.put("failedLayers", failedLayers);
 
-                loadReadyStyle(styleJson.toString(), null, result, callback);
+                if (updatedLayers.length() == 0) {
+                    result.put("message", "No matching layers could be updated");
+                    callback.error(result.toString());
+                    return;
+                }
+
+                result.put(
+                    "message",
+                    failedLayers.length() == 0
+                        ? "Group visibility updated successfully"
+                        : "Group visibility partially updated"
+                );
+                callback.success(result);
             } catch (Exception e) {
                 callback.error(
                     "Failed to update group visibility: " + e.getMessage()
@@ -5585,19 +5607,10 @@ private boolean addMarkerInternal(
         final MapView view;
         final CallbackContext callback;
         final String status;
-        final JSONObject successPayload;
         Cancelable errors;
         Runnable timeout;
-        StyleRequest(
-            MapView view,
-            CallbackContext callback,
-            String status,
-            JSONObject successPayload
-        ) {
-            this.view = view;
-            this.callback = callback;
-            this.status = status;
-            this.successPayload = successPayload;
+        StyleRequest(MapView view, CallbackContext callback, String status) {
+            this.view = view; this.callback = callback; this.status = status;
         }
     }
 
@@ -5615,10 +5628,6 @@ private boolean addMarkerInternal(
         cancelPendingStyle();
         if (request.callback.isFinished()) return;
         if (error != null) { request.callback.error(error); return; }
-        if (request.successPayload != null) {
-            request.callback.success(request.successPayload);
-            return;
-        }
         if (request.status == null) { request.callback.success(); return; }
         try {
             JSONObject result = new JSONObject();
@@ -5630,21 +5639,11 @@ private boolean addMarkerInternal(
     }
 
     private void loadReadyStyle(String uri, String status, CallbackContext callback) {
-        loadReadyStyle(uri, status, null, callback);
-    }
-
-    private void loadReadyStyle(
-        String uri,
-        String status,
-        JSONObject successPayload,
-        CallbackContext callback
-    ) {
         if (pendingStyle != null) {
             callback.error("A style load is already in progress. Await its completion first.");
             return;
         }
-        final StyleRequest request =
-            new StyleRequest(mapView, callback, status, successPayload);
+        final StyleRequest request = new StyleRequest(mapView, callback, status);
         pendingStyle = request;
         request.timeout = () -> finishStyle(request, "Style loading timed out after 30 seconds.");
         styleHandler.postDelayed(request.timeout, 30000L);

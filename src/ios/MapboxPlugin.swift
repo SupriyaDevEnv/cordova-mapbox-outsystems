@@ -3317,18 +3317,9 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         let view: MapView
         let command: CDVInvokedUrlCommand
         let status: String?
-        let successPayload: [String: Any]?
         var timeout: DispatchWorkItem?
-        init(
-            view: MapView,
-            command: CDVInvokedUrlCommand,
-            status: String?,
-            successPayload: [String: Any]? = nil
-        ) {
-            self.view = view
-            self.command = command
-            self.status = status
-            self.successPayload = successPayload
+        init(view: MapView, command: CDVInvokedUrlCommand, status: String?) {
+            self.view = view; self.command = command; self.status = status
         }
     }
     private var pendingStyle: StyleRequest?
@@ -3343,9 +3334,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         guard pendingStyle === request, mapView === request.view else { return }
         cancelPendingStyle()
         if let error = error { sendError(error, request.command) }
-        else if let successPayload = request.successPayload {
-            sendSuccess(successPayload, request.command)
-        }
         else if let status = request.status { sendSuccess(["status": status], request.command) }
         else { sendSuccess(request.command) }
     }
@@ -3365,41 +3353,6 @@ class MapboxPlugin: CDVPlugin, CLLocationManagerDelegate, UIGestureRecognizerDel
         request.timeout = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: timeout)
         mapView.mapboxMap.loadStyle(uri) { [weak self, weak request] error in
-            DispatchQueue.main.async {
-                guard let request = request else { return }
-                self?.finishStyle(request, error: error == nil ? nil : "Map style failed to load.")
-            }
-        }
-    }
-
-    func loadReadyStyleJSON(
-        _ styleJSON: String,
-        successPayload: [String: Any],
-        command: CDVInvokedUrlCommand
-    ) {
-        guard let mapView = mapView else {
-            sendError("Map is not initialized.", command)
-            return
-        }
-        guard pendingStyle == nil else {
-            sendError("A style load is already in progress. Await its completion first.", command)
-            return
-        }
-
-        let request = StyleRequest(
-            view: mapView,
-            command: command,
-            status: nil,
-            successPayload: successPayload
-        )
-        pendingStyle = request
-        let timeout = DispatchWorkItem { [weak self, weak request] in
-            guard let request = request else { return }
-            self?.finishStyle(request, error: "Style loading timed out after 30 seconds.")
-        }
-        request.timeout = timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: timeout)
-        mapView.mapboxMap.loadStyle(styleJSON) { [weak self, weak request] error in
             DispatchQueue.main.async {
                 guard let request = request else { return }
                 self?.finishStyle(request, error: error == nil ? nil : "Map style failed to load.")

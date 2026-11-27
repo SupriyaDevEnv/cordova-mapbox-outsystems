@@ -264,7 +264,7 @@ test('iOS reports partial and total failures when updating a layer group', () =>
   assert.match(body, /self\.sendError\(message, command\)/);
 });
 
-test('ToggleOverlays reloads updated root-level style JSON on both platforms', () => {
+test('ToggleOverlays updates root-level layer visibility without reloading style', () => {
   const parity = fs.readFileSync('src/ios/MapboxPluginParity.swift', 'utf8');
   const androidBody = android.split('private void ToggleOverlays(')[1]
     .split('private void setMapStyle(')[0];
@@ -273,12 +273,14 @@ test('ToggleOverlays reloads updated root-level style JSON on both platforms', (
 
   assert.match(android, /case "ToggleOverlays":\s*ToggleOverlays\(options, callbackContext\)/);
   assert.match(androidBody, /metadata[\s\S]*optString\("mapbox:group", ""\)/);
-  assert.match(androidBody, /layout\.put\("visibility", requestedVisibility\)/);
-  assert.match(androidBody, /loadReadyStyle\(styleJson\.toString\(\), null, result, callback\)/);
+  assert.match(androidBody, /setStyleLayerProperty\([\s\S]*?"visibility"/);
+  assert.match(androidBody, /"failedLayers"/);
+  assert.doesNotMatch(androidBody, /loadReadyStyle|loadStyle\(/);
   assert.match(parity, /@objc\(ToggleOverlays:\)/);
   assert.match(iosBody, /metadata\["mapbox:group"\]/);
-  assert.match(iosBody, /layout\["visibility"\] = requestedVisibility/);
-  assert.match(iosBody, /self\.loadReadyStyleJSON\(/);
+  assert.match(iosBody, /setLayerProperty\([\s\S]*?property: "visibility"/);
+  assert.match(iosBody, /"failedLayers": failedLayers/);
+  assert.doesNotMatch(iosBody, /loadReadyStyleJSON|loadStyle\(/);
 });
 
 test('path line style is validated the same way on both platforms', () => {
